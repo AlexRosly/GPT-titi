@@ -1,0 +1,45 @@
+project/
+├── src/
+│ ├── config/
+│ │ ├── env.js
+│ │ ├── db.js
+│ │ └── google.js
+│ │
+│ ├── middlewares/
+│ │ ├── auth.middleware.js
+│ │ ├── role.middleware.js
+│ │ └── error.middleware.js
+│ │
+│ ├── models/
+│ │ ├── user.model.js
+│ │ ├── token.model.js
+│ │ └── session.model.js
+│ │
+│ ├── repositories/
+│ │ ├── user.repository.js
+│ │ ├── token.repository.js
+│ │ └── base.repository.js
+│ │
+│ ├── services/
+│ │ ├── auth.service.js
+│ │ ├── token.service.js
+│ │ └── user.service.js
+│ │
+│ ├── controllers/
+│ │ ├── auth.controller.js
+│ │ └── user.controller.js
+│ │
+│ ├── routes/
+│ │ ├── auth.routes.js
+│ │ └── user.routes.js
+│ │
+│ ├── utils/
+│ │ ├── jwt.js
+│ │ ├── logger.js
+│ │ └── response.js
+│ │
+│ └── app.js
+│
+├── .env
+├── package.json
+└── server.js

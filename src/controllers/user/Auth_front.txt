@@ -1,0 +1,74 @@
+✅ 5. Axios auto-refresh (FRONTEND)
+import axios from "axios";
+
+const api = axios.create({
+  baseURL: "http://localhost:7000",
+  withCredentials: true, // 🔴 обязательно
+});
+
+let isRefreshing = false;
+let queue: any[] = [];
+
+api.interceptors.response.use(
+  res => res,
+  async error => {
+    const original = error.config;
+
+    if (error.response?.status === 401 && !original._retry) {
+      original._retry = true;
+
+      if (!isRefreshing) {
+        isRefreshing = true;
+
+        try {
+          const res = await api.post("/auth/refresh");
+          const accessToken = res.data.accessToken;
+
+          api.defaults.headers.common.Authorization =
+            `Bearer ${accessToken}`;
+
+          queue.forEach(cb => cb(accessToken));
+          queue = [];
+          isRefreshing = false;
+
+          original.headers.Authorization = `Bearer ${accessToken}`;
+          return api(original);
+        } catch (err) {
+          isRefreshing = false;
+          window.location.href = "/login";
+          return Promise.reject(err);
+        }
+      }
+
+      return new Promise(resolve => {
+        queue.push((token: string) => {
+          original.headers.Authorization = `Bearer ${token}`;
+          resolve(api(original));
+        });
+      });
+    }
+
+    return Promise.reject(error);
+  }
+);
+
+export default api;
+
+✅ 6. Поток авторизации (как это работает)
+Login (Google)
+↓
+createUser
+↓
+refreshToken → cookie
+↓
+accessToken → frontend
+↓
+API calls
+↓
+401?
+↓
+/auth/refresh
+↓
+new accessToken
+↓
+повтор запроса

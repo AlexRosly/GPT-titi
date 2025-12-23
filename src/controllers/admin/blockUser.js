@@ -8,7 +8,7 @@ const blockUser = async (req, res) => {
 
     res.json({ success: true });
   } catch (error) {
-    console.error("Error in blockUser:", error);
+    console.error("Error in controller blockUser:", error);
     res.status(500).json({
       status: 500,
       message: "Internal server error",

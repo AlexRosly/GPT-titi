@@ -8,7 +8,7 @@ const getPayments = async (req, res) => {
 
     res.json({ code: 200, message: "success", payments });
   } catch (error) {
-    console.error("Error in getPayments:", error);
+    console.error("Error in controller getPayments:", error);
     res.status(500).json({
       status: 500,
       message: "Internal server error",

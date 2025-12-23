@@ -6,6 +6,7 @@ const { errorMiddleware } = require("./middlewares");
 
 const authRoutes = require("./routes/user");
 const billingRoutes = require("./routes/billing");
+const adminRoutes = require("./routes/admin");
 
 const app = express();
 
@@ -18,6 +19,7 @@ app.use(cookieParser());
 
 app.use("/users", authRoutes);
 app.use("/billing", billingRoutes);
+app.use("/admin", adminRoutes);
 
 app.use(errorMiddleware);
 

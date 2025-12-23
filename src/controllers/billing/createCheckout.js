@@ -33,7 +33,7 @@ const createCheckout = async (req, res) => {
 
     res.json({ url: session.url });
   } catch (error) {
-    console.error("Error in createCheckout:", error);
+    console.error("Error in controller createCheckout:", error);
     res.status(500).json({
       status: 500,
       message: "Internal server error",

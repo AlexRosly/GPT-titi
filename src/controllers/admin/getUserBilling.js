@@ -10,7 +10,7 @@ const getUserBilling = async (req, res) => {
 
     res.json({ code: 200, message: "success", user, payments });
   } catch (error) {
-    console.error("Error in getUserBilling:", error);
+    console.error("Error in controller getUserBilling:", error);
     res.status(500).json({
       status: 500,
       message: "Internal server error",

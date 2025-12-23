@@ -8,7 +8,7 @@ const getUsers = async (req, res) => {
 
     res.json({ code: 200, message: "success", users });
   } catch (error) {
-    console.error("Error in getUsers:", error);
+    console.error("Error in controller getUsers:", error);
     res.status(500).json({
       status: 500,
       message: "Internal server error",

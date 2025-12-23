@@ -1,19 +1,12 @@
-// const router = require("express").Router();
-// const auth = require("../middlewares/auth");
-// const adminOnly = require("../middlewares/adminOnly");
+const router = require("express").Router();
+const auth = require("../middlewares/auth");
+const adminOnly = require("../middlewares/adminOnly");
+const { admin: ctrl } = require("../controllers");
 
-// const {
-//   getUsers,
-//   getPayments,
-//   getUserBilling,
-//   blockUser,
-// } = require("../controllers/admin");
+router.get("/users", auth, adminOnly, ctrl.getUsers);
+router.get("/payments", auth, adminOnly, ctrl.getPayments);
+router.get("/users/:id/billing", auth, adminOnly, ctrl.getUserBilling);
+router.post("/users/:id/block", auth, adminOnly, ctrl.blockUser);
+router.get("/analytics/models", auth, adminOnly, ctrl.getModelAnalytics);
 
-// router.use(auth, adminOnly);
-
-// router.get("/users", getUsers);
-// router.get("/payments", getPayments);
-// router.get("/users/:id/billing", getUserBilling);
-// router.post("/users/:id/block", blockUser);
-
-// module.exports = router;
+module.exports = router;

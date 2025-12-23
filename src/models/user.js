@@ -8,7 +8,7 @@ const UserSchema = Schema(
     avatar: { type: String },
 
     // Billing
-    appTokens: { type: Number, default: 1000 }, // 0.01$ free
+    appTokens: { type: Number, default: 10000 }, // 0.01$ free
     totalSpentUsd: { type: Number, default: 0 },
     // Auth
     role: {

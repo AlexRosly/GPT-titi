@@ -1,0 +1,34 @@
+✅ Шаг 8. Stripe CLI (локально)
+
+stripe login
+stripe listen --forward-to localhost:7000/api/webhook/stripe
+
+CLI выдаст:
+whsec_********
+👉 вставь в .env
+
+✅ Шаг 9. Как фронт покупает токены
+POST /billing/checkout
+Authorization: Bearer ACCESS_TOKEN
+
+{
+  "priceId": "price_1XXXX"
+}
+Ответ:
+{
+  "url": "https://checkout.stripe.com/..."
+}
+
+✅ Шаг 5. Пример ответа /billing/payments
+
+[
+  {
+    "_id": "65af9...",
+    "priceId": "price_1XXXX",
+    "amount": 100,
+    "currency": "eur",
+    "appTokensAdded": 1000,
+    "status": "paid",
+    "createdAt": "2025-01-12T12:31:22.000Z"
+  }
+]

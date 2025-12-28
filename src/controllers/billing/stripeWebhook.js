@@ -1,10 +1,5 @@
-const { User, Payment } = require("../../models");
-const stripe = require("../../services/stripe");
-
-const TOKENS_BY_PRICE = {
-  price_1XXXX: 1000,
-  price_1YYYY: 5000,
-};
+const { User, Payment, Price } = require("../../models");
+const stripe = require("../../services");
 
 const MIN_APP_TOKENS = -1000;
 
@@ -38,16 +33,20 @@ const stripeWebhook = async (req, res) => {
     const lineItems = await stripe.checkout.sessions.listLineItems(session.id);
 
     const priceId = lineItems.data[0].price.id;
-    const tokensToAdd = TOKENS_BY_PRICE[priceId];
 
-    if (!tokensToAdd) {
+    const price = await Price.findOne({
+      stripePriceId: priceId,
+      enabled: true,
+    });
+
+    if (!price) {
       console.error("Unknown priceId:", priceId);
       return res.json({ received: true });
     }
 
     // 1️⃣ начисляем токены
     await User.findByIdAndUpdate(userId, {
-      $inc: { appTokens: tokensToAdd },
+      $inc: { appTokens: price.appTokens },
     });
 
     // 2️⃣ сохраняем платёж
@@ -59,14 +58,14 @@ const stripeWebhook = async (req, res) => {
       priceId,
       amount: session.amount_total,
       currency: session.currency,
-      appTokensAdded: tokensToAdd,
+      appTokensAdded: price.appTokens,
       status: "paid",
       rawEvent: event, // можно убрать в проде
     });
 
     console.log(`💳 Payment saved & ${tokensToAdd} tokens added`);
   }
-
+  // 🔁 Refund (оставляем как есть, но без хардкода)
   if (event.type === "charge.refunded") {
     const charge = event.data.object;
 

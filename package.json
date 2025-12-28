@@ -35,8 +35,11 @@
     "jsonwebtoken": "^9.0.3",
     "mongodb": "^7.0.0",
     "mongoose": "^9.0.0",
+    "openai": "^6.15.0",
     "pino": "^10.1.0",
     "pino-http": "^11.0.0",
-    "stripe": "^20.1.0"
+    "stripe": "^20.1.0",
+    "swagger-ui-express": "^5.0.1",
+    "yamljs": "^0.3.0"
   }
 }

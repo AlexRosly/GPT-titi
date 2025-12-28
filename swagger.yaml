@@ -1,0 +1,342 @@
+openapi: 3.0.3
+info:
+  title: GPT-Titi API
+  description: Backend API for Chat, Billing, Stripe and Admin panel
+  version: 1.1.0
+
+servers:
+  - url: http://localhost:7000/api
+    description: Local
+  - url: https://ypbooking.chost.com.ua
+    description: Production
+
+tags:
+  - name: Auth
+  - name: User
+  - name: Chat
+  - name: Conversations
+  - name: Billing
+  - name: Stripe
+  - name: Admin
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+
+    ChatMessage:
+      type: object
+      properties:
+        id:
+          type: string
+        role:
+          type: string
+          enum: [user, assistant, system]
+        content:
+          type: string
+        modelId:
+          type: string
+        createdAt:
+          type: string
+
+    Conversation:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        lastMessageAt:
+          type: string
+
+# ===========================
+# 🔐 AUTH / USER
+# ===========================
+paths:
+  /user:
+    post:
+      tags: [Auth]
+      summary: Google Login / Register
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              required: [idToken]
+              properties:
+                idToken:
+                  type: string
+      responses:
+        200:
+          description: Authorized
+
+  /refresh:
+    post:
+      tags: [Auth]
+      summary: Refresh access token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              required: [refreshToken]
+              properties:
+                refreshToken:
+                  type: string
+      responses:
+        200:
+          description: New access token
+
+  /logout:
+    get:
+      tags: [Auth]
+      security: [{ BearerAuth: [] }]
+      summary: Logout user
+      responses:
+        200:
+          description: Logged out
+
+  /usage/summary:
+    get:
+      tags: [User]
+      security: [{ BearerAuth: [] }]
+      summary: Usage summary
+      responses:
+        200:
+          description: Summary
+
+  /usage/history:
+    get:
+      tags: [User]
+      security: [{ BearerAuth: [] }]
+      summary: Usage history
+      parameters:
+        - name: days
+          in: query
+          schema:
+            type: number
+            default: 7
+      responses:
+        200:
+          description: History
+
+# ===========================
+# 💬 CHAT
+# ===========================
+  /chat/preview:
+    post:
+      tags: [Chat]
+      security: [{ BearerAuth: [] }]
+      summary: Preview chat cost
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              required: [modelId, estimatedTokens]
+              properties:
+                modelId:
+                  type: string
+                estimatedTokens:
+                  type: number
+      responses:
+        200:
+          description: Preview OK
+        402:
+          description: Insufficient balance
+
+  /chat/stream:
+    post:
+      tags: [Chat]
+      security: [{ BearerAuth: [] }]
+      summary: Stream chat response (SSE)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              required: [conversationId, modelId, message]
+              properties:
+                conversationId:
+                  type: string
+                modelId:
+                  type: string
+                message:
+                  type: string
+      responses:
+        200:
+          description: SSE stream
+
+# ===========================
+# 💬 CONVERSATIONS
+# ===========================
+  /conversations:
+    get:
+      tags: [Conversations]
+      security: [{ BearerAuth: [] }]
+      summary: Get conversations
+      responses:
+        200:
+          description: List of conversations
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Conversation"
+
+    post:
+      tags: [Conversations]
+      security: [{ BearerAuth: [] }]
+      summary: Create conversation
+      requestBody:
+        content:
+          application/json:
+            schema:
+              properties:
+                title:
+                  type: string
+      responses:
+        201:
+          description: Created
+
+  /conversations/{id}/messages:
+    get:
+      tags: [Conversations]
+      security: [{ BearerAuth: [] }]
+      summary: Get conversation messages
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: Messages
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ChatMessage"
+
+    delete:
+      tags: [Conversations]
+      security: [{ BearerAuth: [] }]
+      summary: Clear conversation messages
+      parameters:
+        - name: id
+          in: path
+          required: true
+
+  /conversations/{id}/regenerate:
+    post:
+      tags: [Conversations]
+      security: [{ BearerAuth: [] }]
+      summary: Regenerate last assistant answer
+
+  /conversations/{id}/fork:
+    post:
+      tags: [Conversations]
+      security: [{ BearerAuth: [] }]
+      summary: Fork conversation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              required: [messageId]
+              properties:
+                messageId:
+                  type: string
+
+  /messages/{id}/edit-and-regenerate:
+    post:
+      tags: [Conversations]
+      security: [{ BearerAuth: [] }]
+      summary: Edit user message and regenerate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              required: [content]
+              properties:
+                content:
+                  type: string
+
+  /conversations/{id}:
+    delete:
+      tags: [Conversations]
+      security: [{ BearerAuth: [] }]
+      summary: Archive conversation
+
+# ===========================
+# 💳 BILLING
+# ===========================
+  /billing/prices:
+    get:
+      tags: [Billing]
+      security: [{ BearerAuth: [] }]
+      summary: Token packages
+
+  /billing/checkout:
+    post:
+      tags: [Billing]
+      security: [{ BearerAuth: [] }]
+      summary: Stripe checkout
+
+  /billing/payments:
+    get:
+      tags: [Billing]
+      security: [{ BearerAuth: [] }]
+      summary: User payments
+
+# ===========================
+# 🛠 ADMIN
+# ===========================
+  /admin/models:
+    get:
+      tags: [Admin]
+      security: [{ BearerAuth: [] }]
+      summary: Get models
+
+  /admin/create-models:
+    post:
+      tags: [Admin]
+      security: [{ BearerAuth: [] }]
+      summary: Create model
+
+  /admin/users:
+    get:
+      tags: [Admin]
+      security: [{ BearerAuth: [] }]
+      summary: Get users
+
+  /admin/users/{id}/block:
+    post:
+      tags: [Admin]
+      security: [{ BearerAuth: [] }]
+      summary: Block user
+
+  /admin/payments:
+    get:
+      tags: [Admin]
+      security: [{ BearerAuth: [] }]
+      summary: Payments
+
+  /admin/analytics/models:
+    get:
+      tags: [Admin]
+      security: [{ BearerAuth: [] }]
+      summary: Model analytics

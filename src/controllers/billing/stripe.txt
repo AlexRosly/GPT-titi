@@ -32,3 +32,43 @@ Authorization: Bearer ACCESS_TOKEN
     "createdAt": "2025-01-12T12:31:22.000Z"
   }
 ]
+///////////////////////////////
+✅ Шаг 5. Как фронт теперь работает
+1️⃣ Получить пакеты
+GET /billing/prices
+
+
+Ответ:
+
+[
+  {
+    "stripePriceId": "price_1XXXX",
+    "label": "Starter — 1 000 tokens",
+    "appTokens": 1000,
+    "amount": 500,
+    "currency": "eur"
+  }
+]
+
+2️⃣ Купить
+POST /billing/checkout
+Authorization: Bearer ACCESS_TOKEN
+{
+  "priceId": "price_1XXXX"
+}
+
+
+Ответ:
+
+{ "url": "https://checkout.stripe.com/..." }
+
+
+➡️ window.location.href = url
+
+🎯 ИТОГ
+
+✔ TOKENS_BY_PRICE убрали
+✔ Всё хранится в БД
+✔ Можно менять цены без деплоя
+✔ Webhook безопасный
+✔ Фронт готов к отображению тарифов

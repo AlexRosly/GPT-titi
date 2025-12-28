@@ -1,0 +1,371 @@
+openapi: 3.0.3
+info:
+  title: GPT-Titi API
+  description: Backend API for Chat, Billing, Stripe and Admin panel
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:7000/api
+    description: Local
+  - url: https://ypbooking.chost.com.ua
+    description: Production
+
+tags:
+  - name: Auth
+  - name: User
+  - name: Chat
+  - name: Billing
+  - name: Stripe
+  - name: Admin
+
+# 🔐 SECURITY
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+        name:
+          type: string
+        avatar:
+          type: string
+        role:
+          type: string
+          enum: [user, admin]
+        appTokens:
+          type: number
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+
+# ===========================
+# 🔐 AUTH / USER
+# ===========================
+paths:
+  /user:
+    post:
+      tags: [Auth]
+      summary: Google Login / Register
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [idToken]
+              properties:
+                idToken:
+                  type: string
+      responses:
+        200:
+          description: Authorized
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user:
+                    $ref: "#/components/schemas/User"
+                  accessToken:
+                    type: string
+        401:
+          description: Invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /refresh:
+    post:
+      tags: [Auth]
+      summary: Refresh access token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken:
+                  type: string
+      responses:
+        200:
+          description: New access token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accessToken:
+                    type: string
+
+  /logout:
+    get:
+      tags: [Auth]
+      security:
+        - BearerAuth: []
+      summary: Logout user
+      responses:
+        200:
+          description: Logged out
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+
+  /usage/summary:
+    get:
+      tags: [User]
+      security:
+        - BearerAuth: []
+      summary: Usage summary
+      responses:
+        200:
+          description: Summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  totalUsed:
+                    type: number
+                  todayUsed:
+                    type: number
+                  balance:
+                    type: number
+
+  /usage/history:
+    get:
+      tags: [User]
+      security:
+        - BearerAuth: []
+      summary: Usage history
+      parameters:
+        - name: days
+          in: query
+          schema:
+            type: number
+            default: 7
+      responses:
+        200:
+          description: History
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    date:
+                      type: string
+                    modelId:
+                      type: string
+                    tokens:
+                      type: number
+                    usd:
+                      type: number
+
+# ===========================
+# 💬 CHAT
+# ===========================
+  /chat/preview:
+    post:
+      tags: [Chat]
+      security:
+        - BearerAuth: []
+      summary: Preview chat cost
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [modelId, estimatedTokens]
+              properties:
+                modelId:
+                  type: string
+                estimatedTokens:
+                  type: number
+      responses:
+        200:
+          description: Allowed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  estimate:
+                    type: object
+                    properties:
+                      appTokens:
+                        type: number
+                      usd:
+                        type: number
+                  balanceAfter:
+                    type: number
+        402:
+          description: Insufficient balance
+
+  /chat/stream:
+    post:
+      tags: [Chat]
+      security:
+        - BearerAuth: []
+      summary: Stream chat response (SSE)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message:
+                  type: string
+                model:
+                  type: string
+      responses:
+        200:
+          description: SSE stream
+
+# ===========================
+# 💳 BILLING
+# ===========================
+  /billing/prices:
+    get:
+      tags: [Billing]
+      security:
+        - BearerAuth: []
+      summary: Available token packages
+      responses:
+        200:
+          description: Prices
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+                    appTokens:
+                      type: number
+                    amount:
+                      type: number
+                    currency:
+                      type: string
+
+  /billing/checkout:
+    post:
+      tags: [Billing]
+      security:
+        - BearerAuth: []
+      summary: Create Stripe Checkout
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [priceId]
+              properties:
+                priceId:
+                  type: string
+      responses:
+        200:
+          description: Redirect URL
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  url:
+                    type: string
+
+  /billing/payments:
+    get:
+      tags: [Billing]
+      security:
+        - BearerAuth: []
+      summary: User payment history
+      responses:
+        200:
+          description: Payments list
+
+# ===========================
+# 🛠 ADMIN
+# ===========================
+  /admin/models:
+    get:
+      tags: [Admin]
+      security:
+        - BearerAuth: []
+      summary: Get chat models
+      responses:
+        200:
+          description: Models list
+
+  /admin/users:
+    get:
+      tags: [Admin]
+      security:
+        - BearerAuth: []
+      summary: Get users
+      responses:
+        200:
+          description: Users list
+
+  /admin/users/{id}/block:
+    post:
+      tags: [Admin]
+      security:
+        - BearerAuth: []
+      summary: Block user
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: Blocked
+
+  /admin/payments:
+    get:
+      tags: [Admin]
+      security:
+        - BearerAuth: []
+      summary: All payments
+      responses:
+        200:
+          description: Payments list
+
+  /admin/analytics/models:
+    get:
+      tags: [Admin]
+      security:
+        - BearerAuth: []
+      summary: Model analytics
+      responses:
+        200:
+          description: Analytics

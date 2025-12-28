@@ -1,0 +1,34 @@
+✅ Шаг 2. Наполняем БД (сид)
+scripts/seedPrices.js
+
+require("dotenv").config();
+const mongoose = require("mongoose");
+const Price = require("../models/Price");
+
+(async () => {
+  await mongoose.connect(process.env.MONGO_URI);
+
+  await Price.deleteMany();
+
+  await Price.insertMany([
+    {
+      stripePriceId: "price_1XXXX",
+      label: "Starter — 1 000 tokens",
+      appTokens: 1000,
+      amount: 500,
+      currency: "eur",
+      sortOrder: 1,
+    },
+    {
+      stripePriceId: "price_1YYYY",
+      label: "Pro — 5 000 tokens",
+      appTokens: 5000,
+      amount: 2000,
+      currency: "eur",
+      sortOrder: 2,
+    },
+  ]);
+
+  console.log("✅ Prices seeded");
+  process.exit();
+})();

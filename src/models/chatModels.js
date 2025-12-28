@@ -1,6 +1,6 @@
 const { Schema, model } = require("mongoose");
 
-const ChatModelSchema = Schema(
+const ChatModelsSchema = Schema(
   {
     modelId: { type: String }, // gpt-4o-mini
     label: { type: String },
@@ -23,6 +23,6 @@ const ChatModelSchema = Schema(
   { versionKey: false, timestamps: true }
 );
 
-const ChatModel = model("chatModel", ChatModelSchema);
+const ChatModels = model("chatModels", ChatModelsSchema);
 
-module.exports = ChatModel;
+module.exports = ChatModels;

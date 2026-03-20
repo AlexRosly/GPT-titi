@@ -44,7 +44,7 @@ const ChatMessageSchema = Schema(
 
     // 🧹 soft delete
     deleted: {
-      type: Boolean,
+      type: Date,
       default: false,
       index: true,
     },

@@ -32,16 +32,16 @@ const regenerateLastAnswer = async (req, res) => {
 
   /* 2️⃣ Последнее сообщение ассистента */
   const lastAssistant = await ChatMessage.findOne({
-    conversation: conversationId,
-    user: userId,
+    conversation: id,
     role: "assistant",
-    deleted: false,
+    deletedAt: null,
   }).sort({ createdAt: -1 });
 
-  if (!lastAssistant) {
-    return res
-      .status(400)
-      .json({ error: "No assistant message to regenerate" });
+  if (lastAssistant) {
+    await ChatMessage.updateOne(
+      { _id: lastAssistant._id },
+      { deletedAt: new Date() }
+    );
   }
 
   /* 3️⃣ Последнее сообщение пользователя */

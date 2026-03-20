@@ -10,37 +10,46 @@ const editUserMessageAndRegenerate = async (req, res) => {
     return res.status(400).json({ error: "content required" });
   }
 
-  /* 1️⃣ Находим сообщение */
+  /* 1️⃣ Находим user-сообщение (НЕ удалённое) */
   const message = await ChatMessage.findOne({
     _id: messageId,
     user: userId,
     role: "user",
-    deleted: false,
+    deletedAt: null,
   });
 
   if (!message) {
     return res.status(404).json({ error: "Message not found" });
   }
 
-  /* 2️⃣ Обновляем текст */
-  message.content = content;
-  await message.save();
+  /* 2️⃣ Обновляем текст user message */
+  await ChatMessage.updateOne(
+    { _id: message._id },
+    {
+      content,
+      deletedAt: null, // на всякий случай
+    }
+  );
 
-  /* 3️⃣ Удаляем ВСЕ ответы ассистента после него */
+  /* 3️⃣ Soft-delete ВСЕ ответы ассистента после этого сообщения */
   await ChatMessage.updateMany(
     {
       conversation: message.conversation,
       role: "assistant",
+      deletedAt: null,
       createdAt: { $gt: message.createdAt },
     },
-    { deleted: true }
+    {
+      deletedAt: new Date(),
+    }
   );
 
-  /* 4️⃣ Обновляем lastMessageAt */
+  /* 4️⃣ Обновляем lastMessageAt у conversation */
   await ChatConversation.findByIdAndUpdate(message.conversation, {
     lastMessageAt: new Date(),
   });
 
+  /* 5️⃣ Фронт дальше вызывает /regenerate или /stream */
   res.json({
     success: true,
     conversationId: message.conversation,

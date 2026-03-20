@@ -5,9 +5,9 @@ info:
   version: 1.1.0
 
 servers:
-  - url: http://localhost:7000/api
+  - url: http://localhost:7000/gpt-titi/api
     description: Local
-  - url: https://ypbooking.chost.com.ua
+  - url: https://ypbooking.chost.com.ua/gpt-titi/api
     description: Production
 
 tags:
@@ -62,7 +62,7 @@ components:
 # 🔐 AUTH / USER
 # ===========================
 paths:
-  /user:
+  /users/user:
     post:
       tags: [Auth]
       summary: Google Login / Register
@@ -79,7 +79,7 @@ paths:
         200:
           description: Authorized
 
-  /refresh:
+  /users/refresh:
     post:
       tags: [Auth]
       summary: Refresh access token
@@ -96,7 +96,7 @@ paths:
         200:
           description: New access token
 
-  /logout:
+  /users/logout:
     get:
       tags: [Auth]
       security: [{ BearerAuth: [] }]
@@ -105,7 +105,7 @@ paths:
         200:
           description: Logged out
 
-  /usage/summary:
+  /users/usage/summary:
     get:
       tags: [User]
       security: [{ BearerAuth: [] }]
@@ -114,7 +114,7 @@ paths:
         200:
           description: Summary
 
-  /usage/history:
+  /users/usage/history:
     get:
       tags: [User]
       security: [{ BearerAuth: [] }]
@@ -340,3 +340,53 @@ paths:
       tags: [Admin]
       security: [{ BearerAuth: [] }]
       summary: Model analytics
+
+  /admin/users/{id}/role:
+    post:
+      tags: [Admin]
+      security:
+        - BearerAuth: []
+      summary: Change user role
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role:
+                  type: string
+                  enum: [user, admin, moderator, support]
+      responses:
+        200:
+          description: Role changed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  user:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      email:
+                        type: string
+                      role:
+                        type: string
+        400:
+          description: Invalid role
+        403:
+          description: Forbidden
+        404:
+          description: User not found
+

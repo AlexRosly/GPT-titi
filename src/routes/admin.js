@@ -10,5 +10,6 @@ router.get("/users/:id/billing", auth, adminOnly, ctrl.getUserBilling); //
 router.get("/analytics/models", auth, adminOnly, ctrl.getModelAnalytics);
 router.post("/users/:id/block", auth, adminOnly, ctrl.blockUser); //
 router.post("/create-models", auth, adminOnly, ctrl.createModel); //
+router.post("/users/:id/role", auth, adminOnly, ctrl.changeUserRole);
 
 module.exports = router;

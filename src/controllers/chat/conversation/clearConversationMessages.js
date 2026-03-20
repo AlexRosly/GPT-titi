@@ -15,12 +15,8 @@ const clearConversationMessages = async (req, res) => {
   }
 
   await ChatMessage.updateMany(
-    {
-      conversation: id,
-      user: userId,
-      deleted: false,
-    },
-    { deleted: true }
+    { conversation: id, user: req.user.id },
+    { deletedAt: new Date() }
   );
 
   await ChatConversation.findByIdAndUpdate(id, {

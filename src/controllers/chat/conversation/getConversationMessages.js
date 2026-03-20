@@ -17,7 +17,7 @@ const getConversationMessages = async (req, res) => {
   const messages = await ChatMessage.find({
     conversation: id,
     user: req.user.id,
-    deleted: false,
+    deleted: null,
   })
     .sort({ createdAt: -1 })
     .limit(limit)

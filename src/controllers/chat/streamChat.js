@@ -438,7 +438,7 @@ const streamChat = async (req, res) => {
   const history = await ChatMessage.find({
     user: userId,
     conversation: conversationId,
-    deleted: false,
+    deletedAt: null,
   })
     .sort({ createdAt: -1 })
     .limit(HISTORY_LIMIT)

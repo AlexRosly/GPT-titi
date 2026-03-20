@@ -5,6 +5,7 @@ const blockUser = require("./blockUser");
 const getModelAnalytics = require("./getModelAnalytics");
 const getModels = require("./getModels");
 const createModel = require("./createModel");
+const changeUserRole = require("./changeUserRole");
 
 module.exports = {
   getUsers,
@@ -14,4 +15,5 @@ module.exports = {
   getModelAnalytics,
   getModels,
   createModel,
+  changeUserRole,
 };

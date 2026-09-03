@@ -21,10 +21,12 @@ const UserSchema = Schema(
       enum: ["active", "blocked", "deleted"],
       default: "active",
     },
+    dateClaimToken: { type: Date },
+    nextDateClaimToken: { type: Date },
     // Sessions
     refreshToken: { type: String },
   },
-  { versionKey: false, timestamps: true }
+  { versionKey: false, timestamps: true },
 );
 
 const User = model("user", UserSchema);

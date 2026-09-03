@@ -142,3 +142,36 @@ Redis
 кладёт сообщения в state
 
 потом подключается к /chat/stream
+///////////////////////////////////////////////
+🧠 1. Что оставляем на HTTP, а что переносим в сокеты
+✅ HTTP (оставить)
+
+Это важно, не трогай:
+
+auth (login / refresh / logout)
+claimToken
+billing
+создание чата (createConversation)
+получение истории (getConversation, getChatHistory)
+chatPreview (оценка токенов)
+
+👉 Почему:
+
+это не realtime
+нужно кэшировать
+проще дебажить
+идемпотентность
+
+🔥 SOCKET (переносим)
+
+Вот где сокеты реально нужны:
+
+отправка сообщения (chatSend)
+стрим ответа GPT
+regenerateLastAnswer
+editUserMessageAndRegenerate
+
+👉 потому что:
+
+нужен streaming
+нужен realtime UX

@@ -4,6 +4,8 @@ const canUserStream = require("./canUserStream");
 const finalizeCharge = require("./finalizeCharge");
 const chargeUserPreview = require("./chargeUserPreview");
 const updateUserMemory = require("./updateUserMemory");
+const runChat = require("./chat");
+const cleanupExpiredUploads = require("./cleanupExpiredUploads");
 
 module.exports = {
   verifyGoogleToken,
@@ -12,4 +14,6 @@ module.exports = {
   finalizeCharge,
   chargeUserPreview,
   updateUserMemory,
+  runChat,
+  cleanupExpiredUploads,
 };

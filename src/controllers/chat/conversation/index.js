@@ -5,6 +5,8 @@ const archiveConversation = require("./archiveConversation");
 const clearConversationMessages = require("./clearConversationMessages");
 const regenerateLastAnswer = require("./regenerateLastAnswer");
 const forkConversation = require("./forkConversation");
+const renameConversation = require("./renameConversation");
+const updateConversationPin = require("./updateConversationPin");
 
 module.exports = {
   createConversation,
@@ -14,4 +16,6 @@ module.exports = {
   clearConversationMessages,
   regenerateLastAnswer,
   forkConversation,
+  renameConversation,
+  updateConversationPin,
 };

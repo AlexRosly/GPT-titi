@@ -11,5 +11,6 @@ router.get("/analytics/models", auth, adminOnly, ctrl.getModelAnalytics);
 router.post("/users/:id/block", auth, adminOnly, ctrl.blockUser); //
 router.post("/create-models", auth, adminOnly, ctrl.createModel); //
 router.post("/users/:id/role", auth, adminOnly, ctrl.changeUserRole);
+// router.patch("/models-update/:id", ctrl.updateModel);
 
 module.exports = router;

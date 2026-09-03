@@ -15,7 +15,11 @@ const finalizeCharge = async ({ userId, modelId, usage }) => {
   user.appTokens -= cost.appTokens;
   await user.save();
 
-  return cost;
+  // return cost;
+  return {
+    ...cost,
+    balance: user.appTokens,
+  };
 };
 
 module.exports = finalizeCharge;

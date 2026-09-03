@@ -1,5 +1,5 @@
 const User = require("./user");
-const Paymen = require("./payment");
+const Payment = require("./payment");
 // const TokenUsage = require("./tokenUsage");
 const ChatModels = require("./chatModels");
 const Price = require("./price");
@@ -7,10 +7,13 @@ const BillingPrice = require("./billingPrice");
 const ChatMessage = require("./сhatMessage");
 const UserMemory = require("./userMemory");
 const ChatConversation = require("./chatConversation");
+const FileModels = require("./file");
+const ModelFlows = require("./modelFlows");
+const Project = require("./userProject");
 
 module.exports = {
   User,
-  Paymen,
+  Payment,
   // TokenUsage,
   ChatModels,
   Price,
@@ -18,4 +21,7 @@ module.exports = {
   ChatMessage,
   UserMemory,
   ChatConversation,
+  FileModels,
+  ModelFlows,
+  Project,
 };

@@ -6,6 +6,7 @@ const getModelAnalytics = require("./getModelAnalytics");
 const getModels = require("./getModels");
 const createModel = require("./createModel");
 const changeUserRole = require("./changeUserRole");
+const updateModel = require("./updateModel");
 
 module.exports = {
   getUsers,
@@ -16,4 +17,5 @@ module.exports = {
   getModels,
   createModel,
   changeUserRole,
+  updateModel,
 };

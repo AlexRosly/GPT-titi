@@ -1,7 +1,7 @@
 // controllers/chat/getChatHistory.js
 const { ChatMessage } = require("../../models");
 
-const LIMIT = 20;
+// const HISTORY_LIMIT = 20;
 
 const getChatHistory = async (req, res) => {
   try {
@@ -12,7 +12,7 @@ const getChatHistory = async (req, res) => {
       user: userId,
     })
       .sort({ createdAt: -1 }) // последние
-      .limit(HISTORY_LIMIT)
+      // .limit(HISTORY_LIMIT)
       .select("role content modelId createdAt")
       .lean();
 

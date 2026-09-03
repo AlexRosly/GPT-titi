@@ -58,6 +58,8 @@ const createUser = async (req, res) => {
         avatar: user.avatar,
         appTokens: user.appTokens,
         role: user.role,
+        dateClaimToken: user.dateClaimToken,
+        nextDateClaimToken: user.nextDateClaimToken,
       },
       accessToken,
     });

@@ -8,43 +8,51 @@ const chatPreview = async (req, res) => {
   const { modelId, estimatedTokens } = req.body;
   const userId = req.user.id;
 
-  if (!modelId || !estimatedTokens) {
-    return res.status(400).json({
-      error: "modelId and estimatedTokens required",
-    });
-  }
-
-  const model = await ChatModels.findOne({ modelId, enabled: true });
-  if (!model) {
-    return res.status(400).json({ error: "Model not available" });
-  }
-
-  let estimate;
   try {
-    estimate = await estimateCost(modelId, estimatedTokens);
-  } catch (e) {
-    return res.status(400).json({ error: e.message });
-  }
+    if (!modelId || !estimatedTokens) {
+      return res.status(400).json({
+        error: "modelId and estimatedTokens required",
+      });
+    }
 
-  const user = await User.findById(userId);
-  if (!user) return res.status(401).json({ error: "User not found" });
+    const model = await ChatModels.findOne({ modelId, enabled: true });
+    if (!model) {
+      return res.status(400).json({ error: "Model not available" });
+    }
 
-  const projectedBalance = user.appTokens - estimate.appTokens;
+    let estimate;
+    try {
+      estimate = await estimateCost(modelId, estimatedTokens);
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
+    }
 
-  if (projectedBalance < NEGATIVE_LIMIT) {
-    return res.status(402).json({
-      error: "Insufficient balance",
-      required: estimate.appTokens,
-      balance: user.appTokens,
-      limit: NEGATIVE_LIMIT,
+    const user = await User.findById(userId);
+    if (!user) return res.status(401).json({ error: "User not found" });
+
+    const projectedBalance = user.appTokens - estimate.appTokens;
+
+    if (projectedBalance < NEGATIVE_LIMIT) {
+      return res.status(402).json({
+        error: "Insufficient balance",
+        required: estimate.appTokens,
+        balance: user.appTokens,
+        limit: NEGATIVE_LIMIT,
+      });
+    }
+
+    res.json({
+      ok: true,
+      estimate,
+      balanceAfter: projectedBalance,
+    });
+  } catch (error) {
+    console.error("Error in controller chatPreview:", error);
+    res.status(500).json({
+      status: 500,
+      message: "Internal server error",
     });
   }
-
-  res.json({
-    ok: true,
-    estimate,
-    balanceAfter: projectedBalance,
-  });
 };
 
 module.exports = chatPreview;

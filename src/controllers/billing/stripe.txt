@@ -1,44 +1,11 @@
-✅ Шаг 8. Stripe CLI (локально)
+# GPT-titi Stripe Billing — Frontend/Backend Contract
 
-stripe login
-stripe listen --forward-to localhost:7000/api/webhook/stripe
+## 1. Get available packages
 
-CLI выдаст:
-whsec_********
-👉 вставь в .env
-
-✅ Шаг 9. Как фронт покупает токены
-POST /billing/checkout
+GET /gpt-titi/api/billing/prices
 Authorization: Bearer ACCESS_TOKEN
 
-{
-  "priceId": "price_1XXXX"
-}
-Ответ:
-{
-  "url": "https://checkout.stripe.com/..."
-}
-
-✅ Шаг 5. Пример ответа /billing/payments
-
-[
-  {
-    "_id": "65af9...",
-    "priceId": "price_1XXXX",
-    "amount": 100,
-    "currency": "eur",
-    "appTokensAdded": 1000,
-    "status": "paid",
-    "createdAt": "2025-01-12T12:31:22.000Z"
-  }
-]
-///////////////////////////////
-✅ Шаг 5. Как фронт теперь работает
-1️⃣ Получить пакеты
-GET /billing/prices
-
-
-Ответ:
+Response:
 
 [
   {
@@ -46,29 +13,84 @@ GET /billing/prices
     "label": "Starter — 1 000 tokens",
     "appTokens": 1000,
     "amount": 500,
-    "currency": "eur"
+    "currency": "usd"
   }
 ]
 
-2️⃣ Купить
-POST /billing/checkout
+The frontend renders these values into pricing cards.
+Do not hard-code prices or token amounts in the frontend.
+
+## 2. Create Stripe Checkout Session
+
+POST /gpt-titi/api/billing/checkout
 Authorization: Bearer ACCESS_TOKEN
+Content-Type: application/json
+
 {
   "priceId": "price_1XXXX"
 }
 
+The backend validates that this Stripe price exists in the enabled Price catalog,
+creates the Stripe Checkout Session and returns:
 
-Ответ:
+{
+  "url": "https://checkout.stripe.com/..."
+}
 
-{ "url": "https://checkout.stripe.com/..." }
+Frontend redirects the user to `url`.
 
+## 3. Stripe webhook
 
-➡️ window.location.href = url
+POST /webhook/stripe
 
-🎯 ИТОГ
+This endpoint is called by Stripe, not by the frontend.
+It must receive the raw request body so Stripe's signature can be verified.
 
-✔ TOKENS_BY_PRICE убрали
-✔ Всё хранится в БД
-✔ Можно менять цены без деплоя
-✔ Webhook безопасный
-✔ Фронт готов к отображению тарифов
+On `checkout.session.completed` with `payment_status = paid` the backend:
+
+1. reads `userId` and `priceId` from Stripe session metadata;
+2. loads the enabled package from the backend Price catalog;
+3. creates the Payment record;
+4. adds `appTokens` to the user;
+5. updates `totalSpentUsd` for USD payments;
+6. safely ignores duplicate delivery of the same Stripe session.
+
+The frontend must never add tokens itself.
+The success URL is not proof of payment.
+
+## 4. Refunds
+
+Stripe `charge.refunded` is handled by the backend.
+
+Full refunds:
+- mark the Payment as `refunded`;
+- subtract the package's `appTokens` from the user;
+- never allow the balance below -1000 appTokens;
+- safely ignore duplicate refund webhook delivery.
+
+Partial refunds are currently ignored because the Payment model does not contain
+partial-refund accounting information.
+
+## 5. Payment history
+
+GET /gpt-titi/api/billing/payments
+Authorization: Bearer ACCESS_TOKEN
+
+The frontend can use this endpoint for purchase history.
+
+## 6. Stripe CLI
+
+For local development:
+
+stripe login
+stripe listen --forward-to localhost:7000/webhook/stripe
+
+Stripe CLI prints a webhook signing secret:
+
+whsec_********
+
+Put it into `.env` as:
+
+STRIPE_WEBHOOK_SECRET=whsec_********
+
+Do not commit `.env` or Stripe secrets.

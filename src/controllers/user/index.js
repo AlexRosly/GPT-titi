@@ -3,6 +3,8 @@ const refreshToken = require("./refreshToken");
 const logout = require("./logout");
 const tokenUsage = require("./tokenUsage");
 const getUsageHistory = require("./getUsageHistory");
+const claimToken = require("./claimToken");
+const getChatModels = require("./getChatModels");
 
 module.exports = {
   createUser,
@@ -10,4 +12,6 @@ module.exports = {
   logout,
   tokenUsage,
   getUsageHistory,
+  claimToken,
+  getChatModels,
 };

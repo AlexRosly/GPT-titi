@@ -1,5 +1,6 @@
 const { user: ctrl } = require("../controllers");
 const { auth } = require("../middlewares");
+const { claimLimiter } = require("../utils");
 
 const express = require("express");
 const router = express.Router();
@@ -9,5 +10,7 @@ router.post("/refresh", ctrl.refreshToken); // auth POST /auth/refresh
 router.get("/logout", ctrl.logout); //auth //
 router.get("/usage/summary", auth, ctrl.tokenUsage);
 router.get("/usage/history", auth, ctrl.getUsageHistory); ///usage/history?days=7 change day
+router.post("/claim-token", auth, claimLimiter, ctrl.claimToken);
+router.get("/get-chat-models", ctrl.getChatModels);
 
 module.exports = router;

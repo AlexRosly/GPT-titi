@@ -93,3 +93,21 @@ estimateCost → UI / preview
 calculateModelCost → billing
 
 finalizeCharge → списание
+
+
+Для твоего GPT-проекта я бы сделал так:
+
+Логин → получаем access token.
+Socket подключается с ним.
+Если сокет вернул Unauthorized → refresh → reconnect.
+Все HTTP запросы через apiFetch.
+Если API вернул 401 → refresh → повтор запроса.
+Если refresh не удался → разлогиниваем пользователя и показываем экран входа.
+
+Это стандартная схема для React/Next.js, Socket.IO и JWT.
+
+
+
+
+
+}

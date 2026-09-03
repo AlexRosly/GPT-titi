@@ -1,0 +1,169 @@
+Да, ты правильно подметил — у тебя payload нестандартный (decoded.userId.userId), это уже отдельный нюанс твоей схемы 👍
+
+Но сейчас более важный момент — как правильно жить с refresh token + socket, потому что тут легко накосячить.
+
+⚠️ Главная проблема сейчас
+
+Ты сделал так:
+
+“Скопировал accessToken и подключился к сокетам”
+
+👉 Это работает ТОЛЬКО пока токен живой
+👉 После истечения — сокет останется “подвешенным” или начнет падать
+
+🧠 Как это должно работать ПРАВИЛЬНО
+📌 В HTTP у тебя:
+accessToken (короткий)
+refreshToken (cookie, httpOnly, bcrypt)
+
+✔ всё ок
+
+📌 В SOCKET нужно:
+
+👉 использовать только accessToken
+👉 но уметь его обновлять
+
+🔥 Правильная архитектура socket + refresh
+1. Подключение
+фронт:
+const socket = io("http://localhost:7000", {
+  auth: {
+    token: accessToken,
+  },
+});
+2. Middleware (у тебя почти ок)
+const jwt = require("jsonwebtoken");
+const { User } = require("../models");
+
+module.exports = async (socket, next) => {
+  try {
+    const token = socket.handshake.auth?.token;
+
+    if (!token) return next(new Error("No token"));
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    const user = await User.findById(decoded.userId.userId);
+
+    if (!user) return next(new Error("User not found"));
+
+    socket.user = user;
+
+    next();
+  } catch (err) {
+    console.error("Socket auth error:", err.message);
+    next(new Error("Unauthorized"));
+  }
+};
+🚨 КЛЮЧЕВОЙ МОМЕНТ — истечение токена
+
+JWT истек → что делать?
+
+❌ Плохой вариант
+
+Ничего не делать → сокет ломается
+
+✅ Правильный вариант
+👉 вариант 1 (рекомендуемый)
+
+При ошибке:
+
+next(new Error("Unauthorized"));
+
+на фронте:
+
+socket.on("connect_error", async (err) => {
+  if (err.message === "Unauthorized") {
+    // обновляем токен
+    const res = await fetch("/refresh", {
+      method: "POST",
+      credentials: "include",
+    });
+
+    const data = await res.json();
+
+    localStorage.setItem("accessToken", data.accessToken);
+
+    // переподключаемся
+    socket.auth.token = data.accessToken;
+    socket.connect();
+  }
+});
+💡 Важно
+
+👉 refresh token НЕ передаем в socket
+👉 он только через HTTP (cookie)
+
+🔐 Почему так
+
+Ты уже сделал правильно:
+
+bcrypt.compare(refreshTokenFromCookie, user.refreshToken)
+
+👉 значит refresh:
+
+защищен
+хранится как хеш
+не доступен JS
+
+👉 и это идеально
+
+⚠️ Твой текущий риск
+
+Ты сейчас:
+
+вручную вставил токен
+не обрабатываешь его истечение
+
+👉 это сломается через:
+
+expiresIn: "15m" (или сколько у тебя)
+🔧 Доп улучшение (рекомендую)
+
+Добавь проверку перед каждым важным событием:
+
+socket.on("chat:send", async (data) => {
+  if (!socket.user) {
+    return socket.emit("error", "Unauthorized");
+  }
+
+  // логика
+});
+🚀 Следующий шаг (очень важно)
+
+Если хочешь сделать как у ChatGPT, дальше нужно:
+
+1. socket events:
+chat:send
+chat:stream
+chat:stop
+2. биллинг:
+списывать токены ДО или ПОСЛЕ ответа
+3. стриминг OpenAI (🔥 ключевая фича)
+💬 Вывод
+
+Ты уже сделал почти всё правильно:
+
+✔ JWT
+✔ refresh rotation
+✔ bcrypt
+✔ cookies
+
+Осталось:
+
+👉 обработать истечение токена в socket
+👉 сделать reconnect с refresh
+
+2. Сделай нормальные события
+ws:message
+chat:send
+chat:message
+chat:stream
+chat:end
+auth
+chat:send
+chat:stream
+chat:end
+chat:error
+chat:regenerate
+chat:edit

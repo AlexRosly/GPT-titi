@@ -8,7 +8,8 @@
     "start:dev": "cross-env NODE_ENV=development nodemon ./app.js",
     "lint": "eslint **/*.js",
     "lint:fix": "eslint --fix **/*.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "test:pinning": "node --test test/pinningRules.test.js"
   },
   "repository": {
     "type": "git",
@@ -27,18 +28,24 @@
   },
   "dependencies": {
     "bcrypt": "^6.0.0",
+    "cloudinary": "^2.10.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "cross-env": "^10.1.0",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
+    "express-rate-limit": "^8.4.1",
     "google-auth-library": "^10.5.0",
     "jsonwebtoken": "^9.0.3",
     "mongodb": "^7.0.0",
     "mongoose": "^9.0.0",
+    "multer": "^2.1.1",
+    "node-cron": "^4.2.1",
     "openai": "^6.15.0",
     "pino": "^10.1.0",
     "pino-http": "^11.0.0",
+    "socket.io": "^4.8.3",
+    "streamifier": "^0.1.1",
     "stripe": "^20.1.0",
     "swagger-ui-express": "^5.0.1",
     "yamljs": "^0.3.0"

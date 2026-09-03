@@ -1,11 +1,10 @@
-const { billing: ctrl } = require("../controllers");
-const { auth } = require("../middlewares");
-
 const express = require("express");
+const { billing: ctrl } = require("../controllers");
+
 const router = express.Router();
 
-router.get("/prices", ctrl.getPrices); // without auth
-router.post("/checkout", auth, ctrl.createCheckout);
-router.post("/webhook", ctrlWrapper(ctrl.stripeWebhook)); // without auth
+// Stripe sends the request body as a signed raw payload.
+// This route must be mounted under /webhook/stripe before express.json().
+router.post("/", ctrl.stripeWebhook);
 
 module.exports = router;

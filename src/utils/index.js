@@ -3,6 +3,8 @@ const { signAccessToken, signRefreshToken } = require("./auth");
 const estimateTokens = require("./tokenEstimate");
 const estimateCost = require("./estimateCost");
 const calculateModelCost = require("./calculateModelCost");
+const claimLimiter = require("./claimLimiter");
+const getCloudinaryResourceType = require("./getCloudinaryResourceType");
 
 module.exports = {
   logger,
@@ -11,4 +13,6 @@ module.exports = {
   estimateTokens,
   estimateCost,
   calculateModelCost,
+  claimLimiter,
+  getCloudinaryResourceType,
 };

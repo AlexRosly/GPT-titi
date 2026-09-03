@@ -5,7 +5,7 @@ const express = require("express");
 const router = express.Router();
 
 router.post("/stream", auth, ctrl.streamChat);
-router.post("/preview", ctrl.chatPreview);
+router.post("/preview", auth, ctrl.chatPreview);
 router.get("/history", auth, ctrl.getChatHistory);
 
 // router.post("/send", auth, ctrl.chatSend);

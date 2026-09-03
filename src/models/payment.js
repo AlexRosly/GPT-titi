@@ -32,6 +32,6 @@ const PaymentSchema = Schema(
   { timestamps: true, versionKey: false }
 );
 
-const Paymen = model("payment", PaymentSchema);
+const Payment = model("payment", PaymentSchema);
 
-module.exports = Paymen;
+module.exports = Payment;

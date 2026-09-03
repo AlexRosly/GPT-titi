@@ -1,9 +1,9 @@
 // utils/estimateCost.js
-const { ChatModel } = require("../models");
+const { ChatModels } = require("../models");
 const { APP_TOKEN_VALUE_USD } = require("../config/billing");
 
 const estimateCost = async (modelId, estimatedTokens) => {
-  const model = await ChatModel.findOne({
+  const model = await ChatModels.findOne({
     modelId,
     enabled: true,
   }).lean();

@@ -7,13 +7,13 @@ const router = express.Router();
 router.post("/", auth, ctrl.conversation.createConversation);
 router.get("/", auth, ctrl.conversation.getConversation);
 router.delete("/:id", auth, ctrl.conversation.archiveConversation);
-router.patch("/:id", auth, ctrl.conversation.updateConversationPin);
-router.get("/:id/messages", auth, ctrl.conversation.getConversationMessages);
 router.patch(
   "/rename-conversation",
   auth,
   ctrl.conversation.renameConversation,
 );
+router.patch("/:id", auth, ctrl.conversation.updateConversationPin);
+router.get("/:id/messages", auth, ctrl.conversation.getConversationMessages);
 ////////////////////////////
 router.post(
   "/conversations/:id/regenerate",

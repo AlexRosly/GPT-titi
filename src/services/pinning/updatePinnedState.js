@@ -35,6 +35,8 @@ const updatePinnedState = async ({
     ],
     {
       new: true,
+      updatePipeline: true,
+      timestamps: false,
     },
   );
 };

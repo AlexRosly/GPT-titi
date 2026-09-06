@@ -4,12 +4,14 @@ const Payment = require("./payment");
 const ChatModels = require("./chatModels");
 const Price = require("./price");
 const BillingPrice = require("./billingPrice");
-const ChatMessage = require("./сhatMessage");
+const ChatMessage = require("./chatMessage");
 const UserMemory = require("./userMemory");
 const ChatConversation = require("./chatConversation");
 const FileModels = require("./file");
 const ModelFlows = require("./modelFlows");
 const Project = require("./userProject");
+const ChatTurn = require("./chatTurn");
+const ChatBillingLedger = require("./chatBillingLedger");
 
 module.exports = {
   User,
@@ -24,4 +26,6 @@ module.exports = {
   FileModels,
   ModelFlows,
   Project,
+  ChatTurn,
+  ChatBillingLedger,
 };

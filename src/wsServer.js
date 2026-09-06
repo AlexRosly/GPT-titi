@@ -2,9 +2,12 @@ const { Server } = require("socket.io");
 const { logger } = require("./utils");
 const { authSocketMiddleware } = require("./middlewares");
 const { runChat } = require("./services");
+const registerChatDeliveryV2 = require("./controllers/ws/handlers/chatDeliveryV2");
+
 let io;
 
-function initWsServer(server) {
+function initWsServer(server, options = {}) {
+  const runChatImpl = options.runChat || runChat;
   io = new Server(server, {
     cors: {
       origin: process.env.SOCKET_CORS_ORIGINS
@@ -21,19 +24,13 @@ function initWsServer(server) {
   });
 
   io.use(authSocketMiddleware);
-
-  // io.on("connection", (socket) => {
-  //   console.log("🟢 Socket connected:", socket.user._id);
-
-  //   socket.on("disconnect", () => {
-  //     console.log("🔴 Socket disconnected:", socket.user._id);
-  //   });
-  // });
+  registerChatDeliveryV2(io);
 
   io.on("connection", (socket) => {
-    logger.info("Socket connected: " + socket.id);
+    logger.info({ protocolVersion: 1, socketId: socket.id, userId: socket.user._id }, "Socket connected");
+
     socket.emit("socket:connected", {
-      event: "socket-connected",
+      event: "socket:connected",
       type: "response",
       payload: {
         message: "Connection established",
@@ -41,27 +38,14 @@ function initWsServer(server) {
         userId: socket.user._id,
       },
     });
-    // Приклад обробки повідомлення від клієнта через WebSocket
-    // socket.on("wrs:message", (msg) => {
-    //   // msg.event, msg.type, msg.requestId, msg.payload
-    //   if (msg.event === "test-ws-front") {
-    //     console.log({ msg });
-    //     setTimeout(() => {
-    // const response = {
-    //   event: "test-ws-back",
-    //   type: "test-reply",
-    //   requestId: msg.requestId,
-    //   payload: { message: "Ответ с сервера через 3 секунды", echo: msg },
-    // };
-    //       socket.emit("ws:message", response);
-    //     }, 3000);
-    //   }
-    // });
-    socket.on("chat:send", async ({ payload, event, type }) => {
-      const { conversationId, modelId, message, files } = payload;
 
+    // Legacy v1 path. Kept for compatibility until frontend v2 is fully deployed.
+    socket.on("chat:send", async ({ payload, event, type }) => {
+      if (type === "request" && event === "chat:send" && payload?.clientMessageId) return;
+
+      const { conversationId, modelId, message, files } = payload || {};
       try {
-        const result = await runChat({
+        const result = await runChatImpl({
           userId: socket.user._id,
           conversationId,
           modelId,
@@ -69,39 +53,34 @@ function initWsServer(server) {
           files,
           onChunk: (chunk) => {
             socket.emit("chat:stream", {
-              event: "chat-stream",
+              event: "chat:stream",
               type: "response",
               chunk,
             });
           },
         });
+
         socket.emit("chat:end", {
-          event: "chat-end",
+          event: "chat:end",
           type: "response",
           messages: "chat ended",
-          // payload: {
-          //   usage: result.usage,
           payload: result.billing,
-          // },
         });
       } catch (err) {
         console.error("SOCKET CHAT ERROR:", err);
-        socket.emit("chat:error", { message: err.message });
+        socket.emit("chat:error", { message: "Chat request failed." });
         if (err.status === 503) {
           socket.emit("chat_error", {
-            message:
-              "Сервис ИИ временно недоступен. Попробуйте повторить запрос через пару секунд.",
+            message: "Сервис ИИ временно недоступен. Попробуйте повторить запрос через пару секунд.",
           });
         } else {
-          socket.emit("chat_error", {
-            message: "Произошла ошибка при обработке запроса.",
-          });
+          socket.emit("chat_error", { message: "Произошла ошибка при обработке запроса." });
         }
       }
     });
-    // Кінець прикладу обробки повідомлення від клієнта через WebSocket
+
     socket.on("disconnect", () => {
-      logger.info("Socket disconnected: " + socket.id);
+      logger.info({ protocolVersion: 1, socketId: socket.id, userId: socket.user._id }, "Socket disconnected");
     });
   });
 }

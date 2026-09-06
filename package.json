@@ -8,8 +8,16 @@
     "start:dev": "cross-env NODE_ENV=development nodemon ./app.js",
     "lint": "eslint **/*.js",
     "lint:fix": "eslint --fix **/*.js",
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "test:pinning": "node --test test/pinningRules.test.js"
+    "test": "node --test",
+    "test:pinning": "node --test test/pinningRules.test.js",
+    "db:indexes:chat-v2": "node scripts/createChatV2Indexes.js",
+    "test:chat-v2:integration": "node --test test/chatDeliveryV2/integration.test.js",
+    "test:chat-v2:ws": "node --test test/chatDeliveryV2/ws.integration.test.js",
+    "test:chat-v2:worker": "node --test test/chatDeliveryV2/worker.integration.test.js",
+    "test:chat-v2:reliability": "node --test test/chatDeliveryV2/reliability.integration.test.js",
+    "test:chat-v2:transport-recovery": "node --test test/chatDeliveryV2/transportRecovery.integration.test.js",
+    "test:chat-v2:dod": "node --test test/chatDeliveryV2/dod.integration.test.js",
+    "db:cleanup:chat-v2-tests": "node scripts/cleanupChatV2TestDbs.js"
   },
   "repository": {
     "type": "git",
@@ -24,7 +32,8 @@
   "devDependencies": {
     "eslint": "^9.39.1",
     "nodemon": "^3.1.11",
-    "pino-pretty": "^13.1.3"
+    "pino-pretty": "^13.1.3",
+    "socket.io-client": "^4.8.3"
   },
   "dependencies": {
     "bcrypt": "^6.0.0",

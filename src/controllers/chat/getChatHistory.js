@@ -1,26 +1,23 @@
-// controllers/chat/getChatHistory.js
 const { ChatMessage } = require("../../models");
+const historyMessageDto = require("../../services/chatDeliveryV2/historyMessageDto");
 
-// const HISTORY_LIMIT = 20;
+const HISTORY_LIMIT = 20;
 
 const getChatHistory = async (req, res) => {
   try {
     const userId = req.user.id;
 
-    // 1️⃣ Берём последние 20 (по времени)
     const messages = await ChatMessage.find({
       user: userId,
+      deleted: null,
     })
-      .sort({ createdAt: -1 }) // последние
-      // .limit(HISTORY_LIMIT)
-      .select("role content modelId createdAt")
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(HISTORY_LIMIT)
+      .select("role content modelId tokens attachments turnId clientMessageId attempt createdAt updatedAt")
       .lean();
 
-    // 2️⃣ Разворачиваем в хронологический порядок
-    messages.reverse();
-
     res.json({
-      messages: messages.reverse(),
+      messages: messages.reverse().map(historyMessageDto),
     });
   } catch (err) {
     console.error("getChatHistory error:", err);

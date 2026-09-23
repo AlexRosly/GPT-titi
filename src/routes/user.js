@@ -11,6 +11,8 @@ router.get("/logout", ctrl.logout); //auth //
 router.get("/usage/summary", auth, ctrl.tokenUsage);
 router.get("/usage/history", auth, ctrl.getUsageHistory); ///usage/history?days=7 change day
 router.post("/claim-token", auth, claimLimiter, ctrl.claimToken);
+router.get("/token-transfers/recipient", auth, ctrl.getTransferRecipient);
+router.post("/token-transfers", auth, ctrl.sendTokens);
 router.get("/get-chat-models", ctrl.getChatModels);
 
 module.exports = router;

@@ -33,6 +33,90 @@ components:
         error:
           type: string
 
+    TokenTransferError:
+      type: object
+      required: [success, code, message]
+      properties:
+        success:
+          type: boolean
+          enum: [false]
+        code:
+          type: string
+          enum:
+            - INVALID_EMAIL
+            - INVALID_AMOUNT
+            - INVALID_CLIENT_TRANSFER_ID
+            - SELF_TRANSFER
+            - SENDER_NOT_ALLOWED
+            - RECIPIENT_NOT_FOUND
+            - RECIPIENT_DELETED
+            - RECIPIENT_UNAVAILABLE
+            - INSUFFICIENT_BALANCE
+            - IDEMPOTENCY_CONFLICT
+            - INTERNAL_ERROR
+        message:
+          type: string
+        appTokens:
+          type: number
+          description: Current sender balance; included for INSUFFICIENT_BALANCE.
+
+    TokenTransferRequest:
+      type: object
+      required: [email, amount, clientTransferId]
+      properties:
+        email:
+          type: string
+          format: email
+          description: Recipient email; trimmed and lowercased before literal, case-insensitive lookup.
+          example: alex@example.com
+        amount:
+          type: integer
+          minimum: 1
+          maximum: 9007199254740991
+          description: Positive safe integer JSON number; strings and fractional values are rejected.
+          example: 1000
+        clientTransferId:
+          type: string
+          format: uuid
+          pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'
+          description: UUIDv4 generated once per intended transfer. Reuse this ID and the same payload on a network retry.
+          example: 2d119c58-f40c-4c75-b866-797118cc22ca
+
+    TokenTransferResult:
+      type: object
+      required: [success, transfer, appTokens, alreadyApplied]
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+        transfer:
+          type: object
+          required: [id, clientTransferId, email, amount, createdAt]
+          properties:
+            id:
+              type: string
+              description: Transfer ledger ObjectId.
+            clientTransferId:
+              type: string
+              format: uuid
+            email:
+              type: string
+              format: email
+              description: Normalized recipient email.
+            amount:
+              type: integer
+              minimum: 1
+              maximum: 9007199254740991
+            createdAt:
+              type: string
+              format: date-time
+        appTokens:
+          type: number
+          description: Sender balance immediately after the original transfer. On a replay this is a historical receipt balance, not the current balance.
+        alreadyApplied:
+          type: boolean
+          description: True when returning an existing transfer for this sender and clientTransferId without applying another debit or credit.
+
     ChatMessage:
       type: object
       properties:
@@ -128,6 +212,153 @@ paths:
       responses:
         200:
           description: History
+
+  /users/token-transfers/recipient:
+    get:
+      tags: [User]
+      security: [{ BearerAuth: [] }]
+      summary: Check whether a recipient can receive tokens
+      description: >-
+        Only active senders can transfer tokens. An active or blocked recipient is
+        eligible; deleted recipients are rejected. This check does not reserve tokens
+        or guarantee a later transfer: POST validates the status and balance again.
+      parameters:
+        - name: email
+          in: query
+          required: true
+          schema:
+            type: string
+            format: email
+          description: Trimmed and lowercased; matched by literal, case-insensitive equality.
+      responses:
+        '200':
+          description: Recipient can receive tokens
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, canTransfer, recipient, appTokens]
+                properties:
+                  success:
+                    type: boolean
+                    enum: [true]
+                  canTransfer:
+                    type: boolean
+                    enum: [true]
+                  recipient:
+                    type: object
+                    required: [email, status]
+                    properties:
+                      email:
+                        type: string
+                        format: email
+                      status:
+                        type: string
+                        enum: [active, blocked]
+                  appTokens:
+                    type: number
+                    description: Current sender balance.
+        '400':
+          description: INVALID_EMAIL or SELF_TRANSFER
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenTransferError'
+        '401':
+          description: Authentication required or token invalid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: SENDER_NOT_ALLOWED (sender is not active)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenTransferError'
+        '404':
+          description: RECIPIENT_NOT_FOUND
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenTransferError'
+        '409':
+          description: RECIPIENT_DELETED (message explains account deletion) or RECIPIENT_UNAVAILABLE (unsupported status or ambiguous email)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenTransferError'
+        '500':
+          description: INTERNAL_ERROR
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenTransferError'
+
+  /users/token-transfers:
+    post:
+      tags: [User]
+      security: [{ BearerAuth: [] }]
+      summary: Transfer tokens to another user
+      description: >-
+        Atomically debits an active sender, credits an active or blocked recipient,
+        and changes a blocked recipient to active. Deleted recipients cannot receive
+        tokens. Status and sufficient balance are checked inside the transaction.
+        Repeating the same sender, clientTransferId and normalized payload returns
+        the original receipt with alreadyApplied=true. Reusing the ID with a changed
+        recipient or amount returns IDEMPOTENCY_CONFLICT.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TokenTransferRequest'
+      responses:
+        '200':
+          description: Transfer committed, or existing receipt returned without transferring again
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenTransferResult'
+        '400':
+          description: INVALID_EMAIL, INVALID_AMOUNT, INVALID_CLIENT_TRANSFER_ID or SELF_TRANSFER
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenTransferError'
+        '401':
+          description: Authentication required or token invalid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: SENDER_NOT_ALLOWED (sender is not active)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenTransferError'
+        '404':
+          description: RECIPIENT_NOT_FOUND
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenTransferError'
+        '409':
+          description: >-
+            RECIPIENT_DELETED (message explains account deletion),
+            RECIPIENT_UNAVAILABLE (unsupported status, ambiguous email or balance overflow),
+            INSUFFICIENT_BALANCE (includes appTokens), or IDEMPOTENCY_CONFLICT
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenTransferError'
+        '500':
+          description: INTERNAL_ERROR
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenTransferError'
 
 # ===========================
 # 💬 CHAT

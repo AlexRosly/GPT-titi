@@ -29,6 +29,12 @@ const UserSchema = Schema(
   { versionKey: false, timestamps: true },
 );
 
+// Recipient lookups are case-insensitive, including for existing mixed-case emails.
+UserSchema.index(
+  { email: 1 },
+  { name: "email_case_insensitive", collation: { locale: "en", strength: 2 } },
+);
+
 const User = model("user", UserSchema);
 
 module.exports = User;

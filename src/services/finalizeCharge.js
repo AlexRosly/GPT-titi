@@ -1,4 +1,3 @@
-const mongoose = require("mongoose");
 const { User, ChatBillingLedger } = require("../models");
 const { calculateModelCost } = require("../utils");
 
@@ -11,13 +10,15 @@ const calculateCost = async ({ modelId, usage }) =>
     outputTokens: usage.completion_tokens ?? usage.completionTokens ?? 0,
   });
 
-// Legacy billing path. Existing v1 callers keep their current behaviour.
+// Keep the legacy overdraft behaviour while preserving concurrent balance changes.
 const finalizeCharge = async ({ userId, modelId, usage }) => {
   const cost = await calculateCost({ modelId, usage });
-  const user = await User.findById(userId);
+  const user = await User.findByIdAndUpdate(
+    userId,
+    { $inc: { appTokens: -cost.appTokens } },
+    { new: true },
+  );
   if (!user) throw new Error("User not found");
-  user.appTokens -= cost.appTokens;
-  await user.save();
   return { ...cost, balance: user.appTokens };
 };
 

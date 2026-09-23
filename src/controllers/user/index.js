@@ -5,6 +5,7 @@ const tokenUsage = require("./tokenUsage");
 const getUsageHistory = require("./getUsageHistory");
 const claimToken = require("./claimToken");
 const getChatModels = require("./getChatModels");
+const { getTransferRecipient, sendTokens } = require("./tokenTransfers");
 
 module.exports = {
   createUser,
@@ -14,4 +15,6 @@ module.exports = {
   getUsageHistory,
   claimToken,
   getChatModels,
+  getTransferRecipient,
+  sendTokens,
 };

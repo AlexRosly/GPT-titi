@@ -12,6 +12,7 @@ const ModelFlows = require("./modelFlows");
 const Project = require("./userProject");
 const ChatTurn = require("./chatTurn");
 const ChatBillingLedger = require("./chatBillingLedger");
+const TokenTransfer = require("./tokenTransfer");
 
 module.exports = {
   User,
@@ -28,4 +29,5 @@ module.exports = {
   Project,
   ChatTurn,
   ChatBillingLedger,
+  TokenTransfer,
 };

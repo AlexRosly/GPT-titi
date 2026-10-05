@@ -9,6 +9,8 @@ router.post("/user", ctrl.createUser); //Google Login / Register
 router.post("/refresh", ctrl.refreshToken); // auth POST /auth/refresh
 router.get("/logout", ctrl.logout); //auth //
 router.get("/usage/summary", auth, ctrl.tokenUsage);
+router.get("/balance", auth, ctrl.getBalance);
+router.get("/token-operations/:operationId", auth, ctrl.getTokenOperation);
 router.get("/usage/history", auth, ctrl.getUsageHistory); ///usage/history?days=7 change day
 router.post("/claim-token", auth, claimLimiter, ctrl.claimToken);
 router.get("/token-transfers/recipient", auth, ctrl.getTransferRecipient);

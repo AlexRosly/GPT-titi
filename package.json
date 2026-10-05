@@ -19,7 +19,9 @@
     "test:chat-v2:reliability": "node --test test/chatDeliveryV2/reliability.integration.test.js",
     "test:chat-v2:transport-recovery": "node --test test/chatDeliveryV2/transportRecovery.integration.test.js",
     "test:chat-v2:dod": "node --test test/chatDeliveryV2/dod.integration.test.js",
-    "db:cleanup:chat-v2-tests": "node scripts/cleanupChatV2TestDbs.js"
+    "db:cleanup:chat-v2-tests": "node scripts/cleanupChatV2TestDbs.js",
+    "db:indexes:token-ledger": "node scripts/createTokenLedgerIndexes.js",
+    "test:balance-sync": "node --test test/balanceSync.integration.test.js test/tokenTransfers.http.test.js"
   },
   "repository": {
     "type": "git",
@@ -47,6 +49,7 @@
     "express": "^5.2.1",
     "express-rate-limit": "^8.4.1",
     "google-auth-library": "^10.5.0",
+    "ioredis": "^6.0.0",
     "jsonwebtoken": "^9.0.3",
     "mongodb": "^7.0.0",
     "mongoose": "^9.0.0",

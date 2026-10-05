@@ -13,6 +13,8 @@ const Project = require("./userProject");
 const ChatTurn = require("./chatTurn");
 const ChatBillingLedger = require("./chatBillingLedger");
 const TokenTransfer = require("./tokenTransfer");
+const TokenOperation = require("./tokenOperation");
+const BalanceOutbox = require("./balanceOutbox");
 
 module.exports = {
   User,
@@ -30,4 +32,6 @@ module.exports = {
   ChatTurn,
   ChatBillingLedger,
   TokenTransfer,
+  TokenOperation,
+  BalanceOutbox,
 };

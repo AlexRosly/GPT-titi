@@ -1,4 +1,5 @@
 const { User, Message } = require("../../../models");
+const tokenLedger = require("../../../services/tokenLedger");
 // const openai = require("../../services/openai");
 
 const registerChatHandlers = (io) => {
@@ -85,8 +86,7 @@ const registerChatHandlers = (io) => {
         });
 
         // 💰 списание токенов
-        dbUser.appTokens -= Math.ceil(fullText.length / 4);
-        await dbUser.save();
+        await tokenLedger.debit({ userId: dbUser._id, amount: Math.ceil(fullText.length / 4), kind: "chat_charge" });
 
         socket.emit("chat:end", {
           event: "success",

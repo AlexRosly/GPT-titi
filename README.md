@@ -3,6 +3,7 @@
 The service for work with AI instrument
 
 ## Необхідні змінні .env для WebSocket
+
 Для налаштування WebSocket-сервера потрібно вказати у `.env` тільки такі змінні:
 
 ```
@@ -11,18 +12,16 @@ SOCKET_CREDENTIALS=true
 ```
 
 **Пояснення:**
+
 - `SOCKET_CORS_ORIGINS` — список дозволених origin для WebSocket (через кому)
 - `SOCKET_CREDENTIALS` — чи дозволяти credentials (true/false)
 
-
-
-WEBSOCKET 
+WEBSOCKET
 
 # Інструкція для backend: як додавати нові підписки та емiти через WebSocket
 
-
-
 ## Загальна архітектура
+
 Сервер використовує універсальний протокол повідомлень через канал `ws:message` (див. src/wsServer.js). Всі події між фронтом і сервером проходять через цей канал з об'єктом формату:
 
 ```
@@ -35,48 +34,53 @@ WEBSOCKET
 ```
 
 ## Як додати нову підписку сервера на повідомлення від фронта
+
 1. Відкрийте файл `src/wsServer.js`.
 2. Усередині обробника `io.on('connection', (socket) => { ... })` додайте нову гілку в обробнику події `socket.on('ws:message', ...)`.
 3. Перевірте поле `event` у вхідному повідомленні та реалізуйте потрібну логіку.
 
 **Приклад:**
+
 ```js
 // ...existing code...
-socket.on('ws:message', async (msg) => {
-	const { event, type, requestId, payload } = msg;
-	if (event === 'myCustomEvent') {
-		// Ваша логіка обробки
-		// Наприклад, надіслати відповідь:
-		socket.emit('ws:message', {
-			event: 'myCustomEvent',
-			type: 'response',
-			requestId,
-			payload: { result: 'ok' }
-		});
-	}
-	// ...existing code...
+socket.on("ws:message", async (msg) => {
+  const { event, type, requestId, payload } = msg;
+  if (event === "myCustomEvent") {
+    // Ваша логіка обробки
+    // Наприклад, надіслати відповідь:
+    socket.emit("ws:message", {
+      event: "myCustomEvent",
+      type: "response",
+      requestId,
+      payload: { result: "ok" },
+    });
+  }
+  // ...existing code...
 });
 // ...existing code...
 ```
 
 ## Як відправити нову подію з сервера на фронти
+
 1. Імпортуйте функцію `getIo` з `src/wsServer.js` у потрібному місці backend.
 2. Отримайте екземпляр io: `const io = getIo();`
 3. Використовуйте `io.emit('ws:message', { ... })` для відправки події всім фронтам, або `socket.emit(...)` для конкретного користувача.
 
 **Приклад:**
+
 ```js
-const { getIo } = require('./wsServer');
+const { getIo } = require("./wsServer");
 const io = getIo();
-io.emit('ws:message', {
-	event: 'notifyAll',
-	type: 'info',
-	requestId: null,
-	payload: { message: 'Важливе повідомлення' }
+io.emit("ws:message", {
+  event: "notifyAll",
+  type: "info",
+  requestId: null,
+  payload: { message: "Важливе повідомлення" },
 });
 ```
 
 ## Best practices
+
 - Завжди використовуйте універсальний формат повідомлення.
 - Для відповідей на запити використовуйте той самий `requestId`, що і в запиті.
 - Для broadcast-повідомлень використовуйте `io.emit`, для персональних — `socket.emit`.
@@ -84,6 +88,7 @@ io.emit('ws:message', {
 - Документуйте нові типи подій і payload у цьому README або окремому файлі.
 
 ---
+
 Інструкція тільки для backend. Для фронта буде інструкція всередині рідмі в репозиторії фронту.
 
 ## Перевод токенов между пользователями
@@ -142,19 +147,19 @@ Email очищается от пробелов по краям, приводит
 
 Ошибки перевода имеют вид `{ "success": false, "code": "RECIPIENT_DELETED", "message": "..." }`. Ошибки авторизации сохраняют существующий формат `{ "error": "..." }` и статус `401`.
 
-| HTTP | Код | Причина |
-| --- | --- | --- |
-| 400 | `INVALID_EMAIL` | Некорректный email. |
-| 400 | `INVALID_AMOUNT` | Сумма не является положительным безопасным целым JSON-числом. |
-| 400 | `INVALID_CLIENT_TRANSFER_ID` | Отсутствует или некорректен UUIDv4. |
-| 400 | `SELF_TRANSFER` | Получатель и отправитель — один пользователь. |
-| 403 | `SENDER_NOT_ALLOWED` | Отправитель не имеет статуса `active`. |
-| 404 | `RECIPIENT_NOT_FOUND` | Получатель не найден. |
-| 409 | `RECIPIENT_DELETED` | Пользователь удалил аккаунт; перевод невозможен. |
-| 409 | `RECIPIENT_UNAVAILABLE` | Неподдерживаемый статус, неоднозначный email или переполнение баланса получателя. |
-| 409 | `INSUFFICIENT_BALANCE` | Недостаточно токенов; ответ дополнительно содержит `appTokens`. |
-| 409 | `IDEMPOTENCY_CONFLICT` | ID перевода уже использован с другим email или суммой. |
-| 500 | `INTERNAL_ERROR` | Внутренняя ошибка сервера. |
+| HTTP | Код                          | Причина                                                                           |
+| ---- | ---------------------------- | --------------------------------------------------------------------------------- |
+| 400  | `INVALID_EMAIL`              | Некорректный email.                                                               |
+| 400  | `INVALID_AMOUNT`             | Сумма не является положительным безопасным целым JSON-числом.                     |
+| 400  | `INVALID_CLIENT_TRANSFER_ID` | Отсутствует или некорректен UUIDv4.                                               |
+| 400  | `SELF_TRANSFER`              | Получатель и отправитель — один пользователь.                                     |
+| 403  | `SENDER_NOT_ALLOWED`         | Отправитель не имеет статуса `active`.                                            |
+| 404  | `RECIPIENT_NOT_FOUND`        | Получатель не найден.                                                             |
+| 409  | `RECIPIENT_DELETED`          | Пользователь удалил аккаунт; перевод невозможен.                                  |
+| 409  | `RECIPIENT_UNAVAILABLE`      | Неподдерживаемый статус, неоднозначный email или переполнение баланса получателя. |
+| 409  | `INSUFFICIENT_BALANCE`       | Недостаточно токенов; ответ дополнительно содержит `appTokens`.                   |
+| 409  | `IDEMPOTENCY_CONFLICT`       | ID перевода уже использован с другим email или суммой.                            |
+| 500  | `INTERNAL_ERROR`             | Внутренняя ошибка сервера.                                                        |
 
 Интеграция формы на фронтенде:
 
@@ -171,4 +176,3 @@ Email очищается от пробелов по краям, приводит
 Для транзакций нужен MongoDB replica set или MongoDB Atlas. Перед включением переводов выполните `npm run db:indexes:token-transfers` с настройкой подключения `MONGO_URI`. Скрипт создаёт обязательный уникальный индекс журнала переводов по отправителю и `clientTransferId`, защищающий от повторного выполнения одного перевода, а также индекс `email_case_insensitive` для поиска получателя без учёта регистра. Существующие индексы сохраняются.
 
 Проверки запускаются командой `npm run test:token-transfers`. Для интеграционных проверок укажите `TOKEN_TRANSFER_TEST_MONGO_URI` с подключением к тестовому MongoDB replica set; также поддерживается резервная переменная `CHAT_V2_TEST_MONGO_URI`.
-

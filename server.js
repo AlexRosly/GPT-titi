@@ -4,14 +4,16 @@ const { logger } = require("./src/utils");
 const connectDB = require("./src/config/db");
 const http = require("http");
 const { getIo, initWsServer } = require("./src/wsServer");
+const { startBalanceSync } = require("./src/services/balanceOutbox");
 // const registerChatHandlers = require("./src/controllers/ws/handlers/chatSocket");
 
 const PORT = process.env.PORT || 7000;
 const server = http.createServer(app);
 
 connectDB()
-  .then(() => {
+  .then(async () => {
     initWsServer(server);
+    await startBalanceSync(getIo());
     server.listen(PORT, () => {
       logger.info("Server started on port " + PORT);
     });

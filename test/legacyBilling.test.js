@@ -1,7 +1,8 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { User, ChatModels } = require("../src/models");
+const { User, ChatModels, TokenOperation, BalanceOutbox } = require("../src/models");
 const { APP_TOKEN_VALUE_USD } = require("../src/config/billing");
+const mongoose = require("mongoose");
 const finalizeCharge = require("../src/services/finalizeCharge");
 
 const charge = (userId = "sender") => finalizeCharge({
@@ -28,22 +29,17 @@ const mockAccount = (t, { balance, transferDelta = 0, exists = true }) => {
     }
   };
 
-  t.mock.method(User, "findById", async () => {
-    if (!exists) return null;
-    return {
-      appTokens: account.balance,
-      async save() {
-        commitTransfer();
-        account.balance = this.appTokens;
-      },
-    };
-  });
-  t.mock.method(User, "findByIdAndUpdate", async (_id, update) => {
+  const session = { withTransaction: (action) => action(session), endSession: async () => {} };
+  t.mock.method(mongoose, "startSession", async () => session);
+  t.mock.method(TokenOperation, "findOne", () => ({ session: () => ({ lean: async () => null }) }));
+  t.mock.method(TokenOperation, "create", async ([operation]) => [{ ...operation, _id: "operation" }]);
+  t.mock.method(BalanceOutbox, "create", async () => []);
+  t.mock.method(User, "findOneAndUpdate", (_filter, update) => ({ lean: async () => {
     if (!exists) return null;
     commitTransfer();
     account.balance += update.$inc.appTokens;
-    return { appTokens: account.balance };
-  });
+    return { _id: "account", appTokens: account.balance, balanceVersion: 1 };
+  } }));
 
   return account;
 };

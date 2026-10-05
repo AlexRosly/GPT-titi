@@ -13,6 +13,8 @@ const TokenTransferSchema = new Schema(
       validate: Number.isSafeInteger,
     },
     senderBalance: { type: Number, required: true },
+    senderBalanceVersion: { type: Number, default: null },
+    operation: { type: Schema.Types.ObjectId, ref: "tokenOperation", default: null },
   },
   { versionKey: false, timestamps: true },
 );

@@ -1,5 +1,6 @@
 const mongoose = require("mongoose");
-const { User, Payment, Price } = require("../../models");
+const { Payment, Price } = require("../../models");
+const tokenLedger = require("../../services/tokenLedger");
 const stripe = require("../../services/stripe");
 
 const MIN_APP_TOKENS = -1000;
@@ -117,24 +118,12 @@ const handleCheckoutCompleted = async (event) => {
         { session: dbSession },
       );
 
-      const updatedUser = await User.findByIdAndUpdate(
-        userId,
-        {
-          $inc: {
-            appTokens: price.appTokens,
-            totalSpentUsd:
-              price.currency?.toLowerCase() === "usd"
-                ? (session.amount_total || 0) / 100
-                : 0,
-          },
-        },
-        { new: true, session: dbSession },
-      );
-
-      if (!updatedUser) {
-        throw new Error(`User not found: ${userId}`);
-      }
+      await tokenLedger.credit({ userId, amount: price.appTokens, kind: "topup",
+        key: `stripe:checkout:${session.id}`, session: dbSession,
+        increments: { totalSpentUsd: price.currency?.toLowerCase() === "usd" ? (session.amount_total || 0) / 100 : 0 },
+      });
     });
+    tokenLedger.notifyCommitted();
   } catch (error) {
     // A concurrent/delivered-again event can lose the race on the unique
     // stripeSessionId index. If the payment now exists, the other webhook
@@ -200,26 +189,12 @@ const handleChargeRefunded = async (event) => {
         return;
       }
 
-      const user = await User.findById(payment.user).session(dbSession);
-
-      if (!user) {
-        throw new Error(`User not found for payment ${payment._id}`);
-      }
-
-      user.appTokens = Math.max(
-        user.appTokens - payment.appTokensAdded,
-        MIN_APP_TOKENS,
-      );
-
-      if (payment.currency?.toLowerCase() === "usd") {
-        user.totalSpentUsd = Math.max(
-          0,
-          user.totalSpentUsd - (payment.amount || 0) / 100,
-        );
-      }
-
-      await user.save({ session: dbSession });
+      await tokenLedger.refund({ userId: payment.user, amount: payment.appTokensAdded,
+        key: `stripe:refund:${payment._id}`, session: dbSession, minBalance: MIN_APP_TOKENS,
+        usd: payment.currency?.toLowerCase() === "usd" ? (payment.amount || 0) / 100 : 0,
+      });
     });
+    tokenLedger.notifyCommitted();
   } finally {
     await dbSession.endSession();
   }

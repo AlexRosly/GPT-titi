@@ -2,6 +2,7 @@
 const { User } = require("../../models");
 const { verifyGoogleToken } = require("../../services");
 const { signAccessToken, signRefreshToken } = require("../../utils");
+const tokenLedger = require("../../services/tokenLedger");
 const bcrypt = require("bcrypt");
 
 const createUser = async (req, res) => {
@@ -17,7 +18,7 @@ const createUser = async (req, res) => {
     let user = await User.findOne({ email: payload.email });
 
     if (!user) {
-      user = await User.create({
+      user = await tokenLedger.createAccount({
         googleId: payload.sub,
         email: payload.email,
         name: payload.name,
@@ -57,6 +58,7 @@ const createUser = async (req, res) => {
         name: user.name,
         avatar: user.avatar,
         appTokens: user.appTokens,
+        balanceVersion: user.balanceVersion || 0,
         role: user.role,
         dateClaimToken: user.dateClaimToken,
         nextDateClaimToken: user.nextDateClaimToken,

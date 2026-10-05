@@ -1,5 +1,6 @@
 const mongoose = require("mongoose");
 const { User, TokenTransfer } = require("../models");
+const tokenLedger = require("./tokenLedger");
 
 class TokenTransferError extends Error {
   constructor(status, code, message, details = {}) {
@@ -62,7 +63,7 @@ const findRecipient = async ({ userId, email, session = null }) => {
 
 const checkRecipient = async ({ userId, email: inputEmail }) => {
   const email = normalizeEmail(inputEmail);
-  const sender = await User.findById(userId).select("status appTokens").lean();
+  const sender = await User.findById(userId).select("status appTokens balanceVersion").lean();
   assertSender(sender);
   const recipient = await findRecipient({ userId, email });
   return {
@@ -70,23 +71,31 @@ const checkRecipient = async ({ userId, email: inputEmail }) => {
     canTransfer: true,
     recipient: { email, status: recipient.status },
     appTokens: sender.appTokens,
+    userId: String(userId), balanceVersion: sender.balanceVersion || 0,
   };
 };
 
-const transferResult = (transfer, alreadyApplied) => ({
-  success: true,
-  transfer: {
-    id: transfer._id.toString(),
-    clientTransferId: transfer.clientTransferId,
-    email: transfer.recipientEmail,
-    amount: transfer.amount,
-    createdAt: transfer.createdAt,
-  },
-  appTokens: transfer.senderBalance,
-  alreadyApplied,
-});
+const transferResult = async (transfer, alreadyApplied, session = null) => {
+  const operation = transfer.operation
+    ? await tokenLedger.getOperation(transfer.sender, transfer.operation, { session })
+    : null;
+  return {
+    success: true,
+    transfer: {
+      id: String(transfer._id), clientTransferId: transfer.clientTransferId,
+      email: transfer.recipientEmail, amount: transfer.amount, createdAt: transfer.createdAt,
+    },
+    appTokens: transfer.senderBalance,
+    userId: String(transfer.sender), balanceVersion: transfer.senderBalanceVersion,
+    operation: operation ? {
+      id: operation.id, kind: operation.kind, status: operation.status,
+      source: operation.source, transactionHash: operation.transactionHash,
+    } : null,
+    alreadyApplied,
+  };
+};
 
-const replayTransfer = (transfer, email, amount) => {
+const replayTransfer = (transfer, email, amount, session = null) => {
   if (transfer.recipientEmail !== email || transfer.amount !== amount) {
     throw new TokenTransferError(
       409,
@@ -94,7 +103,7 @@ const replayTransfer = (transfer, email, amount) => {
       "This clientTransferId was already used for another transfer.",
     );
   }
-  return transferResult(transfer, true);
+  return transferResult(transfer, true, session);
 };
 
 const transferTokens = async ({ userId, email: inputEmail, amount, clientTransferId }) => {
@@ -113,39 +122,25 @@ const transferTokens = async ({ userId, email: inputEmail, amount, clientTransfe
   const key = { sender: userId, clientTransferId };
   const session = await mongoose.startSession();
   try {
-    return await session.withTransaction(async () => {
-      const sender = await User.findById(userId).select("status appTokens").session(session).lean();
+    const result = await session.withTransaction(async () => {
+      const sender = await User.findById(userId).select("status appTokens balanceVersion").session(session).lean();
       assertSender(sender);
 
       const existing = await TokenTransfer.findOne(key).session(session).lean();
-      if (existing) return replayTransfer(existing, email, amount);
+      if (existing) return replayTransfer(existing, email, amount, session);
 
       const recipient = await findRecipient({ userId, email, session });
-      const debited = await User.findOneAndUpdate(
-        { _id: userId, status: "active", appTokens: { $gte: amount } },
-        { $inc: { appTokens: -amount } },
-        { new: true, session },
-      ).select("appTokens").lean();
-      if (!debited) {
-        throw new TokenTransferError(
-          409,
-          "INSUFFICIENT_BALANCE",
+      let balances;
+      try {
+        balances = await tokenLedger.transfer({
+          senderId: userId, recipientId: recipient._id, amount,
+          key: `transfer:${userId}:${clientTransferId}`, session,
+        });
+      } catch (error) {
+        if (error.code !== "INSUFFICIENT_BALANCE") throw error;
+        throw new TokenTransferError(409, "INSUFFICIENT_BALANCE",
           "Insufficient balance. You can only send tokens from your available balance.",
-          { appTokens: sender.appTokens },
-        );
-      }
-
-      const credited = await User.findOneAndUpdate(
-        {
-          _id: recipient._id,
-          status: { $in: ["active", "blocked"] },
-          appTokens: { $lte: Number.MAX_SAFE_INTEGER - amount },
-        },
-        { $inc: { appTokens: amount }, $set: { status: "active" } },
-        { new: true, session },
-      ).select("appTokens").lean();
-      if (!credited) {
-        throw new TokenTransferError(409, "RECIPIENT_UNAVAILABLE", "This account cannot receive tokens.");
+          { appTokens: sender.appTokens, userId: String(userId), balanceVersion: sender.balanceVersion || 0 });
       }
 
       const [transfer] = await TokenTransfer.create(
@@ -154,22 +149,29 @@ const transferTokens = async ({ userId, email: inputEmail, amount, clientTransfe
           recipient: recipient._id,
           recipientEmail: email,
           amount,
-          senderBalance: debited.appTokens,
+          senderBalance: balances.sender.appTokens,
+          senderBalanceVersion: balances.sender.balanceVersion,
+          operation: balances.operation.id,
         }],
         { session },
       );
-      return transferResult(transfer, false);
+      return transferResult(transfer, false, session);
     }, {
       readConcern: { level: "snapshot" },
       writeConcern: { w: "majority" },
       readPreference: "primary",
     });
+    tokenLedger.notifyCommitted();
+    return result;
   } catch (error) {
     // A concurrent retry may win the unique sender/clientTransferId index.
     // The aborted transaction rolls back both balances before replaying it.
     if (error?.code === 11000) {
       const existing = await TokenTransfer.findOne(key).lean();
       if (existing) return replayTransfer(existing, email, amount);
+    }
+    if (error instanceof tokenLedger.LedgerError) {
+      throw new TokenTransferError(error.status, error.code, error.message, error.details);
     }
     throw error;
   } finally {

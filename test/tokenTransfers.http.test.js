@@ -55,10 +55,12 @@ test("token transfer HTTP routes", { timeout: 45000 }, async (t) => {
     return { response, body: await response.json() };
   };
 
-  await t.test("both endpoints require authentication", async () => {
+  await t.test("balance, operation and transfer endpoints require authentication", async () => {
     for (const [path, method] of [
       ["/token-transfers/recipient?email=someone%40example.test", "GET"],
       ["/token-transfers", "POST"],
+      ["/balance", "GET"],
+      ["/token-operations/000000000000000000000000", "GET"],
     ]) {
       for (const token of [undefined, "invalid-jwt", jwt.sign({ userId: new mongoose.Types.ObjectId() }, "wrong-secret")]) {
         const result = await request(path, { method, token });
@@ -97,6 +99,14 @@ test("token transfer HTTP routes", { timeout: 45000 }, async (t) => {
       ]);
       const token = jwt.sign({ userId: sender._id.toString() }, process.env.JWT_SECRET, { expiresIn: "5m" });
 
+      const initialBalance = await request(`/balance?userId=${other._id}`, { token });
+      assert.equal(initialBalance.response.status, 200);
+      assert.equal(initialBalance.response.headers.get("cache-control"), "no-store");
+      assert.equal(initialBalance.body.userId, String(sender._id));
+      assert.equal(initialBalance.body.appTokens, 100);
+      assert.equal(initialBalance.body.balanceVersion, 0);
+      assert.equal(initialBalance.body.refreshToken, undefined);
+
       const lookup = await request("/token-transfers/recipient?email=%20RECIPIENT%40EXAMPLE.TEST%20", { token });
       assert.equal(lookup.response.status, 200);
       assert.equal(lookup.response.headers.get("cache-control"), "no-store");
@@ -122,6 +132,17 @@ test("token transfer HTTP routes", { timeout: 45000 }, async (t) => {
       const credited = await User.findById(recipient._id).lean();
       assert.equal(credited.appTokens, 40);
       assert.equal(credited.status, "active");
+
+      const balance = await request("/balance", { token });
+      assert.equal(balance.body.appTokens, 70);
+      assert.equal(balance.body.balanceVersion, 1);
+      const operation = await request(`/token-operations/${transfer.body.operation.id}`, { token });
+      assert.equal(operation.response.status, 200);
+      assert.equal(operation.response.headers.get("cache-control"), "no-store");
+      assert.equal(operation.body.status, "confirmed");
+      assert.equal(operation.body.entries, undefined);
+      const otherToken = jwt.sign({ userId: String(other._id) }, process.env.JWT_SECRET);
+      assert.equal((await request(`/token-operations/${transfer.body.operation.id}`, { token: otherToken })).response.status, 404);
 
       const retry = await request("/token-transfers", { token, body, method: "POST" });
       assert.equal(retry.response.status, 200);

@@ -233,6 +233,7 @@ const commitCompletion = async (turn, leaseToken, assistantText, usage) => {
 
       result = { assistant: assistant.toObject(), billing };
     });
+    require("../tokenLedger").notifyCommitted();
   } finally {
     await session.endSession();
   }

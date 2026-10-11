@@ -164,6 +164,7 @@ const commitCompletion = async (turn, leaseToken, assistantText, usage) => {
         turnId: turn.turnId,
         userId: turn.user,
         modelId: turn.modelId,
+        conversationId: turn.conversation,
         usage: {
           prompt_tokens: usage.promptTokens,
           completion_tokens: usage.completionTokens,

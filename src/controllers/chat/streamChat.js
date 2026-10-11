@@ -528,18 +528,13 @@ ${conversation.summary || "No summary yet"}
       });
 
       if (usage) {
-        const cost = await finalizeCharge({
+        await finalizeCharge({
           userId: user._id,
           modelId,
           usage,
+          conversationId,
+          messageId: assistantMsg._id,
         });
-
-        assistantMsg.meta = {
-          appTokens: cost.appTokens,
-          costUsd: cost.usd,
-        };
-
-        await assistantMsg.save();
       }
 
       await ChatConversation.findByIdAndUpdate(conversationId, {

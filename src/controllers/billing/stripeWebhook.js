@@ -100,7 +100,7 @@ const handleCheckoutCompleted = async (event) => {
 
   try {
     await dbSession.withTransaction(async () => {
-      await Payment.create(
+      const [payment] = await Payment.create(
         [
           {
             user: userId,
@@ -120,6 +120,7 @@ const handleCheckoutCompleted = async (event) => {
 
       await tokenLedger.credit({ userId, amount: price.appTokens, kind: "topup",
         key: `stripe:checkout:${session.id}`, session: dbSession,
+        context: { paymentId: payment._id, paymentAmountMinor: payment.amount, paymentCurrency: payment.currency },
         increments: { totalSpentUsd: price.currency?.toLowerCase() === "usd" ? (session.amount_total || 0) / 100 : 0 },
       });
     });
@@ -191,6 +192,7 @@ const handleChargeRefunded = async (event) => {
 
       await tokenLedger.refund({ userId: payment.user, amount: payment.appTokensAdded,
         key: `stripe:refund:${payment._id}`, session: dbSession, minBalance: MIN_APP_TOKENS,
+        context: { paymentId: payment._id, paymentAmountMinor: payment.amount, paymentCurrency: payment.currency },
         usd: payment.currency?.toLowerCase() === "usd" ? (payment.amount || 0) / 100 : 0,
       });
     });

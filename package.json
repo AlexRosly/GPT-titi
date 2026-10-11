@@ -21,7 +21,8 @@
     "test:chat-v2:dod": "node --test test/chatDeliveryV2/dod.integration.test.js",
     "db:cleanup:chat-v2-tests": "node scripts/cleanupChatV2TestDbs.js",
     "db:indexes:token-ledger": "node scripts/createTokenLedgerIndexes.js",
-    "test:balance-sync": "node --test test/balanceSync.integration.test.js test/tokenTransfers.http.test.js"
+    "test:balance-sync": "node --test test/balanceSync.integration.test.js test/tokenTransfers.http.test.js",
+    "test:token-history": "node --test test/tokenHistoryQuery.test.js test/tokenHistory.integration.test.js"
   },
   "repository": {
     "type": "git",

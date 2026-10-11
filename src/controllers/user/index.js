@@ -8,7 +8,10 @@ const getChatModels = require("./getChatModels");
 const { getTransferRecipient, sendTokens } = require("./tokenTransfers");
 const { getBalance, getTokenOperation } = require("./balance");
 
+const tokenHistory = require("./tokenHistory");
+
 module.exports = {
+  ...tokenHistory,
   createUser,
   refreshToken,
   logout,

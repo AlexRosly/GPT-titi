@@ -146,18 +146,13 @@ const regenerateLastAnswer = async (req, res) => {
       });
 
       if (usage) {
-        const cost = await finalizeCharge({
+        await finalizeCharge({
           userId,
           modelId: model.modelId,
           usage,
+          conversationId,
+          messageId: assistantMsg._id,
         });
-
-        assistantMsg.meta = {
-          appTokens: cost.appTokens,
-          costUsd: cost.usd,
-        };
-
-        await assistantMsg.save();
       }
 
       await ChatConversation.findByIdAndUpdate(conversationId, {

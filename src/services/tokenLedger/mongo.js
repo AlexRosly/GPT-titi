@@ -62,15 +62,15 @@ const existingOperation = async (key, kind, userId, delta, session) => {
   return receipt(operation, userId);
 };
 
-const record = async (key, kind, entries, session, requestSignature = null) => {
-  const [operation] = await TokenOperation.create([{ key, kind, status: "confirmed", entries, requestSignature }], { session });
+const record = async (key, kind, entries, session, requestSignature = null, context = null) => {
+  const [operation] = await TokenOperation.create([{ key, kind, status: "confirmed", entries, requestSignature, context }], { session });
   await BalanceOutbox.create(entries.map((entry) => ({
     operation: operation._id, user: entry.user, balanceVersion: entry.balanceVersion, reason: kind,
   })), { session, ordered: true });
   return operation;
 };
 
-const mutate = async ({ userId, delta, kind, key = `${kind}:${randomUUID()}`, session, filter = {}, fields = {}, increments = {}, requestSignature = null }) => {
+const mutate = async ({ userId, delta, kind, key = `${kind}:${randomUUID()}`, session, filter = {}, fields = {}, increments = {}, requestSignature = null, context = null }) => {
   assertAmount(Math.abs(delta));
   const action = async (activeSession) => {
     const existing = await existingOperation(key, kind, userId, delta, activeSession);
@@ -83,7 +83,7 @@ const mutate = async ({ userId, delta, kind, key = `${kind}:${randomUUID()}`, se
     if (!user) throw new LedgerError("BALANCE_UPDATE_REJECTED", "Account cannot perform this token operation.");
     const operation = await record(key, kind, [{
       user: user._id, delta, balance: user.appTokens, balanceVersion: user.balanceVersion,
-    }], activeSession, requestSignature);
+    }], activeSession, requestSignature, context);
     return { ...balanceDto(user), operation: operationDto(operation), alreadyApplied: false };
   };
   try {
@@ -154,7 +154,7 @@ const transfer = async ({ senderId, recipientId, amount, key, session }) => {
   const operation = await record(key, "transfer", [
     { user: debited._id, delta: -amount, balance: debited.appTokens, balanceVersion: debited.balanceVersion },
     { user: credited._id, delta: amount, balance: credited.appTokens, balanceVersion: credited.balanceVersion },
-  ], session);
+  ], session, null, { senderEmail: debited.email, recipientEmail: credited.email });
   return { sender: balanceDto(debited), recipient: balanceDto(credited), operation: operationDto(operation) };
 };
 
@@ -172,7 +172,7 @@ const claimBonus = async ({ userId, now = new Date(), amount = 10000 }) => inTra
   return { ...result, success: true, nextClaimDate };
 });
 
-const refund = async ({ userId, amount, key, session, minBalance = -1000, usd = 0 }) => {
+const refund = async ({ userId, amount, key, session, minBalance = -1000, usd = 0, context = null }) => {
   assertAmount(amount);
   return inTransaction(session, async (activeSession) => {
     const existing = await TokenOperation.findOne({ key }).session(activeSession).lean();
@@ -186,7 +186,7 @@ const refund = async ({ userId, amount, key, session, minBalance = -1000, usd = 
     const user = await User.findById(userId).session(activeSession).lean();
     if (!user) throw new LedgerError("USER_NOT_FOUND", "Account not found.", 404);
     const delta = Math.max(user.appTokens - amount, minBalance) - user.appTokens;
-    return mutate({ userId, delta, kind: "refund", key, session: activeSession, requestSignature,
+    return mutate({ userId, delta, kind: "refund", key, session: activeSession, requestSignature, context,
       fields: { totalSpentUsd: Math.max(0, (user.totalSpentUsd || 0) - usd) } });
   });
 };

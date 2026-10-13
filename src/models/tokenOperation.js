@@ -14,6 +14,8 @@ const Context = new Schema({
   conversationTitle: String,
   messageId: { type: Schema.Types.ObjectId, ref: "chatMessage" },
   turnId: String,
+  reservedTokens: Number,
+  attempt: Number,
   promptTokens: Number,
   completionTokens: Number,
   totalTokens: Number,

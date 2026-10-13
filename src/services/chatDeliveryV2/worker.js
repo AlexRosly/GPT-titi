@@ -139,7 +139,10 @@ const failTurn = async (turn, leaseToken, errorObject, { knownNoCharge = false, 
       }, { new: true, session });
     });
   } finally { await session.endSession(); }
-  if (updated) emitFailure(updated, updated.error);
+  if (updated) {
+    require("../tokenLedger").notifyCommitted();
+    emitFailure(updated, updated.error);
+  }
   return updated;
 };
 

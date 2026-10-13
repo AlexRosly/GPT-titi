@@ -129,4 +129,45 @@ if (!uri) {
     assert.equal((await User.findById(f.user._id)).reservedAppTokens, 0);
     assert.equal(await ChatTurn.countDocuments({ user: f.user._id }), 0);
   });
+  test("holds and release publish versioned live snapshots without a fake spend", async () => {
+    const f = await make(100);
+    const accepted = await f.send();
+    const held = await ledger.getBalance(f.user._id);
+    assert.equal(held.appTokens, 100);
+    assert.equal(held.reservedAppTokens, 2);
+    assert.equal(held.availableTokens, 98);
+    assert.equal(held.maxTransferTokens, 98);
+    assert.equal(held.balanceVersion, 1);
+    const events = [];
+    const outbox = require("../../src/services/balanceOutbox").createOutboxWorker({
+      bus: { publish: async (event) => events.push(event) },
+    });
+    await outbox.drain();
+    const holdEvent = events.find((e) => e.userId === String(f.user._id));
+    assert.equal(holdEvent.reservedAppTokens, 2);
+    assert.equal(holdEvent.reason, "reservation_hold");
+    assert.equal(holdEvent.balanceVersion, 1);
+    const claimed = await worker.claimTurn(accepted.turn.turnId);
+    await worker.failTurn(claimed.turn, claimed.leaseToken, errorFor("PROVIDER_UNAVAILABLE"));
+    await outbox.drain();
+    const released = events.filter((e) => e.userId === String(f.user._id)).at(-1);
+    assert.equal(released.balanceVersion, 2);
+    assert.equal(released.reservedAppTokens, 0);
+    assert.equal(released.maxTransferTokens, 100);
+    assert.equal(released.appTokens, 100);
+    assert.equal(released.reason, "reservation_release");
+    await outbox.stop();
+  });
+
+  test("reservation notification failure rolls back the hold and turn", async (t) => {
+    const f = await make();
+    t.mock.method(BalanceOutbox, "create", async () => { throw new Error("Outbox unavailable"); });
+    await assert.rejects(f.send(), /Outbox unavailable/);
+    const user = await User.findById(f.user._id);
+    assert.equal(user.reservedAppTokens, 0);
+    assert.equal(user.balanceVersion, 0);
+    assert.equal(await ChatTurn.countDocuments({ user: f.user._id }), 0);
+    assert.equal(await TokenOperation.countDocuments({ "entries.user": f.user._id }), 0);
+  });
+
 }

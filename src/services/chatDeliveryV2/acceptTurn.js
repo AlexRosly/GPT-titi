@@ -62,7 +62,7 @@ const acceptTurn = async ({ userId, payload }) => {
 
   try {
     await session.withTransaction(async () => {
-      await reserve({ userId, amount: estimate.appTokens, session });
+      await reserve({ userId, amount: estimate.appTokens, turnId, session });
       const [userMessage] = await ChatMessage.create(
         [{
           user: userId,
@@ -112,6 +112,7 @@ const acceptTurn = async ({ userId, payload }) => {
     await session.endSession();
   }
 
+  require("../tokenLedger").notifyCommitted();
   return { turn: createdTurn.toObject(), disposition: "accepted" };
 };
 

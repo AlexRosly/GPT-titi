@@ -22,8 +22,12 @@ const createOutboxWorker = ({ bus, pollMs = 1000 }) => {
         { new: true, sort: { createdAt: 1 } }).lean();
         if (!item) break;
         try {
+          // Read the latest committed snapshot rather than mixing a historical
+          // balance version with current reservations. Older queued events may
+          // coalesce to this same version, which clients can safely deduplicate.
+          const balance = await require("./tokenLedger").getBalance(item.user);
           await bus.publish({
-            userId: String(item.user), balanceVersion: item.balanceVersion,
+            ...balance,
             operationId: String(item.operation), reason: item.reason,
           });
           await BalanceOutbox.updateOne({ _id: item._id, leaseToken }, {

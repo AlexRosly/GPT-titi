@@ -1,4 +1,5 @@
 const { User, ChatTurn } = require("../../models");
+const ledger = require("../tokenLedger");
 const { errorFor } = require("./protocol");
 
 const NEGATIVE_LIMIT = -1000;
@@ -9,7 +10,7 @@ const protocolError = (code, details) => Object.assign(new Error(code), {
 
 // Must share the transaction that creates/requeues the turn. All admissions and
 // transfers write the same User document, so concurrent requests serialize.
-const reserve = async ({ userId, amount, session }) => {
+const reserve = async ({ userId, amount, turnId, attempt = 1, session }) => {
   if (!session || !Number.isSafeInteger(amount) || amount < 0) throw new Error("Invalid reservation");
   const user = await User.findById(userId).session(session).lean();
   if (!user || user.status !== "active") throw protocolError("CONVERSATION_NOT_FOUND");
@@ -20,11 +21,9 @@ const reserve = async ({ userId, amount, session }) => {
   if (!Number.isSafeInteger(limit) || limit < 1) throw new Error("Invalid CHAT_V2_MAX_PENDING_PER_USER");
   const active = await ChatTurn.countDocuments({ user: userId, status: { $in: ["queued", "processing"] } }).session(session);
   if (active >= limit) throw protocolError("TURN_ALREADY_PROCESSING");
-  const updated = await User.updateOne({ _id: userId, status: "active", appTokens: { $gte: NEGATIVE_LIMIT },
-    $expr: { $gte: [availableExpression, amount] } },
-  // The revision also serializes zero-cost reservations.
-  { $inc: { reservedAppTokens: amount, reservationVersion: 1 } }, { session });
-  if (!updated.matchedCount) throw protocolError("INSUFFICIENT_BALANCE", details);
+  await ledger.changeReservation({ userId, amount, turnId, attempt, session,
+    filter: { status: "active", appTokens: { $gte: NEGATIVE_LIMIT }, $expr: { $gte: [availableExpression, amount] } },
+  });
 };
 
 const release = async (turn, session, state = "released") => {
@@ -32,9 +31,10 @@ const release = async (turn, session, state = "released") => {
   const changed = await ChatTurn.updateOne({ _id: turn._id, reservationState: "held", attempt: turn.attempt },
     { $set: { reservationState: state, reservationClosedAt: new Date() } }, { session });
   if (!changed.modifiedCount) throw new Error("Reservation ownership changed");
-  const result = await User.updateOne({ _id: turn.user, reservedAppTokens: { $gte: turn.reservedAppTokens } },
-    { $inc: { reservedAppTokens: -turn.reservedAppTokens, reservationVersion: 1 } }, { session });
-  if (!result.matchedCount) throw new Error("Reservation balance invariant violated");
+  await ledger.changeReservation({ userId: turn.user, amount: turn.reservedAppTokens,
+    turnId: turn.turnId, attempt: turn.attempt, releasing: true, session,
+    filter: { reservedAppTokens: { $gte: turn.reservedAppTokens } },
+  });
 };
 
 module.exports = { reserve, release, availableExpression, NEGATIVE_LIMIT, protocolError };

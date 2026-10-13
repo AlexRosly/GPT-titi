@@ -79,3 +79,36 @@ uses dummy provider credentials and runs the suites without real AI requests.
 New coverage includes simultaneous reservations, duplicate sends at zero
 availability, transfers against holds, overdraft settlement, threshold boundaries,
 failure/retry, ambiguous crash reconciliation, durable-result recovery and rollback.
+
+## Live reservation balance (updated complete patch)
+
+Hold/release operations now increment the SAME User.balanceVersion as charges,
+credits and transfers. They create zero-monetary-delta reservation_hold /
+reservation_release ledger receipts and balance outbox rows in the reservation
+transaction. These audit receipts are excluded from the user transaction history;
+they do not look like purchases, transfers or spending. Committed hold/retry/
+release operations immediately wake the existing outbox worker. Publication is
+retried after connection failures using the existing durable outbox.
+
+GET /users/balance and socket balance.updated expose a coherent latest snapshot:
+- userId
+- appTokens: total balance, including held tokens; can be negative
+- reservedAppTokens: sum of active holds
+- availableTokens: appTokens - reservedAppTokens; can be negative
+- maxTransferTokens: max(0, availableTokens)
+- balanceVersion: common monotonic version
+- nextClaimDate
+
+Events retain operationId and reason for compatibility. A delayed event may
+contain a NEWER snapshot than the operation that triggered it: apply the snapshot
+by userId and balanceVersion, never calculate balances by event reason/deltas.
+All numbers come from one current user document read. After final charge and
+hold closure, readers only see the fully committed final state. Redis balance
+transport and reconnect invalidation remain unchanged.
+
+Frontend follow-up (NOT included in this backend patch): retain these new fields
+in its balance parser/store; update the tokens page/sidebar and Send tokens modal
+from the same snapshot; hide reservation information when reservedAppTokens=0;
+use maxTransferTokens for Max and input validation; invalidate confirmation if
+availability drops below the entered amount. Do not auto-resend a paid request.
+An old frontend remains compatible but will ignore the extra fields until updated.

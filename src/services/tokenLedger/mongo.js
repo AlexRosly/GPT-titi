@@ -14,6 +14,7 @@ const balanceDto = (user) => ({
   appTokens: user.appTokens,
   reservedAppTokens: user.reservedAppTokens || 0,
   availableTokens: user.appTokens - (user.reservedAppTokens || 0),
+  maxTransferTokens: Math.max(0, user.appTokens - (user.reservedAppTokens || 0)),
   balanceVersion: user.balanceVersion || 0,
   nextClaimDate: user.nextDateClaimToken?.toISOString?.() || user.nextDateClaimToken || null,
 });
@@ -123,6 +124,18 @@ const debit = ({ amount, minBalance = null, ...options }) => {
   } });
 };
 
+// Reservation changes have zero monetary delta but advance the same version
+// and create an atomic outbox receipt, so connected clients cannot miss a hold.
+const changeReservation = ({ userId, amount, turnId, attempt, releasing = false, session, filter = {} }) => {
+  assertAmount(amount);
+  if (!session || !turnId || !Number.isSafeInteger(attempt)) throw new Error("Reservation identity required");
+  const kind = releasing ? "reservation_release" : "reservation_hold";
+  return mutate({ userId, delta: 0, kind, key: `${kind}:${turnId}:${attempt}`, session, filter,
+    increments: { reservedAppTokens: releasing ? -amount : amount, reservationVersion: 1 },
+    context: { turnId, reservedTokens: amount, attempt },
+  });
+};
+
 const transfer = async ({ senderId, recipientId, amount, key, session }) => {
   assertAmount(amount);
   if (!amount) throw new LedgerError("INVALID_AMOUNT", "Transfer amount must be positive.", 400);
@@ -202,4 +215,4 @@ const createAccount = async (details) => inTransaction(null, async (session) => 
   return User.findById(user._id).session(session);
 });
 
-module.exports = { createAccount, getBalance, getOperation, credit, debit, transfer, claimBonus, refund, notifyCommitted: wake, LedgerError };
+module.exports = { changeReservation, createAccount, getBalance, getOperation, credit, debit, transfer, claimBonus, refund, notifyCommitted: wake, LedgerError };

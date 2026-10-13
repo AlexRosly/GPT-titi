@@ -1,4 +1,4 @@
-const { ChatTurn, ChatConversation } = require("../../../models");
+const { ChatTurn } = require("../../../models");
 const acceptTurn = require("../../../services/chatDeliveryV2/acceptTurn");
 const retryTurn = require("../../../services/chatDeliveryV2/retryTurn");
 const worker = require("../../../services/chatDeliveryV2/worker");
@@ -32,11 +32,7 @@ const registerChatDeliveryV2 = (io) => {
           disposition: result.disposition,
           turn: await snapshot(result.turn),
         });
-        if (result.disposition === "accepted") {
-          setImmediate(() => worker.claimTurn(result.turn.turnId).then((claimed) => {
-            if (claimed) return worker.processTurn(claimed);
-          }).catch((error) => console.error("chat v2 turn start error", error)));
-        }
+        if (result.disposition === "accepted") worker.wake();
       } catch (error) {
         ackError(ack, error);
       }
@@ -65,9 +61,7 @@ const registerChatDeliveryV2 = (io) => {
 
         // The original user message remains the same. Its attempt is intentionally not rewritten.
         ack?.({ ok: true, protocolVersion: 2, turn: await snapshot(updated) });
-        setImmediate(() => worker.claimTurn(updated.turnId).then((claimed) => {
-          if (claimed) return worker.processTurn(claimed);
-        }).catch((error) => console.error("chat v2 retry start error", error)));
+        worker.wake();
       } catch (error) {
         ackError(ack, error);
       }

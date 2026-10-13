@@ -189,6 +189,7 @@ if (!TEST_MONGO_URI) {
       socket.on(event, handler);
     });
 
+  let restoreWake;
   let originalStartWorker;
   let originalClaimTurn;
   let originalProcessTurn;
@@ -213,6 +214,7 @@ if (!TEST_MONGO_URI) {
      *
      * The handler itself remains real.
      */
+    restoreWake = require("./testWake").installTestWake(worker, ChatTurn);
     originalStartWorker = worker.startWorker;
 
     originalClaimTurn = worker.claimTurn;
@@ -245,6 +247,7 @@ if (!TEST_MONGO_URI) {
   });
 
   test.after(async () => {
+    restoreWake();
     worker.startWorker = originalStartWorker;
 
     worker.claimTurn = originalClaimTurn;

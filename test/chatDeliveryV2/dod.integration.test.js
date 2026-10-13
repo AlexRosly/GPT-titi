@@ -144,6 +144,7 @@ if (!TEST_MONGO_URI) {
     });
 
   let server;
+  let restoreWake;
   let originalStartWorker;
   let originalClaimTurn;
   let originalProcessTurn;
@@ -161,6 +162,7 @@ if (!TEST_MONGO_URI) {
       ChatBillingLedger.createIndexes(),
     ]);
 
+    restoreWake = require("./testWake").installTestWake(worker, ChatTurn);
     originalStartWorker = worker.startWorker;
     originalClaimTurn = worker.claimTurn;
     originalProcessTurn = worker.processTurn;
@@ -188,6 +190,7 @@ if (!TEST_MONGO_URI) {
   });
 
   test.after(async () => {
+    restoreWake();
     worker.startWorker = originalStartWorker;
     worker.claimTurn = originalClaimTurn;
     worker.processTurn = originalProcessTurn;
@@ -469,7 +472,7 @@ if (!TEST_MONGO_URI) {
     }
   });
 
-  test("v2 does not emit legacy chat_error and legacy v1 send still reaches the compatibility path", async () => {
+  test("v2 does not emit legacy chat_error and legacy v1 send is rejected", async () => {
     const { user, conversation, modelId } = await createFixture();
     const socket = await connectClient(signToken(user));
     const underscoreEvents = [];
@@ -484,22 +487,14 @@ if (!TEST_MONGO_URI) {
       assert.equal(underscoreEvents.length, 0);
 
       const beforeLegacyCalls = legacyCalls;
-      const streamPromise = waitForEvent(socket, "chat:stream", (payload) => payload?.chunk === "legacy response");
-      const endPromise = waitForEvent(socket, "chat:end", (payload) => payload?.type === "response");
-      socket.emit("chat:send", {
-        event: "chat:send",
-        type: "request",
-        payload: {
-          conversationId: conversation._id.toString(),
-          modelId,
-          message: "legacy request",
-          files: [],
-        },
+      const legacyAck = await emitWithAck(socket, "chat:send", {
+        event: "chat:send", type: "request",
+        payload: { conversationId: conversation._id.toString(), modelId, message: "legacy request", files: [] },
       });
-      const [legacyStream, legacyEnd] = await Promise.all([streamPromise, endPromise]);
-      assert.equal(legacyStream.chunk, "legacy response");
-      assert.equal(legacyEnd.type, "response");
-      assert.equal(legacyCalls, beforeLegacyCalls + 1);
+      assert.equal(legacyAck.ok, false);
+      assert.equal(legacyAck.error.code, "INVALID_ENVELOPE");
+      assert.equal(legacyCalls, beforeLegacyCalls);
+      assert.equal(await ChatTurn.countDocuments({ user: user._id }), 0);
     } finally {
       socket.disconnect();
     }

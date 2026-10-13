@@ -7,6 +7,7 @@ const CODES = {
   INVALID_CONVERSATION_ID: ["Invalid conversation id.", false],
   CONVERSATION_NOT_FOUND: ["Conversation not found.", false],
   MODEL_NOT_AVAILABLE: ["Model not available.", false],
+  BALANCE_LIMIT_EXCEEDED: ["Your balance is below −1,000 TITI. Top up to continue.", false],
   INSUFFICIENT_BALANCE: ["Insufficient balance.", false],
   IDEMPOTENCY_CONFLICT: ["The client message id was already used for another request.", false],
   TURN_NOT_FOUND: ["Turn not found.", false],

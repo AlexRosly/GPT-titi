@@ -144,6 +144,7 @@ if (!TEST_MONGO_URI) {
     });
 
   let server;
+  let restoreWake;
   let originalStartWorker;
   let originalClaimTurn;
   let originalProcessTurn;
@@ -262,6 +263,7 @@ if (!TEST_MONGO_URI) {
       ChatMessage.createIndexes(),
     ]);
 
+    restoreWake = require("./testWake").installTestWake(worker, ChatTurn);
     originalStartWorker = worker.startWorker;
     originalClaimTurn = worker.claimTurn;
     originalProcessTurn = worker.processTurn;
@@ -283,6 +285,7 @@ if (!TEST_MONGO_URI) {
   });
 
   test.after(async () => {
+    restoreWake();
     worker.startWorker = originalStartWorker;
     worker.claimTurn = originalClaimTurn;
     worker.processTurn = originalProcessTurn;

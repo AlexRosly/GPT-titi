@@ -1,0 +1,42 @@
+name: Billing reservations
+on:
+  pull_request:
+  push:
+    branches: [main, 'feat/chat-token-reservations']
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      OPENAI_API_KEY: test-unused-key
+      STRIPE_SECRET_KEY: sk_test_unused
+      JWT_SECRET: local-ci-only-not-a-production-secret
+      CHAT_V2_TEST_MONGO_URI: mongodb://127.0.0.1:27017/?replicaSet=rs0
+      TOKEN_TRANSFER_TEST_MONGO_URI: mongodb://127.0.0.1:27017/?replicaSet=rs0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Start isolated MongoDB replica set
+        run: |
+          docker run --detach --name billing-test-mongo --publish 27017:27017 mongo:7 --replSet rs0 --bind_ip_all
+          for i in $(seq 1 30); do
+            if docker exec billing-test-mongo mongosh --quiet --eval 'db.adminCommand({ping:1})'; then break; fi
+            sleep 1
+          done
+          docker exec billing-test-mongo mongosh --quiet --eval 'rs.initiate({_id:"rs0",members:[{_id:0,host:"127.0.0.1:27017"}]})'
+          for i in $(seq 1 30); do
+            if docker exec billing-test-mongo mongosh --quiet --eval 'if (!db.hello().isWritablePrimary) quit(1)'; then exit 0; fi
+            sleep 1
+          done
+          exit 1
+      - name: Unit and transaction integration tests (no provider API calls)
+        run: npm test
+      - name: MongoDB diagnostics
+        if: failure()
+        run: docker logs billing-test-mongo --tail 80

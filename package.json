@@ -13,6 +13,7 @@
     "test:token-transfers": "node --test test/tokenTransfers.test.js test/tokenTransfers.integration.test.js test/tokenTransfers.http.test.js test/legacyBilling.test.js",
     "db:indexes:token-transfers": "node scripts/createTokenTransferIndexes.js",
     "db:indexes:chat-v2": "node scripts/createChatV2Indexes.js",
+    "test:reservations": "node --test --test-concurrency=1 test/chatDeliveryV2/reservations.integration.test.js test/chatDeliveryV2/transportRecovery.integration.test.js test/chatDeliveryV2/dod.integration.test.js",
     "test:chat-v2:integration": "node --test test/chatDeliveryV2/integration.test.js",
     "test:chat-v2:ws": "node --test test/chatDeliveryV2/ws.integration.test.js",
     "test:chat-v2:worker": "node --test test/chatDeliveryV2/worker.integration.test.js",

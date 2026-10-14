@@ -58,10 +58,17 @@ const acceptTurn = async ({ userId, payload }) => {
   const estimate = await estimateCost(modelId, estimatedTokens);
   const turnId = crypto.randomUUID();
   const session = await mongoose.startSession();
-  let createdTurn;
+  let result;
 
   try {
-    await session.withTransaction(async () => {
+    result = await session.withTransaction(async () => {
+      // A competing submission may have committed since the preflight read.
+      // Recheck on every transaction retry before touching the shared balance.
+      const duplicate = await ChatTurn.findOne({ user: userId, clientMessageId }).session(session).lean();
+      if (duplicate) {
+        if (duplicate.requestHash !== requestHash) throw protocolError("IDEMPOTENCY_CONFLICT");
+        return { turn: duplicate, disposition: "duplicate" };
+      }
       await reserve({ userId, amount: estimate.appTokens, turnId, session });
       const [userMessage] = await ChatMessage.create(
         [{
@@ -79,7 +86,7 @@ const acceptTurn = async ({ userId, payload }) => {
         { session },
       );
 
-      [createdTurn] = await ChatTurn.create(
+      const [createdTurn] = await ChatTurn.create(
         [{
           turnId,
           user: userId,
@@ -98,6 +105,7 @@ const acceptTurn = async ({ userId, payload }) => {
         }],
         { session },
       );
+      return { turn: createdTurn.toObject(), disposition: "accepted" };
     });
   } catch (error) {
     if (error?.code === 11000 || error?.protocolError) {
@@ -112,8 +120,8 @@ const acceptTurn = async ({ userId, payload }) => {
     await session.endSession();
   }
 
-  require("../tokenLedger").notifyCommitted();
-  return { turn: createdTurn.toObject(), disposition: "accepted" };
+  if (result.disposition === "accepted") require("../tokenLedger").notifyCommitted();
+  return result;
 };
 
 module.exports = acceptTurn;

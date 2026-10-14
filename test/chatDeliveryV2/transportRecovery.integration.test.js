@@ -218,6 +218,8 @@ if (!TEST_MONGO_URI) {
   };
 
   const acceptWithoutStartingWorker = async ({ socket, conversation, modelId }) => {
+    const deterministicWake = worker.wake;
+    worker.wake = () => {};
     const deterministicClaim = worker.claimTurn;
     const deterministicProcess = worker.processTurn;
     worker.claimTurn = async () => null;
@@ -233,23 +235,21 @@ if (!TEST_MONGO_URI) {
       await new Promise((resolve) => setImmediate(resolve));
       return send;
     } finally {
+      worker.wake = deterministicWake;
       worker.claimTurn = deterministicClaim;
       worker.processTurn = deterministicProcess;
     }
   };
 
   const markRetryableFailed = async (turnId) => {
-    await ChatTurn.updateOne(
-      { turnId },
-      {
-        $set: {
-          status: "failed",
-          error: errorFor("PROCESS_INTERRUPTED"),
-          leaseToken: null,
-          leaseUntil: null,
-        },
-      },
-    );
+    // Model a confirmed pre-provider failure through the production transition:
+    // status and reservation release must be committed together.
+    const claimed = await originalClaimTurn.call(worker, turnId);
+    assert.ok(claimed, "Fixture must claim the queued turn");
+    await worker.failTurn(claimed.turn, claimed.leaseToken, errorFor("PROCESS_INTERRUPTED"), { knownNoCharge: true });
+    const failed = await ChatTurn.findOne({ turnId }).lean();
+    assert.equal(failed.reservationState, "released");
+    assert.equal(failed.needsReconciliation, false);
   };
 
   test.before(async () => {
@@ -325,13 +325,16 @@ if (!TEST_MONGO_URI) {
         (payload) => payload.turnId === send.turn.turnId && payload.attempt === 2,
       );
 
+      void streamPromise.catch(() => {});
+      void endPromise.catch(() => {});
+
       const retry = await emitWithAck(
         socket,
         "chat:retry",
         makeTurnEnvelope("chat:retry", send.turn.turnId),
       );
 
-      assert.equal(retry.ok, true);
+      assert.equal(retry.ok, true, JSON.stringify(retry));
       assert.equal(retry.protocolVersion, 2);
       assert.equal(retry.turn.turnId, send.turn.turnId);
       assert.equal(retry.turn.status, "queued");
@@ -380,7 +383,7 @@ if (!TEST_MONGO_URI) {
       const successes = responses.filter((response) => response.ok === true);
       const failures = responses.filter((response) => response.ok === false);
 
-      assert.equal(successes.length, 1);
+      assert.equal(successes.length, 1, JSON.stringify(responses));
       assert.equal(successes[0].turn.attempt, 2);
       assert.equal(failures.length, 1);
       assert.equal(failures[0].error.code, "TURN_NOT_RETRYABLE");

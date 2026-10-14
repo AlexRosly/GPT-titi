@@ -11,7 +11,8 @@ const {
 const { estimateTokens, estimateCost } = require("../../utils");
 const { buildRequestHash, errorFor } = require("./protocol");
 
-const NEGATIVE_LIMIT = -1000;
+const { reserve } = require("./reservations");
+const { APP_TOKEN_VALUE_USD } = require("../../config/billing");
 
 const protocolError = (code) => Object.assign(new Error(), { protocolError: errorFor(code) });
 
@@ -41,16 +42,10 @@ const acceptTurn = async ({ userId, payload }) => {
   }).select("_id").lean();
   if (!conversation) throw protocolError("CONVERSATION_NOT_FOUND");
 
-  const model = await ChatModels.findOne({ modelId, enabled: true }).select("modelId").lean();
+  const model = await ChatModels.findOne({ modelId, enabled: true }).select("modelId inputPerM outputPerM").lean();
   if (!model) throw protocolError("MODEL_NOT_AVAILABLE");
 
   await validateFilesOwnership(userId, files);
-
-  const estimatedTokens = estimateTokens(message);
-  const estimate = await estimateCost(modelId, estimatedTokens);
-  if (user.appTokens - estimate.appTokens < NEGATIVE_LIMIT) {
-    throw protocolError("INSUFFICIENT_BALANCE");
-  }
 
   const requestHash = buildRequestHash({ userId, conversationId, modelId, message, files });
   const existing = await findExistingTurn(userId, clientMessageId);
@@ -59,12 +54,22 @@ const acceptTurn = async ({ userId, payload }) => {
     return { turn: existing, disposition: "duplicate" };
   }
 
+  const estimatedTokens = estimateTokens(message);
+  const estimate = await estimateCost(modelId, estimatedTokens);
   const turnId = crypto.randomUUID();
   const session = await mongoose.startSession();
-  let createdTurn;
+  let result;
 
   try {
-    await session.withTransaction(async () => {
+    result = await session.withTransaction(async () => {
+      // A competing submission may have committed since the preflight read.
+      // Recheck on every transaction retry before touching the shared balance.
+      const duplicate = await ChatTurn.findOne({ user: userId, clientMessageId }).session(session).lean();
+      if (duplicate) {
+        if (duplicate.requestHash !== requestHash) throw protocolError("IDEMPOTENCY_CONFLICT");
+        return { turn: duplicate, disposition: "duplicate" };
+      }
+      await reserve({ userId, amount: estimate.appTokens, turnId, session });
       const [userMessage] = await ChatMessage.create(
         [{
           user: userId,
@@ -81,7 +86,7 @@ const acceptTurn = async ({ userId, payload }) => {
         { session },
       );
 
-      [createdTurn] = await ChatTurn.create(
+      const [createdTurn] = await ChatTurn.create(
         [{
           turnId,
           user: userId,
@@ -91,15 +96,19 @@ const acceptTurn = async ({ userId, payload }) => {
           modelId,
           message,
           files,
+          reservedAppTokens: estimate.appTokens,
+          reservationState: "held",
+          pricing: { inputPerM: model.inputPerM, outputPerM: model.outputPerM, tokenValueUsd: APP_TOKEN_VALUE_USD },
           status: "queued",
           attempt: 1,
           userMessage: userMessage._id,
         }],
         { session },
       );
+      return { turn: createdTurn.toObject(), disposition: "accepted" };
     });
   } catch (error) {
-    if (error?.code === 11000) {
+    if (error?.code === 11000 || error?.protocolError) {
       const duplicate = await findExistingTurn(userId, clientMessageId);
       if (duplicate) {
         if (duplicate.requestHash !== requestHash) throw protocolError("IDEMPOTENCY_CONFLICT");
@@ -111,7 +120,8 @@ const acceptTurn = async ({ userId, payload }) => {
     await session.endSession();
   }
 
-  return { turn: createdTurn.toObject(), disposition: "accepted" };
+  if (result.disposition === "accepted") require("../tokenLedger").notifyCommitted();
+  return result;
 };
 
 module.exports = acceptTurn;

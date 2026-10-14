@@ -12,6 +12,9 @@ class LedgerError extends Error {
 const balanceDto = (user) => ({
   userId: user._id.toString(),
   appTokens: user.appTokens,
+  reservedAppTokens: user.reservedAppTokens || 0,
+  availableTokens: user.appTokens - (user.reservedAppTokens || 0),
+  maxTransferTokens: Math.max(0, user.appTokens - (user.reservedAppTokens || 0)),
   balanceVersion: user.balanceVersion || 0,
   nextClaimDate: user.nextDateClaimToken?.toISOString?.() || user.nextDateClaimToken || null,
 });
@@ -98,7 +101,7 @@ const mutate = async ({ userId, delta, kind, key = `${kind}:${randomUUID()}`, se
 };
 
 const getBalance = async (userId) => {
-  const user = await User.findById(userId).select("appTokens balanceVersion nextDateClaimToken status").lean();
+  const user = await User.findById(userId).select("appTokens reservedAppTokens balanceVersion nextDateClaimToken status").lean();
   if (!user || user.status === "deleted") throw new LedgerError("USER_NOT_FOUND", "Account not found.", 404);
   return balanceDto(user);
 };
@@ -119,6 +122,18 @@ const debit = ({ amount, minBalance = null, ...options }) => {
   return mutate({ ...options, delta: -amount, filter: {
     ...options.filter, ...(minBalance === null ? {} : { appTokens: { $gte: amount + minBalance } }),
   } });
+};
+
+// Reservation changes have zero monetary delta but advance the same version
+// and create an atomic outbox receipt, so connected clients cannot miss a hold.
+const changeReservation = ({ userId, amount, turnId, attempt, releasing = false, session, filter = {} }) => {
+  assertAmount(amount);
+  if (!session || !turnId || !Number.isSafeInteger(attempt)) throw new Error("Reservation identity required");
+  const kind = releasing ? "reservation_release" : "reservation_hold";
+  return mutate({ userId, delta: 0, kind, key: `${kind}:${turnId}:${attempt}`, session, filter,
+    increments: { reservedAppTokens: releasing ? -amount : amount, reservationVersion: 1 },
+    context: { turnId, reservedTokens: amount, attempt },
+  });
 };
 
 const transfer = async ({ senderId, recipientId, amount, key, session }) => {
@@ -142,7 +157,9 @@ const transfer = async ({ senderId, recipientId, amount, key, session }) => {
     return { sender: receipt(existing, senderId), recipient: receipt(existing, recipientId), operation: operationDto(existing) };
   }
   const debited = await User.findOneAndUpdate(
-    { _id: senderId, status: "active", appTokens: { $gte: amount } },
+    { _id: senderId, status: "active", $expr: { $gte: [
+      { $subtract: ["$appTokens", { $ifNull: ["$reservedAppTokens", 0] }] }, amount,
+    ] } },
     { $inc: { appTokens: -amount, balanceVersion: 1 } }, { new: true, session },
   ).lean();
   if (!debited) throw new LedgerError("INSUFFICIENT_BALANCE", "Insufficient balance.");
@@ -185,7 +202,7 @@ const refund = async ({ userId, amount, key, session, minBalance = -1000, usd = 
     }
     const user = await User.findById(userId).session(activeSession).lean();
     if (!user) throw new LedgerError("USER_NOT_FOUND", "Account not found.", 404);
-    const delta = Math.max(user.appTokens - amount, minBalance) - user.appTokens;
+    const delta = Math.min(0, Math.max(user.appTokens - amount, minBalance) - user.appTokens);
     return mutate({ userId, delta, kind: "refund", key, session: activeSession, requestSignature, context,
       fields: { totalSpentUsd: Math.max(0, (user.totalSpentUsd || 0) - usd) } });
   });
@@ -198,4 +215,4 @@ const createAccount = async (details) => inTransaction(null, async (session) => 
   return User.findById(user._id).session(session);
 });
 
-module.exports = { createAccount, getBalance, getOperation, credit, debit, transfer, claimBonus, refund, notifyCommitted: wake, LedgerError };
+module.exports = { changeReservation, createAccount, getBalance, getOperation, credit, debit, transfer, claimBonus, refund, notifyCommitted: wake, LedgerError };

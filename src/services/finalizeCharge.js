@@ -4,7 +4,7 @@ const { calculateModelCost } = require("../utils");
 
 const tokenLedger = require("./tokenLedger");
 
-const NEGATIVE_LIMIT = -1000;
+
 
 const calculateCost = async ({ modelId, usage }) =>
   calculateModelCost({
@@ -66,10 +66,18 @@ const finalizeChargeInTransaction = async ({
   modelId,
   usage,
   conversationId,
+  pricing,
 }) => {
   if (!session || !turnId) throw new Error("session and turnId are required");
 
-  const cost = await calculateCost({ modelId, usage });
+  let cost;
+  if (pricing?.tokenValueUsd > 0) {
+    const usd = ((usage.prompt_tokens ?? usage.promptTokens ?? 0) * pricing.inputPerM +
+      (usage.completion_tokens ?? usage.completionTokens ?? 0) * pricing.outputPerM) / 1_000_000;
+    cost = { usd: Number(usd.toFixed(6)), appTokens: Math.ceil(usd / pricing.tokenValueUsd) };
+  } else {
+    cost = await calculateCost({ modelId, usage });
+  }
   let ledger = await ChatBillingLedger.findOne({ turnId }).session(session);
 
   if (ledger) {
@@ -85,7 +93,7 @@ const finalizeChargeInTransaction = async ({
 
   let balance;
   try {
-    balance = await tokenLedger.debit({ userId, amount: cost.appTokens, minBalance: NEGATIVE_LIMIT,
+    balance = await tokenLedger.debit({ userId, amount: cost.appTokens,
       kind: "chat_charge", key: `chat:${turnId}`, session,
       context: { ...await chargeContext({ userId, modelId, usage, conversationId, turnId, session }), costUsd: cost.usd } });
   } catch (cause) {

@@ -5,18 +5,19 @@ const {
   ChatTurn,
   ChatMessage,
   ChatConversation,
-  User,
 } = require("../../models");
 const { estimateTokens } = require("../../utils");
 const { finalizeChargeInTransaction } = require("../finalizeCharge");
 const { errorFor } = require("./protocol");
+const { release } = require("./reservations");
+const { createScheduler } = require("./scheduler");
 const { messageDto } = require("./snapshot");
 
-const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, maxRetries: 0 });
 const LEASE_MS = Number(process.env.CHAT_V2_LEASE_MS || 30_000);
 const HEARTBEAT_MS = Math.max(1_000, Math.floor(LEASE_MS / 3));
 const BATCH_MS = Number(process.env.CHAT_V2_BATCH_MS || 80);
-const NEGATIVE_LIMIT = -1000;
+
 let ioRef = null;
 
 const setIo = (io) => { ioRef = io; };
@@ -110,36 +111,37 @@ const updatePartial = async (turn, leaseToken, partialContent, seq) => {
   return result.modifiedCount === 1;
 };
 
-const failTurn = async (turn, leaseToken, errorObject) => {
-  const updated = await ChatTurn.findOneAndUpdate(
-    {
-      _id: turn._id,
-      turnId: turn.turnId,
-      attempt: turn.attempt,
-      status: "processing",
-      leaseToken,
-    },
-    {
-      $set: {
-        status: "failed",
-        error: errorObject,
-        leaseToken: null,
-        leaseUntil: null,
-      },
-    },
-    { new: true },
-  );
-  if (updated) {
-    emit(turn.user, "chat:error", {
-      protocolVersion: 2,
-      event: "chat:error",
-      type: "failed",
-      turnId: turn.turnId,
-      clientMessageId: turn.clientMessageId,
-      conversationId: turn.conversation.toString(),
-      attempt: turn.attempt,
-      payload: { error: errorObject },
+const emitFailure = (turn, error) => emit(turn.user, "chat:error", {
+  protocolVersion: 2, event: "chat:error", type: "failed", turnId: turn.turnId,
+  clientMessageId: turn.clientMessageId, conversationId: turn.conversation.toString(),
+  attempt: turn.attempt, payload: { error },
+});
+
+const failTurn = async (turn, leaseToken, errorObject, { knownNoCharge = false, expiredOnly = false } = {}) => {
+  const session = await mongoose.startSession();
+  let updated;
+  try {
+    await session.withTransaction(async () => {
+      updated = undefined;
+      const current = await ChatTurn.findOne({ _id: turn._id, attempt: turn.attempt,
+        status: "processing", leaseToken,
+        ...(expiredOnly ? { leaseUntil: { $lte: new Date() } } : {}),
+      }).session(session);
+      if (!current || current.providerResult) return;
+      const uncertain = Boolean(current.providerStartedAt) && !knownNoCharge;
+      const terminalError = uncertain
+        ? errorFor("PROCESS_INTERRUPTED", "Generation was interrupted. Its token charge is being reconciled.", false)
+        : errorObject;
+      if (!uncertain) await release(current, session);
+      updated = await ChatTurn.findOneAndUpdate({ _id: current._id, leaseToken, attempt: current.attempt }, {
+        $set: { status: "failed", error: terminalError, needsReconciliation: uncertain,
+          leaseToken: null, leaseUntil: null },
+      }, { new: true, session });
     });
+  } finally { await session.endSession(); }
+  if (updated) {
+    require("../tokenLedger").notifyCommitted();
+    emitFailure(updated, updated.error);
   }
   return updated;
 };
@@ -165,12 +167,15 @@ const commitCompletion = async (turn, leaseToken, assistantText, usage) => {
         userId: turn.user,
         modelId: turn.modelId,
         conversationId: turn.conversation,
+        pricing: current.pricing,
         usage: {
           prompt_tokens: usage.promptTokens,
           completion_tokens: usage.completionTokens,
           total_tokens: usage.totalTokens,
         },
       });
+
+      await release(current, session, "settled");
 
       let assistant = current.assistantMessage
         ? await ChatMessage.findById(current.assistantMessage).session(session)
@@ -212,6 +217,8 @@ const commitCompletion = async (turn, leaseToken, assistantText, usage) => {
             usage,
             billing,
             billingAppliedAt: completedAt,
+            needsReconciliation: false,
+            providerResult: null,
             status: "completed",
             completedAt,
             leaseToken: null,
@@ -244,8 +251,17 @@ const commitCompletion = async (turn, leaseToken, assistantText, usage) => {
 const processTurn = async (claimed) => {
   const { turn, leaseToken } = claimed;
   let heartbeatTimer;
+  let resultStored = false;
+  const controller = new AbortController();
   try {
-    heartbeatTimer = setInterval(() => heartbeat(turn, leaseToken).catch(() => {}), HEARTBEAT_MS);
+    if (turn.reservationState !== "held") {
+      await failTurn(turn, leaseToken, errorFor("PROCESS_INTERRUPTED", "Please retry this request after the billing upgrade.", true));
+      return;
+    }
+    heartbeatTimer = setInterval(() => {
+      heartbeat(turn, leaseToken).then((owned) => { if (!owned) controller.abort(); })
+        .catch(() => controller.abort());
+    }, HEARTBEAT_MS);
 
     const history = await ChatMessage.find({
       user: turn.user,
@@ -263,12 +279,16 @@ const processTurn = async (claimed) => {
 
     let assistantText = turn.partialContent || "";
     let seq = turn.lastSeq || 0;
+    const started = await ChatTurn.updateOne({ _id: turn._id, attempt: turn.attempt,
+      leaseToken, status: "processing", leaseUntil: { $gt: new Date() }, reservationState: "held" },
+    { $set: { providerStartedAt: new Date() } });
+    if (!started.matchedCount) return;
     const stream = await client.chat.completions.create({
       model: turn.modelId,
       messages,
       stream: true,
       stream_options: { include_usage: true },
-    });
+    }, { signal: controller.signal });
 
     let usage;
     let pending = "";
@@ -294,7 +314,7 @@ const processTurn = async (claimed) => {
         pending = "";
         seq += 1;
         const ok = await updatePartial(turn, leaseToken, assistantText, seq);
-        if (!ok) return;
+        if (!ok) { controller.abort(); return; }
         emit(turn.user, "chat:stream", {
           protocolVersion: 2,
           event: "chat:stream",
@@ -316,7 +336,7 @@ const processTurn = async (claimed) => {
       pending = "";
       seq += 1;
       const ok = await updatePartial(turn, leaseToken, assistantText, seq);
-      if (!ok) return;
+      if (!ok) { controller.abort(); return; }
       emit(turn.user, "chat:stream", {
         protocolVersion: 2,
         event: "chat:stream",
@@ -337,6 +357,13 @@ const processTurn = async (claimed) => {
       };
     }
 
+    // Persist the completed provider result before billing. Recovery can finish
+    // this exact charge without making another provider request.
+    const saved = await ChatTurn.updateOne({ _id: turn._id, attempt: turn.attempt,
+      leaseToken, status: "processing", leaseUntil: { $gt: new Date() } },
+    { $set: { providerResult: { assistantText, usage } } });
+    if (!saved.matchedCount) return;
+    resultStored = true;
     const completion = await commitCompletion(turn, leaseToken, assistantText, usage);
     emit(turn.user, "chat:end", {
       protocolVersion: 2,
@@ -352,69 +379,56 @@ const processTurn = async (claimed) => {
       },
     });
   } catch (error) {
-    if (error?.staleLease) return;
+    if (error?.staleLease || resultStored) return;
     const protocol = error?.code === "INSUFFICIENT_BALANCE"
       ? errorFor("INSUFFICIENT_BALANCE")
       : safeProviderError(error);
-    await failTurn(turn, leaseToken, protocol);
+    await failTurn(turn, leaseToken, protocol, { knownNoCharge: [400, 401, 403, 404, 422, 429].includes(error?.status) });
   } finally {
     clearInterval(heartbeatTimer);
+    controller.abort();
   }
 };
 
 const recoverExpired = async () => {
-  const expired = await ChatTurn.find({
-    status: "processing",
-    leaseUntil: { $lte: new Date() },
-  }).select("_id turnId user conversation clientMessageId attempt");
+  const expired = await ChatTurn.find({ status: "processing", leaseUntil: { $lte: new Date() } });
   for (const turn of expired) {
-    const error = errorFor("PROCESS_INTERRUPTED");
-    const updated = await ChatTurn.findOneAndUpdate(
-      { _id: turn._id, status: "processing", leaseUntil: { $lte: new Date() } },
-      { $set: { status: "failed", error, leaseToken: null, leaseUntil: null } },
-      { new: true },
-    );
-    if (updated) {
-      emit(turn.user, "chat:error", {
-        protocolVersion: 2,
-        event: "chat:error",
-        type: "failed",
-        turnId: turn.turnId,
-        clientMessageId: turn.clientMessageId,
-        conversationId: turn.conversation.toString(),
-        attempt: turn.attempt,
-        payload: { error },
-      });
+    if (turn.providerResult) {
+      const leaseToken = crypto.randomUUID();
+      const current = await ChatTurn.findOneAndUpdate({ _id: turn._id, status: "processing",
+        leaseToken: turn.leaseToken, leaseUntil: { $lte: new Date() } },
+      { $set: { leaseToken, leaseUntil: new Date(Date.now() + LEASE_MS) } }, { new: true });
+      if (!current) continue;
+      try {
+        const completion = await commitCompletion(current, leaseToken,
+          current.providerResult.assistantText, current.providerResult.usage);
+        emit(current.user, "chat:end", { protocolVersion: 2, event: "chat:end", type: "completed",
+          turnId: current.turnId, clientMessageId: current.clientMessageId,
+          conversationId: current.conversation.toString(), attempt: current.attempt,
+          payload: { assistantMessage: messageDto(completion.assistant), billing: completion.billing } });
+      } catch (error) {
+        console.error("chat v2 completion recovery failed", current.turnId, error.message);
+      }
+    } else {
+      await failTurn(turn, turn.leaseToken, errorFor("PROCESS_INTERRUPTED"), { expiredOnly: true });
     }
   }
 };
 
+let scheduler = null;
+const wake = () => scheduler?.wake();
 const startWorker = async () => {
-  await recoverExpired();
-  let active = 0;
-  const maxWorkers = Number(process.env.CHAT_V2_WORKERS || 4);
-  const tick = async () => {
-    while (active < maxWorkers) {
-      const claimed = await claimNextQueued();
-      if (!claimed) break;
-      active += 1;
-      processTurn(claimed).finally(() => { active -= 1; });
-    }
-  };
-  await tick();
-  const timer = setInterval(async () => {
-    try {
-      await recoverExpired();
-      await tick();
-    } catch (error) {
-      console.error("chat v2 worker error", error);
-    }
-  }, 2_000);
-  return () => clearInterval(timer);
+  if (scheduler) return () => scheduler?.stop();
+  scheduler = createScheduler({ claim: claimNextQueued, process: processTurn, recover: recoverExpired,
+    concurrency: Number(process.env.CHAT_V2_WORKERS || 4) });
+  scheduler.wake();
+  return () => { scheduler.stop(); scheduler = null; };
 };
 
 module.exports = {
   setIo,
+  wake,
+  failTurn,
   claimTurn,
   heartbeat,
   updatePartial,

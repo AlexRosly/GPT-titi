@@ -13,7 +13,7 @@ const typeExpression = { $switch: { branches: [
 const prefix = (userId, options, { filterType = true, billing = false } = {}) => {
   const user = objectId(userId);
   const stages = [
-    { $match: { "entries.user": user, status: "confirmed", ...(Object.keys(options.createdAt).length ? { createdAt: options.createdAt } : {}) } },
+    { $match: { "entries.user": user, status: "confirmed", kind: { $nin: ["reservation_hold", "reservation_release"] }, ...(Object.keys(options.createdAt).length ? { createdAt: options.createdAt } : {}) } },
     // Drop every other participant's financial receipt before doing any work.
     { $project: { key: 1, kind: 1, status: 1, source: 1, transactionHash: 1, context: 1, createdAt: 1,
       entry: { $arrayElemAt: [{ $filter: { input: "$entries", as: "entry", cond: { $eq: ["$$entry.user", user] } } }, 0] } } },

@@ -18,7 +18,7 @@ router.get("/:id/messages", auth, ctrl.conversation.getConversationMessages);
 router.post(
   "/conversations/:id/regenerate",
   auth,
-  ctrl.conversation.regenerateLastAnswer,
+  require("../controllers/chat/legacyGenerationGone"),
 );
 router.post(
   "/conversations/:id/fork",

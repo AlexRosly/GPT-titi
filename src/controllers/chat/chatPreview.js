@@ -30,11 +30,14 @@ const chatPreview = async (req, res) => {
     const user = await User.findById(userId);
     if (!user) return res.status(401).json({ error: "User not found" });
 
-    const projectedBalance = user.appTokens - estimate.appTokens;
+    const availableTokens = user.appTokens - (user.reservedAppTokens || 0);
+    const projectedBalance = availableTokens - estimate.appTokens;
 
-    if (projectedBalance < NEGATIVE_LIMIT) {
+    if (user.appTokens < NEGATIVE_LIMIT || projectedBalance < 0) {
       return res.status(402).json({
         error: "Insufficient balance",
+        code: user.appTokens < NEGATIVE_LIMIT ? "BALANCE_LIMIT_EXCEEDED" : "INSUFFICIENT_BALANCE",
+        details: { balance: user.appTokens, availableTokens, estimatedTokens: estimate.appTokens },
         required: estimate.appTokens,
         balance: user.appTokens,
         limit: NEGATIVE_LIMIT,

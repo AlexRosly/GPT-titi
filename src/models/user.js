@@ -9,6 +9,8 @@ const UserSchema = Schema(
 
     // Billing
     appTokens: { type: Number, default: 10000 }, // 0.01$ free
+    reservedAppTokens: { type: Number, default: 0 },
+    reservationVersion: { type: Number, default: 0 },
     balanceVersion: { type: Number, default: 0 },
     totalSpentUsd: { type: Number, default: 0 },
     // Auth

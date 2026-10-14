@@ -2,6 +2,26 @@
 
 The service for work with AI instrument
 
+## Локальная транскрибация аудио
+
+API поддерживает OpenAI-совместимый сервис Speaches на faster-whisper. Docker Compose находится в `docker-compose.whisper.yml`; файл `.env.whisper.example` содержит параметры Node.js API. Модель скачивается Speaches при первом запросе к ней и кэшируется в Docker volume.
+
+Запуск на GPU (модель large-v3-turbo):
+
+```sh
+docker compose -f docker-compose.whisper.yml --profile gpu up -d
+```
+
+Запуск на CPU (модель small по умолчанию):
+
+```sh
+docker compose -f docker-compose.whisper.yml --profile cpu up -d
+```
+
+Задайте в окружении Node.js `WHISPER_BASE_URL=http://127.0.0.1:8000/v1`, `WHISPER_API_KEY=speaches-local` и `WHISPER_MODEL=Systran/faster-whisper-large-v3-turbo` (для CPU можно выбрать `Systran/faster-whisper-small`). `WHISPER_BASE_URL` переключает endpoint распознавания с OpenAI на локальный сервис; при его отсутствии остаётся OpenAI API и используется `OPENAI_API_KEY`. Порт контейнера привязан к `127.0.0.1`, поэтому доступен на том же сервере, но не открыт наружу.
+
+Защищённый JWT endpoint: `POST /gpt-titi/api/upload/transcriptions`, multipart/form-data, поле `file`. Дополнительно можно передать `language` (например, `ru`) и `prompt`. Ответ: `{ "text": "...", "model": "..." }`. Максимальный размер файла настраивается через `TRANSCRIPTION_MAX_FILE_SIZE` (по умолчанию 25 MiB). Файл потоково сохраняется во временную директорию сервера и удаляется после обработки, в том числе при ошибке.
+
 ## Необхідні змінні .env для WebSocket
 
 Для налаштування WebSocket-сервера потрібно вказати у `.env` тільки такі змінні:

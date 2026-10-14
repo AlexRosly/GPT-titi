@@ -1,0 +1,30 @@
+services:
+  whisper:
+    image: ghcr.io/speaches-ai/speaches:latest-cuda
+    profiles: ["gpu"]
+    init: true
+    restart: unless-stopped
+    volumes:
+      - whisper-models:/home/ubuntu/.cache/huggingface/hub
+    ports:
+      - "127.0.0.1:${WHISPER_PORT:-8000}:8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  whisper-cpu:
+    image: ghcr.io/speaches-ai/speaches:latest-cpu
+    profiles: ["cpu"]
+    init: true
+    restart: unless-stopped
+    volumes:
+      - whisper-models:/home/ubuntu/.cache/huggingface/hub
+    ports:
+      - "127.0.0.1:${WHISPER_PORT:-8000}:8000"
+
+volumes:
+  whisper-models:

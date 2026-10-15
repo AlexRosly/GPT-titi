@@ -1,3 +1,4 @@
+const { hydrate } = require("../../services/files/messages");
 const { ChatMessage } = require("../../models");
 const historyMessageDto = require("../../services/chatDeliveryV2/historyMessageDto");
 
@@ -13,11 +14,11 @@ const getChatHistory = async (req, res) => {
     })
       .sort({ createdAt: -1, _id: -1 })
       .limit(HISTORY_LIMIT)
-      .select("role content modelId tokens attachments turnId clientMessageId attempt createdAt updatedAt")
+      .select("role content modelId tokens attachments fileResult turnId clientMessageId attempt createdAt updatedAt")
       .lean();
 
     res.json({
-      messages: messages.reverse().map(historyMessageDto),
+      messages: (await hydrate(req.user.id, messages.reverse())).map(historyMessageDto),
     });
   } catch (err) {
     console.error("getChatHistory error:", err);

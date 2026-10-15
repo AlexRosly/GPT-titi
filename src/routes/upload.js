@@ -8,6 +8,12 @@ const os = require("os");
 const express = require("express");
 const router = express.Router();
 
+router.use((req, res, next) => {
+  if (req.method === "POST" && req.path === "/" && require("../services/files/config").enabled()) {
+    return require("./files")(req, res, next);
+  }
+  next();
+});
 router.post("/", auth, upload.single("file"), ctrl.uploadFile);
 const transcriptionUpload = multer({
   storage: multer.diskStorage({

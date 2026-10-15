@@ -10,6 +10,8 @@ const messageDto = (message) => {
     content: message.content,
     modelId: message.modelId,
     tokens: message.tokens || 0,
+    attachments: message.attachments || [],
+    fileResult: message.fileResult || null,
     turnId: message.turnId || null,
     createdAt: toIso(message.createdAt),
     updatedAt: toIso(message.updatedAt),
@@ -26,6 +28,8 @@ const snapshot = async (turn) => {
     }
   }
 
+  if (assistant) [assistant] = await require("../files/messages").hydrate(turn.user, [assistant]);
+
   return {
     turnId: turn.turnId,
     clientMessageId: turn.clientMessageId,
@@ -34,6 +38,7 @@ const snapshot = async (turn) => {
     attempt: turn.attempt,
     lastSeq: turn.lastSeq,
     partialContent: turn.partialContent || "",
+    outputFile: turn.outputFile || null,
     assistantMessage: messageDto(assistant),
     billing: turn.billing || null,
     error: turn.error || null,

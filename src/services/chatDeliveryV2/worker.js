@@ -30,17 +30,6 @@ const safeProviderError = (error) => {
   return errorFor(code);
 };
 
-const buildContent = (text, files = []) => {
-  const content = [];
-  if (text) content.push({ type: "text", text });
-  for (const file of files) {
-    if (file?.mimetype?.startsWith("image/") && file.url) {
-      content.push({ type: "image_url", image_url: { url: file.url } });
-    }
-  }
-  return content;
-};
-
 const claimTurn = async (turnId) => {
   const leaseToken = crypto.randomUUID();
   const now = new Date();
@@ -161,6 +150,23 @@ const commitCompletion = async (turn, leaseToken, assistantText, usage) => {
       }).session(session);
       if (!current) throw Object.assign(new Error(), { staleLease: true });
 
+      let attachments = [], fileResult = null;
+      if (current.outputFile) {
+        try {
+          const data = current.providerResult;
+          if (data?.artifactError || !data?.artifact) throw require("../files/validation").fail(data?.artifactError || "INVALID_FILE_OUTPUT");
+          const rendered = require("../files/artifacts").render(current.outputFile, data.artifact.content);
+          const f = await require("../files/store").create({ ...rendered, user: turn.user, source: "generated", resultKey: `${turn.turnId}:${turn.attempt}:0`, session });
+          attachments = [{ ...require("../files/store").dto(f), storage: "private" }];
+          fileResult = { status: f.status, filename: f.originalName, fileId: String(f._id), error: null };
+          assistantText = data.artifact.summary || "File result attached.";
+        } catch (error) {
+          if (!error.fileError) throw error;
+          fileResult = { status: "failed", filename: current.outputFile.filename, error: error.fileError };
+          assistantText = "The file could not be created. See the file result for details.";
+        }
+      }
+
       const cost = await finalizeChargeInTransaction({
         session,
         turnId: turn.turnId,
@@ -187,6 +193,8 @@ const commitCompletion = async (turn, leaseToken, assistantText, usage) => {
           conversation: turn.conversation,
           role: "assistant",
           content: assistantText,
+          attachments,
+          fileResult,
           modelId: turn.modelId,
           tokens: usage.completionTokens,
           turnId: turn.turnId,
@@ -271,10 +279,10 @@ const processTurn = async (claimed) => {
 
     const messages = [
       { role: "system", content: "You are a helpful assistant." },
-      ...history.reverse().map((m) => ({
+      ...await Promise.all(history.reverse().map(async (m) => ({
         role: m.role,
-        content: m.role === "user" ? buildContent(m.content, m.attachments) : m.content,
-      })),
+        content: m.role === "user" ? await require("../files/messages").providerContent(turn.user, m.content, m.attachments) : m.content,
+      }))),
     ];
 
     let assistantText = turn.partialContent || "";
@@ -288,8 +296,10 @@ const processTurn = async (claimed) => {
       messages,
       stream: true,
       stream_options: { include_usage: true },
+      ...(turn.outputFile ? require("../files/artifacts").toolOptions(turn.outputFile) : {}),
     }, { signal: controller.signal });
 
+    const fileCollector = turn.outputFile ? require("../files/artifacts").collector() : null;
     let usage;
     let pending = "";
     let lastFlush = Date.now();
@@ -297,7 +307,8 @@ const processTurn = async (claimed) => {
 
     let emittedSince = 0;
     for await (const chunk of stream) {
-      const delta = chunk.choices?.[0]?.delta?.content;
+      fileCollector?.add(chunk);
+      const delta = turn.outputFile ? null : chunk.choices?.[0]?.delta?.content;
       if (chunk.usage) {
         usage = {
           promptTokens: chunk.usage.prompt_tokens || 0,
@@ -349,11 +360,14 @@ const processTurn = async (claimed) => {
       });
     }
 
+    const fileOutput = fileCollector ? fileCollector.finish() : {};
+    if (fileCollector) assistantText = fileOutput.artifact?.summary || "File generation finished.";
+
     if (!usage) {
       usage = {
         promptTokens: estimateTokens(JSON.stringify(messages)),
-        completionTokens: estimateTokens(assistantText),
-        totalTokens: estimateTokens(JSON.stringify(messages)) + estimateTokens(assistantText),
+        completionTokens: (fileCollector ? Math.ceil((fileOutput.argumentChars || 0) / 4) : estimateTokens(assistantText)),
+        totalTokens: estimateTokens(JSON.stringify(messages)) + (fileCollector ? Math.ceil((fileOutput.argumentChars || 0) / 4) : estimateTokens(assistantText)),
       };
     }
 
@@ -361,7 +375,7 @@ const processTurn = async (claimed) => {
     // this exact charge without making another provider request.
     const saved = await ChatTurn.updateOne({ _id: turn._id, attempt: turn.attempt,
       leaseToken, status: "processing", leaseUntil: { $gt: new Date() } },
-    { $set: { providerResult: { assistantText, usage } } });
+    { $set: { providerResult: { assistantText, usage, ...fileOutput } } });
     if (!saved.matchedCount) return;
     resultStored = true;
     const completion = await commitCompletion(turn, leaseToken, assistantText, usage);

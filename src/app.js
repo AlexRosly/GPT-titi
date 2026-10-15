@@ -27,7 +27,10 @@ const app = express();
 cron.schedule("0 * * * *", async () => {
   console.log("Running uploads cleanup...");
 
-  await cleanupExpiredUploads();
+  try {
+    await cleanupExpiredUploads();
+    await require("./services/files/store").cleanup();
+  } catch (error) { logger.error({ err: error }, "File cleanup failed"); }
 });
 
 app.use(pinoHttp({ logger }));
@@ -55,6 +58,7 @@ app.use("/gpt-titi/api/admin", adminRoutes);
 app.use("/gpt-titi/api/chat", chatRoutes);
 app.use("/gpt-titi/api/conversations", conversationsRoutes);
 app.use("/gpt-titi/api/upload", uploadRoutes);
+app.use("/gpt-titi/api/files", require("./routes/files"));
 app.use("/uploads", express.static(path.join(__dirname, "../uploads")));
 app.use("/gpt-titi/api/model-flows", modelFlowsRoutes);
 app.use("/gpt-titi/api/project", projectRoutes);

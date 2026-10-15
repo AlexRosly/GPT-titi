@@ -15,7 +15,7 @@ const cleanupExpiredUploads = async () => {
 
   for (const msg of messages) {
     for (const file of msg.attachments) {
-      if (file.deletedAt || !file.publicId) {
+      if (file.deletedAt || !file.publicId || !file.expiresAt || file.expiresAt >= now) {
         continue;
       }
 

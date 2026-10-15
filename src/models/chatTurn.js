@@ -42,6 +42,7 @@ const ChatTurnSchema = new Schema(
     requestHash: { type: String, required: true },
     modelId: { type: String, required: true },
     message: { type: String, required: true },
+    outputFile: { type: Schema.Types.Mixed, default: null },
     files: { type: [Schema.Types.Mixed], default: [] },
     status: {
       type: String,

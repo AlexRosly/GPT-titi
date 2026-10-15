@@ -13,7 +13,7 @@ const ackError = (ack, error) => {
   ack?.({
     ok: false,
     protocolVersion: 2,
-    error: error?.protocolError || errorFor("INTERNAL_ERROR"),
+    error: error?.protocolError || (error?.fileError ? errorFor(error.fileError, error.fileError, false) : errorFor("INTERNAL_ERROR")),
   });
 };
 

@@ -45,12 +45,16 @@ const validateEnvelope = (envelope, event, payloadKeys) => {
 };
 
 const validateChatSend = (envelope) => {
-  const p = validateEnvelope(envelope, "chat:send", ["clientMessageId", "conversationId", "modelId", "message", "files"]);
+  const p = validateEnvelope(envelope, "chat:send", ["clientMessageId", "conversationId", "modelId", "message", "files", "outputFile"]);
   if (!isUuidV4(p.clientMessageId)) throw Object.assign(new Error(), { protocolError: errorFor("INVALID_CLIENT_MESSAGE_ID") });
   if (!mongoose.isValidObjectId(p.conversationId)) throw Object.assign(new Error(), { protocolError: errorFor("INVALID_CONVERSATION_ID") });
   if (typeof p.modelId !== "string" || !p.modelId || p.modelId.length > 200) throw Object.assign(new Error(), { protocolError: errorFor("INVALID_ENVELOPE") });
   if (typeof p.message !== "string" || !p.message || p.message.length > 100000) throw Object.assign(new Error(), { protocolError: errorFor("INVALID_ENVELOPE") });
-  if (p.files !== undefined && !Array.isArray(p.files)) throw Object.assign(new Error(), { protocolError: errorFor("INVALID_ENVELOPE") });
+  if (p.files !== undefined && (!Array.isArray(p.files) || p.files.length > 10 || p.files.some(f => !assertPlainObject(f)))) throw Object.assign(new Error(), { protocolError: errorFor("INVALID_ENVELOPE") });
+  if (p.outputFile !== undefined) {
+    if (!require("../files/config").enabled()) throw Object.assign(new Error(), { protocolError: errorFor("INVALID_ENVELOPE") });
+    require("../files/artifacts").outputSpec(p.outputFile);
+  }
   return p;
 };
 
@@ -76,13 +80,14 @@ const stableFileIdentifier = (file) => {
   return file.id || file._id || file.fileId || file.publicId || file.filename || file.url || null;
 };
 
-const buildRequestHash = ({ userId, conversationId, modelId, message, files = [] }) => {
+const buildRequestHash = ({ userId, conversationId, modelId, message, files = [], outputFile }) => {
   const value = canonicalize({
     userId: userId.toString(),
     conversationId: conversationId.toString(),
     modelId,
     message,
     files: files.map(stableFileIdentifier),
+    ...(outputFile ? { outputFile } : {}),
   });
   return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
 };

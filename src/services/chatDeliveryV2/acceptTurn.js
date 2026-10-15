@@ -30,7 +30,7 @@ const findExistingTurn = async (userId, clientMessageId) =>
   ChatTurn.findOne({ user: userId, clientMessageId }).lean();
 
 const acceptTurn = async ({ userId, payload }) => {
-  const { clientMessageId, conversationId, modelId, message, files = [] } = payload;
+  const { clientMessageId, conversationId, modelId, message, files = [], outputFile } = payload;
 
   const user = await User.findById(userId).select("_id appTokens status").lean();
   if (!user || user.status !== "active") throw protocolError("CONVERSATION_NOT_FOUND");
@@ -45,9 +45,14 @@ const acceptTurn = async ({ userId, payload }) => {
   const model = await ChatModels.findOne({ modelId, enabled: true }).select("modelId inputPerM outputPerM").lean();
   if (!model) throw protocolError("MODEL_NOT_AVAILABLE");
 
-  await validateFilesOwnership(userId, files);
+  if (!require("../files/config").enabled() && !files.some(f => f?.storage === "private")) await validateFilesOwnership(userId, files);
 
-  const requestHash = buildRequestHash({ userId, conversationId, modelId, message, files });
+  if (outputFile) {
+    require("../files/artifacts").outputSpec(outputFile);
+    const allowed = (process.env.FILE_OUTPUT_MODELS || "").split(",").map(x => x.trim());
+    if (!require("../files/config").enabled() || !allowed.includes(modelId)) throw protocolError("MODEL_NOT_AVAILABLE");
+  }
+  const requestHash = buildRequestHash({ userId, conversationId, modelId, message, files, outputFile });
   const existing = await findExistingTurn(userId, clientMessageId);
   if (existing) {
     if (existing.requestHash !== requestHash) throw protocolError("IDEMPOTENCY_CONFLICT");
@@ -69,6 +74,8 @@ const acceptTurn = async ({ userId, payload }) => {
         if (duplicate.requestHash !== requestHash) throw protocolError("IDEMPOTENCY_CONFLICT");
         return { turn: duplicate, disposition: "duplicate" };
       }
+      const canonicalFiles = (require("../files/config").enabled() || files.some(f => f?.storage === "private"))
+        ? await require("../files/messages").resolve(userId, files, session) : files;
       await reserve({ userId, amount: estimate.appTokens, turnId, session });
       const [userMessage] = await ChatMessage.create(
         [{
@@ -78,7 +85,7 @@ const acceptTurn = async ({ userId, payload }) => {
           content: message,
           modelId,
           tokens: estimatedTokens,
-          attachments: files,
+          attachments: canonicalFiles,
           turnId,
           clientMessageId,
           attempt: 1,
@@ -95,7 +102,8 @@ const acceptTurn = async ({ userId, payload }) => {
           requestHash,
           modelId,
           message,
-          files,
+          files: canonicalFiles,
+          outputFile,
           reservedAppTokens: estimate.appTokens,
           reservationState: "held",
           pricing: { inputPerM: model.inputPerM, outputPerM: model.outputPerM, tokenValueUsd: APP_TOKEN_VALUE_USD },

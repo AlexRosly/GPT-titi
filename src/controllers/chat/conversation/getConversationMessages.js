@@ -1,3 +1,4 @@
+const { hydrate } = require("../../../services/files/messages");
 const { ChatMessage, ChatConversation } = require("../../../models");
 const historyMessageDto = require("../../../services/chatDeliveryV2/historyMessageDto");
 
@@ -24,7 +25,7 @@ const getConversationMessages = async (req, res) => {
       .limit(limit)
       .lean();
 
-    res.json(messages.reverse().map(historyMessageDto));
+    res.json((await hydrate(req.user.id, messages.reverse())).map(historyMessageDto));
   } catch (error) {
     console.error("Error in controller getConversationMessages:", error);
     res.status(500).json({ status: 500, message: "Internal server error" });

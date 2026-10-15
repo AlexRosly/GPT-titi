@@ -1,75 +1,3 @@
-// const { Schema, model } = require("mongoose");
-
-// const ChatMessageSchema = Schema(
-//   {
-//     user: {
-//       type: Schema.Types.ObjectId,
-//       ref: "user",
-//       required: true,
-//       index: true,
-//     },
-
-//     // 🔗 связь с диалогом
-//     conversation: {
-//       type: Schema.Types.ObjectId,
-//       ref: "chatConversation",
-//       required: true,
-//       index: true,
-//     },
-
-//     role: {
-//       type: String,
-//       enum: ["user", "assistant", "system"],
-//       required: true,
-//     },
-
-//     content: {
-//       type: String,
-//       required: true,
-//     },
-
-//     modelId: {
-//       type: String,
-//     },
-//     // 🔢 токены конкретного сообщения
-//     tokens: {
-//       type: Number,
-//       default: 0,
-//     },
-//     // 💰 биллинг-мета
-//     meta: {
-//       appTokens: { type: Number },
-//       costUsd: { type: Number },
-//     },
-
-//     // 🧹 soft delete
-//     deleted: {
-//       type: Date,
-//       default: null,
-//       index: true,
-//     },
-//     attachments: [
-//       {
-//         filename: { type: String },
-//         originalName: { type: String },
-//         mimetype: { type: String },
-//         size: { type: Number },
-//         url: { type: String },
-//         expiresAt: { type: Date },
-//         deletedAt: { type: Date },
-//       },
-//     ],
-//   },
-//   {
-//     timestamps: true,
-//   },
-// );
-
-// ChatMessageSchema.index({ conversation: 1, deleted: 1, createdAt: -1 });
-
-// const ChatMessage = model("chatMessage", ChatMessageSchema);
-
-// module.exports = ChatMessage;
 const { Schema, model } = require("mongoose");
 
 const ChatMessageSchema = new Schema(
@@ -176,8 +104,16 @@ const ChatMessageSchema = new Schema(
     // Attachments
     // =========================================================
 
+    fileResult: { type: Schema.Types.Mixed, default: null },
     attachments: [
       {
+        fileId: String,
+        storage: String,
+        source: String,
+        status: String,
+        version: Number,
+        downloadUrl: String,
+        previewUrl: String,
         filename: {
           type: String,
         },

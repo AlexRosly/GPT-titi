@@ -2,11 +2,12 @@ const path = require('node:path');
 const sax = require('sax');
 const { safeName, fail, textExtensions } = require('./validation');
 const config = require('./config');
+const office = require('./office');
 const outputSpec = (value) => {
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(k => k !== 'filename')) throw fail('INVALID_OUTPUT_FILE');
   const filename = safeName(value.filename);
   const ext = path.extname(filename).slice(1).toLowerCase();
-  if (!textExtensions.has(ext) && ext !== 'svg') throw fail('UNSUPPORTED_OUTPUT_FORMAT');
+  if (!textExtensions.has(ext) && ext !== 'svg' && !office.extensions.has(ext)) throw fail('UNSUPPORTED_OUTPUT_FORMAT');
   return { filename };
 };
 const escapeXml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -48,6 +49,7 @@ const render = (spec, content) => {
   const { filename } = outputSpec(spec);
   if (typeof content !== 'string' || !content.length || content.includes('\0') || Buffer.byteLength(content) > config.artifactBytes) throw fail('INVALID_FILE_CONTENT');
   const ext = path.extname(filename).slice(1).toLowerCase();
+  if (office.extensions.has(ext)) throw fail('ASYNC_DOCUMENT_RENDER_REQUIRED');
   let mimetype = 'text/plain';
   if (ext === 'json') { try { JSON.parse(content); } catch { throw fail('INVALID_JSON'); } mimetype = 'application/json'; }
   if (ext === 'svg') { content = sanitizeSvg(content); mimetype = 'image/svg+xml'; }
@@ -84,9 +86,13 @@ const svgInstructions = () => [
   'Gradients, clipping and text are allowed only with the listed elements and attributes; do not add unlisted gradient attributes. Prefer simple shapes when unsure.',
   'At most 10000 elements, nesting depth 64, and 100000 characters per attribute value.',
 ].join(' ');
+const renderOutput = async (spec, content) => {
+  const checked = outputSpec(spec);
+  return office.extensions.has(path.extname(checked.filename).slice(1).toLowerCase()) ? office.render(checked, content) : render(checked, content);
+};
 const toolOptions = (spec) => ({
   tools: [{ type: 'function', function: { name: 'create_file',
-    description: `Produce the requested file ${spec.filename}. Put complete UTF-8 file content in content, without Markdown fences or surrounding explanation. Keep content within ${config.artifactBytes} UTF-8 bytes. summary is a short description of at most 2000 characters, not a download link.${path.extname(spec.filename).toLowerCase() === '.svg' ? ' ' + svgInstructions() : ''}`,
+    description: `Produce the requested file ${spec.filename}. Put complete UTF-8 file content in content, without Markdown fences or surrounding explanation. Keep content within ${config.artifactBytes} UTF-8 bytes. summary is a short description of at most 2000 characters, not a download link.${path.extname(spec.filename).toLowerCase() === '.svg' ? ' ' + svgInstructions() : office.extensions.has(path.extname(spec.filename).slice(1).toLowerCase()) ? ' ' + office.instructions : ''}`,
     strict: true, parameters: { type: 'object', properties: { content: { type: 'string' }, summary: { type: 'string' } }, required: ['content', 'summary'], additionalProperties: false } } }],
   tool_choice: { type: 'function', function: { name: 'create_file' } }, parallel_tool_calls: false,
 });
@@ -99,10 +105,11 @@ const autoToolOptions = () => {
     'Create one downloadable file when the user asks you to create, save, export or deliver a file, including requests expressed naturally in any language.',
     'For ordinary questions, explanations, or inline code examples, answer normally without calling this tool. Mere mentions of file extensions are not a request to create a file.',
     'Choose a short descriptive filename with the requested extension. If no format was specified, choose a suitable supported format. If the request is ambiguous, ask a brief clarification.',
-    `Supported extensions ONLY: ${[...textExtensions, 'svg'].join(', ')}.`,
-    'Do not claim to create PDF, DOCX, XLSX, PNG, audio or other unsupported formats. Explain the limitation and offer a supported alternative, without silently changing an explicitly requested format.',
+    `Supported extensions ONLY: ${[...textExtensions, 'svg', ...office.extensions].join(', ')}.`,
+    'Do not claim to create PNG, audio or other unsupported formats. Explain the limitation and offer a supported alternative, without silently changing an explicitly requested format.',
     'For a request for several files, ask which one to create first. Never invent download links.',
     `Return complete UTF-8 content without Markdown fences or surrounding explanation, at most ${config.artifactBytes} bytes. summary is a short description of at most 2000 characters.`,
+    office.instructions,
     'The following rules apply ONLY when the chosen extension is SVG:', svgInstructions(),
   ].join(' ');
   fn.parameters.properties.filename = { type: 'string', description: 'Safe basename with a supported extension; no directory path.' };
@@ -138,4 +145,4 @@ const collector = ({ optional = false } = {}) => {
     },
   };
 };
-module.exports = { outputSpec, render, sanitizeSvg, safeDelimited, toolOptions, autoToolOptions, autoEnabled, collector };
+module.exports = { outputSpec, render, renderOutput, sanitizeSvg, safeDelimited, toolOptions, autoToolOptions, autoEnabled, collector };

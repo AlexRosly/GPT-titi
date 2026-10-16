@@ -48,3 +48,20 @@ test('SVG preview is static image with restrictive headers', { skip: !uri }, asy
   assert.equal(response.status, 200); assert.match(response.headers.get('content-type'), /image\/svg\+xml/);
   assert.match(response.headers.get('content-security-policy'), /sandbox/);
 });
+test('generated PDF/DOCX/XLSX have private structured previews and full downloads', { skip: !uri }, async () => {
+  const own = { authorization: `Bearer ${token}` }, other = { authorization: `Bearer ${stranger}` };
+  for (const ext of ['pdf', 'docx', 'xlsx']) {
+    const content = ext === 'xlsx' ? { sheets: [{ name: 'Дані', rows: [['Товар', 'Кількість'], ['Яблука', 3]] }] } : { title: 'Звіт', blocks: [{ type: 'paragraph', text: 'Український документ' }] };
+    const rendered = await require('../../src/services/files/artifacts').renderOutput({ filename: `report.${ext}` }, JSON.stringify(content));
+    const file = await store.create({ ...rendered, user: user._id, source: 'generated' });
+    const preview = await fetch(`${root}/${file.id}/preview`, { headers: own });
+    assert.equal(preview.status, 200); assert.match(preview.headers.get('content-type'), /application\/json/);
+    const data = await preview.json(); assert.equal(data.kind, ext === 'xlsx' ? 'workbook' : 'document');
+    assert.equal((await fetch(`${root}/${file.id}/preview`, { headers: other })).status, 404);
+    const downloaded = await fetch(`${root}/${file.id}/download`, { headers: own });
+    assert.equal(downloaded.status, 200); assert.deepEqual(Buffer.from(await downloaded.arrayBuffer()), rendered.buffer);
+    await store.remove(user._id, file.id);
+    assert.equal((await require('../../src/models/managedFile').findById(file.id)).generatedPreview, null);
+    assert.equal((await fetch(`${root}/${file.id}/preview`, { headers: own })).status, 404);
+  }
+});

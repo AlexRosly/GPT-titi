@@ -136,6 +136,19 @@ const failTurn = async (turn, leaseToken, errorObject, { knownNoCharge = false, 
 };
 
 const commitCompletion = async (turn, leaseToken, assistantText, usage) => {
+  // Render outside the transaction; Office/PDF work runs in a bounded worker thread.
+  // Recovery repeats only local rendering from the saved provider result, never the model call.
+  const savedTurn = await ChatTurn.findOne({ _id: turn._id, attempt: turn.attempt, status: "processing", leaseToken,
+    leaseUntil: { $gt: new Date() } }).lean();
+  if (!savedTurn) throw Object.assign(new Error(), { staleLease: true });
+  let preparedFile, renderError;
+  if (savedTurn.outputFile || savedTurn.providerResult?.artifact || savedTurn.providerResult?.artifactError) {
+    try {
+      const data = savedTurn.providerResult;
+      if (data?.artifactError || !data?.artifact) throw require("../files/validation").fail(data?.artifactError || "INVALID_FILE_OUTPUT");
+      preparedFile = await require("../files/artifacts").renderOutput(savedTurn.outputFile || { filename: data.artifact.filename }, data.artifact.content);
+    } catch (error) { if (!error.fileError) throw error; renderError = error; }
+  }
   const session = await mongoose.startSession();
   let result;
   try {
@@ -154,9 +167,8 @@ const commitCompletion = async (turn, leaseToken, assistantText, usage) => {
       if (current.outputFile || current.providerResult?.artifact || current.providerResult?.artifactError) {
         try {
           const data = current.providerResult;
-          if (data?.artifactError || !data?.artifact) throw require("../files/validation").fail(data?.artifactError || "INVALID_FILE_OUTPUT");
-          const rendered = require("../files/artifacts").render(current.outputFile || { filename: data.artifact.filename }, data.artifact.content);
-          const f = await require("../files/store").create({ ...rendered, user: turn.user, source: "generated", resultKey: `${turn.turnId}:${turn.attempt}:0`, session });
+          if (renderError) throw renderError;
+          const f = await require("../files/store").create({ ...preparedFile, user: turn.user, source: "generated", resultKey: `${turn.turnId}:${turn.attempt}:0`, session });
           attachments = [{ ...require("../files/store").dto(f), storage: "private" }];
           fileResult = { status: f.status, filename: f.originalName, fileId: String(f._id), error: null };
           assistantText = data.artifact.summary || "File result attached.";

@@ -56,6 +56,10 @@ router.get('/:id/preview', handle(async (req, res) => {
       'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "sandbox; default-src 'none'; style-src 'none'" });
     return res.send(bytes);
   }
+  if (file.source === 'generated' && file.generatedPreview) {
+    res.set({ 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
+    return res.json(file.generatedPreview);
+  }
   const text = file.mimetype.startsWith('text/') || ['application/json', 'image/svg+xml'].includes(file.mimetype);
   res.set({ 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
   res.json({ kind: text ? 'text' : 'unavailable', mimetype: file.mimetype,

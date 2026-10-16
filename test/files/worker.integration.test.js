@@ -114,3 +114,25 @@ test('worker automatically offers files but preserves plain-text streaming', { s
   }
   assert.equal(calls, 2);
 });
+test('Office result recovery persists one binary file, preview and charge', { skip: !uri }, async () => {
+  const content = JSON.stringify({ sheets: [{ name: 'Дані', rows: [['Товар', 'Сума'], ['Яблука', 42]] }] });
+  const { turn } = await fixture(content, 'report.xlsx');
+  await models.ChatTurn.updateOne({ turnId: turn.turnId }, { leaseUntil: new Date(0) });
+  await worker.recoverExpired(); await worker.recoverExpired();
+  const completed = await models.ChatTurn.findOne({ turnId: turn.turnId });
+  assert.equal(completed.status, 'completed');
+  const state = await snapshot(completed), id = state.assistantMessage.attachments[0].fileId;
+  const result = await store.read(user._id, id);
+  assert.equal(result.buffer.subarray(0, 2).toString(), 'PK');
+  assert.equal(result.file.generatedPreview.kind, 'workbook');
+  assert.equal(await File.countDocuments({ resultKey: `${turn.turnId}:1:0` }), 1);
+  assert.equal(await models.ChatBillingLedger.countDocuments({ turnId: turn.turnId }), 1);
+});
+test('invalid document manifest fails explicitly and settles billing once', { skip: !uri }, async () => {
+  const { turn, leaseToken, usage } = await fixture('not a document manifest', 'report.pdf');
+  const result = await worker.commitCompletion(turn, leaseToken, 'Done', usage);
+  assert.equal(result.assistant.fileResult.status, 'failed');
+  assert.equal(result.assistant.fileResult.error, 'INVALID_DOCUMENT_JSON');
+  assert.equal(await File.countDocuments({ resultKey: `${turn.turnId}:1:0` }), 0);
+  assert.equal(await models.ChatBillingLedger.countDocuments({ turnId: turn.turnId }), 1);
+});

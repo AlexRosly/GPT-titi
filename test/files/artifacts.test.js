@@ -70,7 +70,7 @@ test('automatic tool selection permits plain text and validates model filenames'
   const plain = a.collector({ optional: true });
   plain.add({ choices: [{ delta: { content: 'Hello' }, finish_reason: 'stop' }] });
   assert.deepEqual(plain.finish(), {});
-  for (const [filename, error] of [['cat.svg', null], ['../cat.svg', 'INVALID_FILENAME'], ['cat.pdf', 'UNSUPPORTED_OUTPUT_FORMAT']]) {
+  for (const [filename, error] of [['cat.svg', null], ['../cat.svg', 'INVALID_FILENAME'], ['cat.exe', 'UNSUPPORTED_OUTPUT_FORMAT']]) {
     const c = a.collector({ optional: true });
     const args = JSON.stringify({ filename, content: '<svg/>', summary: 'Cat' });
     c.add({ choices: [{ delta: { tool_calls: [{ index: 0, function: { name: 'create_file', arguments: args.slice(0, 17) } }] } }] });

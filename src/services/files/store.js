@@ -22,9 +22,10 @@ const transaction = async (fn) => {
   try { return await session.withTransaction(() => fn(session)); }
   finally { await session.endSession(); }
 };
-const create = async ({ user, name, mimetype, buffer, source = 'upload', resultKey, session }) => {
+const create = async ({ user, name, mimetype, buffer, generatedPreview = null, source = 'upload', resultKey, session }) => {
   if (!Buffer.isBuffer(buffer) || !buffer.length || buffer.length > config.maxBytes()) throw fail('FILE_TOO_LARGE', 413);
-  if (!session) return transaction((s) => create({ user, name, mimetype, buffer, source, resultKey, session: s }));
+  if (!session) return transaction((s) => create({ user, name, mimetype, buffer, generatedPreview, source, resultKey, session: s }));
+  if (generatedPreview && (source !== 'generated' || Buffer.byteLength(JSON.stringify(generatedPreview)) > 65536)) throw fail('INVALID_FILE_PREVIEW');
   if (resultKey) {
     const existing = await File.findOne({ user, resultKey }).session(session);
     if (existing) return existing; // Tombstones prevent recreating a deleted result on replay.
@@ -34,6 +35,7 @@ const create = async ({ user, name, mimetype, buffer, source = 'upload', resultK
     { $inc: { bytes: buffer.length, count: 1 } }, { session });
   if (!reserved.modifiedCount) throw fail('FILE_QUOTA_EXCEEDED', 413);
   const [file] = await File.create([{ user, originalName: name, mimetype, size: buffer.length,
+    generatedPreview,
     checksum: crypto.createHash('sha256').update(buffer).digest('hex'), source, resultKey,
     expiresAt: source === 'upload' ? new Date(Date.now() + 86400000) : null }], { session });
   const chunks = [];
@@ -58,7 +60,7 @@ const remove = async (user, id, session) => {
   if (!session) return transaction((s) => remove(user, id, s));
   const file = await owned(user, id, { session, includeDeleted: true });
   if (file.status === 'deleted') return;
-  await File.updateOne({ _id: file._id }, { $set: { status: 'deleted', deletedAt: new Date() } }, { session });
+  await File.updateOne({ _id: file._id }, { $set: { status: 'deleted', deletedAt: new Date(), generatedPreview: null } }, { session });
   await Chunk.deleteMany({ file: file._id }).session(session);
   await Quota.updateOne({ _id: user }, { $inc: { bytes: -file.size, count: -1 } }, { session });
 };

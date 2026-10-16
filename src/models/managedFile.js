@@ -10,6 +10,7 @@ const schema = new Schema({
   expiresAt: { type: Date, default: null },
   deletedAt: { type: Date, default: null },
   resultKey: String,
+  generatedPreview: { type: Schema.Types.Mixed, default: null },
   version: { type: Number, default: 1 },
 }, { timestamps: true, versionKey: false });
 schema.index({ user: 1, resultKey: 1 }, { unique: true, partialFilterExpression: { resultKey: { $type: 'string' } } });

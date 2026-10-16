@@ -42,16 +42,14 @@ const acceptTurn = async ({ userId, payload }) => {
   }).select("_id").lean();
   if (!conversation) throw protocolError("CONVERSATION_NOT_FOUND");
 
-  const model = await ChatModels.findOne({ modelId, enabled: true }).select("modelId inputPerM outputPerM").lean();
+  const model = await ChatModels.findOne({ modelId, enabled: true }).select("modelId inputPerM outputPerM fileOutputEnabled").lean();
   if (!model) throw protocolError("MODEL_NOT_AVAILABLE");
 
   if (!require("../files/config").enabled() && !files.some(f => f?.storage === "private")) await validateFilesOwnership(userId, files);
 
   if (outputFile) {
     require("../files/artifacts").outputSpec(outputFile);
-    const allowed = (process.env.FILE_OUTPUT_MODELS || "").split(",").map(x => x.trim());
-    const modelAllowed = allowed.includes("*") || allowed.includes(modelId);
-    if (!require("../files/config").enabled() || !modelAllowed) throw protocolError("MODEL_NOT_AVAILABLE");
+    if (!require("../files/artifacts").outputEnabled(model)) throw protocolError("MODEL_NOT_AVAILABLE");
   }
   const requestHash = buildRequestHash({ userId, conversationId, modelId, message, files, outputFile });
   const existing = await findExistingTurn(userId, clientMessageId);

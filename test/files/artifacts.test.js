@@ -87,17 +87,22 @@ test('automatic collector rejects incomplete and multiple tool calls', () => {
     assert.equal(c.finish().artifactError, 'INCOMPLETE_FILE_OUTPUT');
   }
 });
-test('automatic files honor private storage, model allowlist and opt-out', () => {
+test('automatic files default on for old and new models and honor explicit opt-out', () => {
   const keys = ['PRIVATE_FILES_ENABLED', 'FILE_OUTPUT_MODELS', 'FILE_OUTPUT_AUTO_ENABLED'];
   const previous = keys.map(k => process.env[k]);
   try {
     process.env.PRIVATE_FILES_ENABLED = 'true'; process.env.FILE_OUTPUT_MODELS = ' model-a, model-b ';
     delete process.env.FILE_OUTPUT_AUTO_ENABLED;
-    assert.equal(a.autoEnabled('model-a'), true);
-    assert.equal(a.autoEnabled('other'), false);
-    process.env.FILE_OUTPUT_AUTO_ENABLED = 'false'; assert.equal(a.autoEnabled('model-a'), false);
+    assert.equal(a.autoEnabled({ modelId: 'model-a' }), true);
+    assert.equal(a.autoEnabled({ modelId: 'new-model' }), true);
+    assert.equal(a.autoEnabled({ modelId: 'other', fileOutputEnabled: false }), false);
+    assert.equal(a.outputEnabled({ fileOutputEnabled: false }), false);
+    assert.equal(a.autoEnabled(null), false);
+    delete process.env.FILE_OUTPUT_MODELS;
+    assert.equal(a.autoEnabled({}), true);
+    process.env.FILE_OUTPUT_AUTO_ENABLED = 'false'; assert.equal(a.autoEnabled({ modelId: 'model-a' }), false);
     delete process.env.FILE_OUTPUT_AUTO_ENABLED;
-    process.env.PRIVATE_FILES_ENABLED = 'false'; assert.equal(a.autoEnabled('model-a'), false);
+    process.env.PRIVATE_FILES_ENABLED = 'false'; assert.equal(a.autoEnabled({ modelId: 'model-a' }), false);
   } finally { keys.forEach((k, i) => { if (previous[i] === undefined) delete process.env[k]; else process.env[k] = previous[i]; }); }
 });
 test('SVG repairs only the known none paint typo without relaxing security', () => {
@@ -106,4 +111,9 @@ test('SVG repairs only the known none paint typo without relaxing security', () 
   assert.match(svg, /id="#none"/);
   assert.throws(() => a.sanitizeSvg('<svg><path fill="#none" onload="alert(1)"/></svg>'));
   assert.throws(() => a.sanitizeSvg('<svg><path fill="url(https:\/\/evil)"/></svg>'));
+});
+
+test('file instructions request actual tool creation without changing ordinary replies', () => {
+  assert.match(a.fileSystemInstructions, /use that tool/);
+  assert.match(a.fileSystemInstructions, /ordinary questions/);
 });

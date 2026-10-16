@@ -20,7 +20,8 @@ test.before(async () => {
   await mongoose.connect(uri.replace('gptiti_files_test_local', 'gptiti_files_test_worker'));
   for (const m of [...Object.values(models), File, Chunk, Quota]) await m.createIndexes();
   process.env.PRIVATE_FILES_ENABLED = 'true';
-  modelId = 'files-test-model'; process.env.FILE_OUTPUT_MODELS = modelId;
+  modelId = 'files-test-model'; process.env.FILE_OUTPUT_MODELS = 'unrelated-legacy-model';
+  delete process.env.FILE_OUTPUT_AUTO_ENABLED;
   user = await models.User.create({ email: 'worker-files@example.test', name: 'Files', status: 'active', appTokens: 100000 });
   await models.ChatModels.create({ modelId, enabled: true, inputPerM: 1, outputPerM: 2 });
   conversation = await models.ChatConversation.create({ user: user._id, modelId });
@@ -86,11 +87,13 @@ test('automatic file completion recovers without outputFile and charges once', {
   assert.equal(await models.ChatBillingLedger.countDocuments({ turnId: turn.turnId }), 1);
 });
 test('worker automatically offers files but preserves plain-text streaming', { skip: !uri }, async (t) => {
+  await models.ChatModels.updateOne({ modelId }, { $unset: { fileOutputEnabled: 1 } }); // Existing record with no new field.
   const { Completions } = require('openai/resources/chat/completions');
   let calls = 0, fileMode = false;
   t.mock.method(Completions.prototype, 'create', async function* (request) {
     calls++;
     assert.equal(request.tool_choice, 'auto');
+    assert.match(request.messages[0].content, /use that tool/);
     if (fileMode) {
       const args = JSON.stringify({ filename: 'natural.txt', content: 'hello from file', summary: 'Ready' });
       yield { choices: [{ delta: { tool_calls: [{ index: 0, function: { name: 'create_file', arguments: args } }] }, finish_reason: 'tool_calls' }] };
@@ -135,4 +138,25 @@ test('invalid document manifest fails explicitly and settles billing once', { sk
   assert.equal(result.assistant.fileResult.error, 'INVALID_DOCUMENT_JSON');
   assert.equal(await File.countDocuments({ resultKey: `${turn.turnId}:1:0` }), 0);
   assert.equal(await models.ChatBillingLedger.countDocuments({ turnId: turn.turnId }), 1);
+});
+
+test('model opt-out blocks explicit output and removes tools from automatic requests', { skip: !uri }, async (t) => {
+  const { Completions } = require('openai/resources/chat/completions');
+  await models.ChatModels.updateOne({ modelId }, { $set: { fileOutputEnabled: false } });
+  try {
+    const payload = { clientMessageId: crypto.randomUUID(), conversationId: conversation.id, modelId, message: 'Hello', files: [] };
+    await assert.rejects(accept({ userId: user._id, payload: { ...payload, outputFile: { filename: 'blocked.txt' } } }), e => e.protocolError?.code === 'MODEL_NOT_AVAILABLE');
+    let calls = 0;
+    t.mock.method(Completions.prototype, 'create', async function* (request) {
+      calls++;
+      assert.equal(request.tools, undefined);
+      assert.doesNotMatch(request.messages[0].content, /create_file/);
+      yield { choices: [{ delta: { content: 'Hello' }, finish_reason: 'stop' }] };
+      yield { choices: [], usage: { prompt_tokens: 20, completion_tokens: 20, total_tokens: 40 } };
+    });
+    const accepted = await accept({ userId: user._id, payload });
+    await worker.processTurn(await worker.claimTurn(accepted.turn.turnId));
+    assert.equal(calls, 1);
+    assert.equal((await models.ChatTurn.findOne({ turnId: accepted.turn.turnId })).status, 'completed');
+  } finally { await models.ChatModels.updateOne({ modelId }, { $unset: { fileOutputEnabled: 1 } }); }
 });

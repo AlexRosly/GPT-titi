@@ -96,8 +96,10 @@ const toolOptions = (spec) => ({
     strict: true, parameters: { type: 'object', properties: { content: { type: 'string' }, summary: { type: 'string' } }, required: ['content', 'summary'], additionalProperties: false } } }],
   tool_choice: { type: 'function', function: { name: 'create_file' } }, parallel_tool_calls: false,
 });
-const autoEnabled = (modelId) => config.enabled() && process.env.FILE_OUTPUT_AUTO_ENABLED !== 'false'
-  && (process.env.FILE_OUTPUT_MODELS || '').split(',').map(x => x.trim()).filter(Boolean).includes(modelId);
+// Model opt-out replaces the legacy environment allowlist. New and old records default on.
+const outputEnabled = (model) => config.enabled() && !!model && model.fileOutputEnabled !== false;
+const autoEnabled = (model) => outputEnabled(model) && process.env.FILE_OUTPUT_AUTO_ENABLED !== 'false';
+const fileSystemInstructions = 'You can create downloadable files using create_file. When the user requests a supported file, use that tool to produce it instead of giving instructions or code for the user to run. Follow its format rules. Never claim a file is attached without calling the tool. For ordinary questions or requested code examples, respond normally.';
 const autoToolOptions = () => {
   const options = toolOptions({ filename: 'requested file' });
   const fn = options.tools[0].function;
@@ -145,4 +147,4 @@ const collector = ({ optional = false } = {}) => {
     },
   };
 };
-module.exports = { outputSpec, render, renderOutput, sanitizeSvg, safeDelimited, toolOptions, autoToolOptions, autoEnabled, collector };
+module.exports = { outputSpec, render, renderOutput, sanitizeSvg, safeDelimited, toolOptions, autoToolOptions, autoEnabled, outputEnabled, fileSystemInstructions, collector };

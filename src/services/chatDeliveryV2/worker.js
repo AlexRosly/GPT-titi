@@ -3,6 +3,7 @@ const OpenAI = require("openai");
 const mongoose = require("mongoose");
 const {
   ChatTurn,
+  ChatModels,
   ChatMessage,
   ChatConversation,
 } = require("../../models");
@@ -299,13 +300,19 @@ const processTurn = async (claimed) => {
 
     let assistantText = turn.partialContent || "";
     let seq = turn.lastSeq || 0;
+    const artifacts = require("../files/artifacts");
+    const fileModel = await ChatModels.findOne({ modelId: turn.modelId, enabled: true }).select("fileOutputEnabled").lean();
+    if (turn.outputFile && !artifacts.outputEnabled(fileModel)) {
+      await failTurn(turn, leaseToken, errorFor("MODEL_NOT_AVAILABLE"), { knownNoCharge: true });
+      return;
+    }
+    const automaticFiles = !turn.outputFile && artifacts.autoEnabled(fileModel);
+    if (automaticFiles) messages[0].content += " " + artifacts.fileSystemInstructions;
+    const fileTools = turn.outputFile ? artifacts.toolOptions(turn.outputFile) : automaticFiles ? artifacts.autoToolOptions() : {};
     const started = await ChatTurn.updateOne({ _id: turn._id, attempt: turn.attempt,
       leaseToken, status: "processing", leaseUntil: { $gt: new Date() }, reservationState: "held" },
     { $set: { providerStartedAt: new Date() } });
     if (!started.matchedCount) return;
-    const artifacts = require("../files/artifacts");
-    const automaticFiles = !turn.outputFile && artifacts.autoEnabled(turn.modelId);
-    const fileTools = turn.outputFile ? artifacts.toolOptions(turn.outputFile) : automaticFiles ? artifacts.autoToolOptions() : {};
     const stream = await client.chat.completions.create({
       model: turn.modelId,
       messages,

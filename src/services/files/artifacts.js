@@ -23,7 +23,9 @@ const sanitizeSvg = (input) => {
     if (++nodes > 10000 || ++depth > 64 || !svgElements.has(node.name)) throw fail('UNSAFE_SVG');
     if (depth === 1 && (node.name !== 'svg' || ++roots !== 1)) throw fail('INVALID_SVG');
     output += `<${node.name}`;
-    for (const [name, value] of Object.entries(node.attributes)) {
+    for (const [name, rawValue] of Object.entries(node.attributes)) {
+      // Repair only this known model typo; keep all security checks below.
+      const value = ['fill', 'stroke'].includes(name) && rawValue.trim().toLowerCase() === '#none' ? 'none' : rawValue;
       if (!svgAttrs.has(name) || value.length > 100000) throw fail('UNSAFE_SVG');
       if (name === 'xmlns' && value !== 'http://www.w3.org/2000/svg') throw fail('UNSAFE_SVG');
       if (/url\s*\(/i.test(value) && !/^url\(#[A-Za-z_][\w.-]*\)$/.test(value)) throw fail('UNSAFE_SVG');
@@ -69,18 +71,52 @@ function safeDelimited(input, delimiter) {
   if (cell || closed || row.length || !rows.length) { push(); rows.push(row); }
   return rows.map(r => r.map(c => '"' + c.replace(/"/g, '""') + '"').join(delimiter)).join('\r\n');
 }
+// Keep the generation contract derived from the same allowlists as validation.
+const svgInstructions = () => [
+  'SVG content must be one complete, well-formed static SVG document.',
+  'Start with <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 WIDTH HEIGHT"> using numeric WIDTH and HEIGHT, and end with </svg>.',
+  `Use ONLY these case-sensitive elements: ${[...svgElements].join(', ')}.`,
+  `Use ONLY these case-sensitive attributes: ${[...svgAttrs].join(', ')}.`,
+  'Use presentation attributes such as fill and stroke directly; never use style or class.',
+  'Do not include XML declarations, processing instructions, DOCTYPE, entities declared in a DTD, CDATA, comments, scripts, event handlers, animation, foreignObject, image, use, href or external resources.',
+  'Escape XML text and attribute values correctly (for example &amp; for an ampersand).',
+  'No URLs, data URIs or backslashes in attribute values except the root xmlns above. Local references are allowed only as url(#id), with an ID matching [A-Za-z_][A-Za-z0-9_.-]*.',
+  'Gradients, clipping and text are allowed only with the listed elements and attributes; do not add unlisted gradient attributes. Prefer simple shapes when unsure.',
+  'At most 10000 elements, nesting depth 64, and 100000 characters per attribute value.',
+].join(' ');
 const toolOptions = (spec) => ({
   tools: [{ type: 'function', function: { name: 'create_file',
-    description: `Produce the requested file ${spec.filename}. Return complete UTF-8 content, without Markdown fences. No external resources or scripts in SVG. summary is a short description, not a download link.`,
+    description: `Produce the requested file ${spec.filename}. Put complete UTF-8 file content in content, without Markdown fences or surrounding explanation. Keep content within ${config.artifactBytes} UTF-8 bytes. summary is a short description of at most 2000 characters, not a download link.${path.extname(spec.filename).toLowerCase() === '.svg' ? ' ' + svgInstructions() : ''}`,
     strict: true, parameters: { type: 'object', properties: { content: { type: 'string' }, summary: { type: 'string' } }, required: ['content', 'summary'], additionalProperties: false } } }],
   tool_choice: { type: 'function', function: { name: 'create_file' } }, parallel_tool_calls: false,
 });
-const collector = () => {
-  let args = '', name = '', invalid = false, reason, argumentChars = 0;
+const autoEnabled = (modelId) => config.enabled() && process.env.FILE_OUTPUT_AUTO_ENABLED !== 'false'
+  && (process.env.FILE_OUTPUT_MODELS || '').split(',').map(x => x.trim()).filter(Boolean).includes(modelId);
+const autoToolOptions = () => {
+  const options = toolOptions({ filename: 'requested file' });
+  const fn = options.tools[0].function;
+  fn.description = [
+    'Create one downloadable file when the user asks you to create, save, export or deliver a file, including requests expressed naturally in any language.',
+    'For ordinary questions, explanations, or inline code examples, answer normally without calling this tool. Mere mentions of file extensions are not a request to create a file.',
+    'Choose a short descriptive filename with the requested extension. If no format was specified, choose a suitable supported format. If the request is ambiguous, ask a brief clarification.',
+    `Supported extensions ONLY: ${[...textExtensions, 'svg'].join(', ')}.`,
+    'Do not claim to create PDF, DOCX, XLSX, PNG, audio or other unsupported formats. Explain the limitation and offer a supported alternative, without silently changing an explicitly requested format.',
+    'For a request for several files, ask which one to create first. Never invent download links.',
+    `Return complete UTF-8 content without Markdown fences or surrounding explanation, at most ${config.artifactBytes} bytes. summary is a short description of at most 2000 characters.`,
+    'The following rules apply ONLY when the chosen extension is SVG:', svgInstructions(),
+  ].join(' ');
+  fn.parameters.properties.filename = { type: 'string', description: 'Safe basename with a supported extension; no directory path.' };
+  fn.parameters.required.push('filename');
+  options.tool_choice = 'auto';
+  return options;
+};
+const collector = ({ optional = false } = {}) => {
+  let args = '', name = '', invalid = false, reason, argumentChars = 0, seen = false;
   return {
     add(chunk) {
       if (chunk.choices?.[0]?.finish_reason) reason = chunk.choices[0].finish_reason;
       for (const call of chunk.choices?.[0]?.delta?.tool_calls || []) {
+        seen = true;
         if (call.index !== 0) invalid = true;
         if (call.function?.name) name += call.function.name;
         argumentChars += (call.function?.arguments || '').length;
@@ -91,13 +127,15 @@ const collector = () => {
       }
     },
     finish() {
+      if (optional && !seen && reason !== 'tool_calls') return {};
       if (invalid || name !== 'create_file' || reason !== 'tool_calls') return { artifactError: 'INCOMPLETE_FILE_OUTPUT', argumentChars };
       try {
         const value = JSON.parse(args);
         if (typeof value.content !== 'string' || typeof value.summary !== 'string' || value.summary.length > 2000) throw new Error();
+        if (optional) outputSpec({ filename: value.filename });
         return { artifact: value, argumentChars };
-      } catch { return { artifactError: 'INVALID_FILE_OUTPUT', argumentChars }; }
+      } catch (error) { return { artifactError: error.fileError || 'INVALID_FILE_OUTPUT', argumentChars }; }
     },
   };
 };
-module.exports = { outputSpec, render, sanitizeSvg, safeDelimited, toolOptions, collector };
+module.exports = { outputSpec, render, sanitizeSvg, safeDelimited, toolOptions, autoToolOptions, autoEnabled, collector };

@@ -50,7 +50,8 @@ const acceptTurn = async ({ userId, payload }) => {
   if (outputFile) {
     require("../files/artifacts").outputSpec(outputFile);
     const allowed = (process.env.FILE_OUTPUT_MODELS || "").split(",").map(x => x.trim());
-    if (!require("../files/config").enabled() || !allowed.includes(modelId)) throw protocolError("MODEL_NOT_AVAILABLE");
+    const modelAllowed = allowed.includes("*") || allowed.includes(modelId);
+    if (!require("../files/config").enabled() || !modelAllowed) throw protocolError("MODEL_NOT_AVAILABLE");
   }
   const requestHash = buildRequestHash({ userId, conversationId, modelId, message, files, outputFile });
   const existing = await findExistingTurn(userId, clientMessageId);

@@ -13,13 +13,19 @@ const ackError = (ack, error) => {
   ack?.({
     ok: false,
     protocolVersion: 2,
-    error: error?.protocolError || (error?.fileError ? errorFor(error.fileError, error.fileError, false) : errorFor("INTERNAL_ERROR")),
+    error:
+      error?.protocolError ||
+      (error?.fileError
+        ? errorFor(error.fileError, error.fileError, false)
+        : errorFor("INTERNAL_ERROR")),
   });
 };
 
 const registerChatDeliveryV2 = (io) => {
   worker.setIo(io);
-  worker.startWorker().catch((error) => console.error("chat v2 worker startup error", error));
+  worker
+    .startWorker()
+    .catch((error) => console.error("chat v2 worker startup error", error));
 
   io.on("connection", (socket) => {
     socket.on("chat:send", async (envelope, ack) => {
@@ -41,9 +47,16 @@ const registerChatDeliveryV2 = (io) => {
     socket.on("chat:status", async (envelope, ack) => {
       try {
         const { turnId } = validateTurnRequest(envelope, "chat:status");
-        const turn = await ChatTurn.findOne({ turnId, user: socket.user._id }).lean();
+        const turn = await ChatTurn.findOne({
+          turnId,
+          user: socket.user._id,
+        }).lean();
         if (!turn) {
-          return ack?.({ ok: false, protocolVersion: 2, error: errorFor("TURN_NOT_FOUND") });
+          return ack?.({
+            ok: false,
+            protocolVersion: 2,
+            error: errorFor("TURN_NOT_FOUND"),
+          });
         }
         ack?.({ ok: true, protocolVersion: 2, turn: await snapshot(turn) });
       } catch (error) {

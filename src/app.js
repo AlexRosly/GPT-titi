@@ -30,7 +30,9 @@ cron.schedule("0 * * * *", async () => {
   try {
     await cleanupExpiredUploads();
     await require("./services/files/store").cleanup();
-  } catch (error) { logger.error({ err: error }, "File cleanup failed"); }
+  } catch (error) {
+    logger.error({ err: error }, "File cleanup failed");
+  }
 });
 
 app.use(pinoHttp({ logger }));

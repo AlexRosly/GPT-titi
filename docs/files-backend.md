@@ -21,7 +21,7 @@ FILE_OUTPUT_MODELS=
 
 The switch defaults to false. New file routes return 404 while disabled, existing `/upload` keeps the old implementation. When true, `/upload` POST delegates to the private upload path; new V2 attachments must reference owned private file IDs. Frontend must fetch private downloads/previews with Authorization. An ordinary public `<img src>` is insufficient. Enable only after frontend integration and development verification.
 
-`FILE_OUTPUT_MODELS` is an explicit comma-separated allowlist of already enabled model IDs verified to support Chat Completions function calls. No model is automatically added. File generation is enabled only for requests with `outputFile`. Plain text chats are unchanged. Test provider compatibility in development before adding a model to the allowlist.
+`FILE_OUTPUT_MODELS` is a comma-separated allowlist of enabled model IDs verified to support Chat Completions function calls. Set it to `*` to allow every enabled chat model to attempt file generation; only do this in development unless every configured provider/model has been verified to support function calls. File generation is enabled only for requests with `outputFile`. Plain text chats are unchanged.
 
 Limits: 25 MiB maximum single upload; at most 10 attachments, 25 MiB combined in one new turn; 512 KiB generated UTF-8 content; 250 MiB/500 files per user by default. Memory uploads and bounded downloads are used. HTTP file routes have a per-user 120/min limiter (per process; existing deployment is one process). These are configurable operating defaults, not provider guarantees.
 

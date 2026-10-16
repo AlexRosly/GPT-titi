@@ -65,3 +65,52 @@ test('expired worker result is finalized from saved output without another provi
   assert.equal(completed.status, 'completed');
   assert.equal(await File.countDocuments({ resultKey: `${turn.turnId}:1:0` }), 1);
 });
+
+test('automatic file completion recovers without outputFile and charges once', { skip: !uri }, async () => {
+  const accepted = await accept({ userId: user._id, payload: { clientMessageId: crypto.randomUUID(), conversationId: conversation.id,
+    modelId, message: 'Створи котика у SVG', files: [] } });
+  const { turn } = await worker.claimTurn(accepted.turn.turnId);
+  const usage = { promptTokens: 20, completionTokens: 20, totalTokens: 40 };
+  await models.ChatTurn.updateOne({ turnId: turn.turnId }, { leaseUntil: new Date(0), providerResult: {
+    assistantText: 'Cat', usage, artifact: { filename: 'cat.svg', content: '<svg xmlns="http://www.w3.org/2000/svg"><path fill="#none" d="M0 0 L1 1"/></svg>', summary: 'Cat' },
+  } });
+  await worker.recoverExpired(); await worker.recoverExpired();
+  const completed = await models.ChatTurn.findOne({ turnId: turn.turnId });
+  const state = await snapshot(completed);
+  assert.equal(completed.status, 'completed');
+  assert.equal(completed.outputFile, null);
+  assert.equal(state.assistantMessage.fileResult.status, 'ready');
+  const file = await store.read(user._id, state.assistantMessage.attachments[0].fileId);
+  assert.match(file.buffer.toString(), /fill="none"/);
+  assert.equal(await File.countDocuments({ resultKey: `${turn.turnId}:1:0` }), 1);
+  assert.equal(await models.ChatBillingLedger.countDocuments({ turnId: turn.turnId }), 1);
+});
+test('worker automatically offers files but preserves plain-text streaming', { skip: !uri }, async (t) => {
+  const { Completions } = require('openai/resources/chat/completions');
+  let calls = 0, fileMode = false;
+  t.mock.method(Completions.prototype, 'create', async function* (request) {
+    calls++;
+    assert.equal(request.tool_choice, 'auto');
+    if (fileMode) {
+      const args = JSON.stringify({ filename: 'natural.txt', content: 'hello from file', summary: 'Ready' });
+      yield { choices: [{ delta: { tool_calls: [{ index: 0, function: { name: 'create_file', arguments: args } }] }, finish_reason: 'tool_calls' }] };
+    } else yield { choices: [{ delta: { content: 'Hello from chat' }, finish_reason: 'stop' }] };
+    yield { choices: [], usage: { prompt_tokens: 20, completion_tokens: 20, total_tokens: 40 } };
+  });
+  for (const useFile of [false, true]) {
+    fileMode = useFile;
+    const accepted = await accept({ userId: user._id, payload: { clientMessageId: crypto.randomUUID(), conversationId: conversation.id,
+      modelId, message: useFile ? 'Збережи привітання у TXT' : 'Привіт', files: [] } });
+    await worker.processTurn(await worker.claimTurn(accepted.turn.turnId));
+    const state = await snapshot(await models.ChatTurn.findOne({ turnId: accepted.turn.turnId }));
+    if (useFile) {
+      assert.equal(state.assistantMessage.fileResult.status, 'ready');
+      assert.equal((await store.read(user._id, state.assistantMessage.attachments[0].fileId)).buffer.toString(), 'hello from file');
+    } else {
+      assert.equal(state.assistantMessage.content, 'Hello from chat');
+      assert.equal(state.assistantMessage.attachments.length, 0);
+    }
+    assert.equal(await models.ChatBillingLedger.countDocuments({ turnId: accepted.turn.turnId }), 1);
+  }
+  assert.equal(calls, 2);
+});

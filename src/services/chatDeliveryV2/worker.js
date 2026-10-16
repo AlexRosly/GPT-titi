@@ -151,18 +151,18 @@ const commitCompletion = async (turn, leaseToken, assistantText, usage) => {
       if (!current) throw Object.assign(new Error(), { staleLease: true });
 
       let attachments = [], fileResult = null;
-      if (current.outputFile) {
+      if (current.outputFile || current.providerResult?.artifact || current.providerResult?.artifactError) {
         try {
           const data = current.providerResult;
           if (data?.artifactError || !data?.artifact) throw require("../files/validation").fail(data?.artifactError || "INVALID_FILE_OUTPUT");
-          const rendered = require("../files/artifacts").render(current.outputFile, data.artifact.content);
+          const rendered = require("../files/artifacts").render(current.outputFile || { filename: data.artifact.filename }, data.artifact.content);
           const f = await require("../files/store").create({ ...rendered, user: turn.user, source: "generated", resultKey: `${turn.turnId}:${turn.attempt}:0`, session });
           attachments = [{ ...require("../files/store").dto(f), storage: "private" }];
           fileResult = { status: f.status, filename: f.originalName, fileId: String(f._id), error: null };
           assistantText = data.artifact.summary || "File result attached.";
         } catch (error) {
           if (!error.fileError) throw error;
-          fileResult = { status: "failed", filename: current.outputFile.filename, error: error.fileError };
+          fileResult = { status: "failed", filename: current.outputFile?.filename || "requested-file", error: error.fileError };
           assistantText = "The file could not be created. See the file result for details.";
         }
       }
@@ -291,15 +291,18 @@ const processTurn = async (claimed) => {
       leaseToken, status: "processing", leaseUntil: { $gt: new Date() }, reservationState: "held" },
     { $set: { providerStartedAt: new Date() } });
     if (!started.matchedCount) return;
+    const artifacts = require("../files/artifacts");
+    const automaticFiles = !turn.outputFile && artifacts.autoEnabled(turn.modelId);
+    const fileTools = turn.outputFile ? artifacts.toolOptions(turn.outputFile) : automaticFiles ? artifacts.autoToolOptions() : {};
     const stream = await client.chat.completions.create({
       model: turn.modelId,
       messages,
       stream: true,
       stream_options: { include_usage: true },
-      ...(turn.outputFile ? require("../files/artifacts").toolOptions(turn.outputFile) : {}),
+      ...fileTools,
     }, { signal: controller.signal });
 
-    const fileCollector = turn.outputFile ? require("../files/artifacts").collector() : null;
+    const fileCollector = turn.outputFile || automaticFiles ? artifacts.collector({ optional: automaticFiles }) : null;
     let usage;
     let pending = "";
     let lastFlush = Date.now();
@@ -360,15 +363,15 @@ const processTurn = async (claimed) => {
       });
     }
 
+    const streamedTextTokens = estimateTokens(assistantText);
     const fileOutput = fileCollector ? fileCollector.finish() : {};
-    if (fileCollector) assistantText = fileOutput.artifact?.summary || "File generation finished.";
+    if (fileOutput.artifact || fileOutput.artifactError) assistantText = fileOutput.artifact?.summary || "File generation finished.";
 
     if (!usage) {
-      usage = {
-        promptTokens: estimateTokens(JSON.stringify(messages)),
-        completionTokens: (fileCollector ? Math.ceil((fileOutput.argumentChars || 0) / 4) : estimateTokens(assistantText)),
-        totalTokens: estimateTokens(JSON.stringify(messages)) + (fileCollector ? Math.ceil((fileOutput.argumentChars || 0) / 4) : estimateTokens(assistantText)),
-      };
+      // Include tool definitions and mixed text/tool output in fallback accounting.
+      const promptTokens = estimateTokens(JSON.stringify({ messages, ...fileTools }));
+      const completionTokens = streamedTextTokens + Math.ceil((fileOutput.argumentChars || 0) / 4);
+      usage = { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens };
     }
 
     // Persist the completed provider result before billing. Recovery can finish

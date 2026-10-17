@@ -49,9 +49,9 @@ const owned = async (user, id, { session, includeDeleted = false } = {}) => {
   if (!f || (!includeDeleted && (f.status !== 'ready' || (f.expiresAt && f.expiresAt <= new Date())))) throw fail('FILE_NOT_FOUND', 404);
   return f;
 };
-const read = async (user, id) => {
-  const f = await owned(user, id);
-  const chunks = await Chunk.find({ file: f._id }).sort({ index: 1 });
+const read = async (user, id, { session } = {}) => {
+  const f = await owned(user, id, { session });
+  const chunks = await Chunk.find({ file: f._id }).session(session || null).sort({ index: 1 });
   const buffer = Buffer.concat(chunks.map((c) => Buffer.from(c.data)));
   if (buffer.length !== f.size || crypto.createHash('sha256').update(buffer).digest('hex') !== f.checksum) throw fail('FILE_UNAVAILABLE', 503);
   return { file: f, buffer };

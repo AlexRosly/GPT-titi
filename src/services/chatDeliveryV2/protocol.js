@@ -2,6 +2,12 @@ const crypto = require("crypto");
 const mongoose = require("mongoose");
 
 const CODES = {
+  TEXT_ATTACHMENT_TOO_LARGE: ["A text attachment exceeds 64 KiB. Split it into smaller files.", false],
+  TEXT_ATTACHMENTS_CONTEXT_TOO_LARGE: ["Text attachments in this conversation window exceed 128 KiB. Start a new chat or use smaller files.", false],
+  TEXT_INPUT_DISABLED: ["Reading text attachments is disabled for this model or server.", false],
+  INVALID_UTF8: ["Save the attachment as UTF-8 text and upload it again.", false],
+  INVALID_TEXT: ["The attachment contains unsupported binary or control characters.", false],
+  DOCUMENT_PROCESSING_NOT_ENABLED: ["This document format cannot be read yet. Use a supported text file.", false],
   INVALID_ENVELOPE: ["Invalid request envelope.", false],
   INVALID_CLIENT_MESSAGE_ID: ["Invalid client message id.", false],
   INVALID_CONVERSATION_ID: ["Invalid conversation id.", false],

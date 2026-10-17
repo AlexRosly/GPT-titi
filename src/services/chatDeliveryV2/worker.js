@@ -379,41 +379,21 @@ const processTurn = async (claimed) => {
         .catch(() => controller.abort());
     }, HEARTBEAT_MS);
 
-    const history = await ChatMessage.find({
-      user: turn.user,
-      conversation: turn.conversation,
-      deleted: null,
-    })
-      .sort({ createdAt: -1 })
-      .limit(20)
-      .lean();
-
-    const messages = [
-      { role: "system", content: "You are a helpful assistant." },
-      ...(await Promise.all(
-        history.reverse().map(async (m) => ({
-          role: m.role,
-          content:
-            m.role === "user"
-              ? await require("../files/messages").providerContent(
-                  turn.user,
-                  m.content,
-                  m.attachments,
-                )
-              : m.content,
-        })),
-      )),
-    ];
+    const fileModel = await ChatModels.findOne({ modelId: turn.modelId, enabled: true })
+      .select("fileOutputEnabled textInputEnabled").lean();
+    const history = await require("../files/textContext").forTurn(turn);
+    const textInput = require("../files/textInput");
+    const textBudget = textInput.budget();
+    const messages = [{ role: "system", content: "You are a helpful assistant." }];
+    // Sequential construction keeps the shared context byte budget deterministic.
+    for (const m of history) messages.push({ role: m.role, content: m.role === "user"
+      ? await require("../files/messages").providerContent(turn.user, m.content, m.attachments, { model: fileModel, state: textBudget })
+      : m.content });
+    if (textBudget.promptBytes) messages[0].content += " " + textInput.instructions;
 
     let assistantText = turn.partialContent || "";
     let seq = turn.lastSeq || 0;
     const artifacts = require("../files/artifacts");
-    const fileModel = await ChatModels.findOne({
-      modelId: turn.modelId,
-      enabled: true,
-    })
-      .select("fileOutputEnabled")
-      .lean();
     if (turn.outputFile && !artifacts.outputEnabled(fileModel)) {
       await failTurn(turn, leaseToken, errorFor("MODEL_NOT_AVAILABLE"), {
         knownNoCharge: true,
@@ -588,7 +568,7 @@ const processTurn = async (claimed) => {
     const protocol =
       error?.code === "INSUFFICIENT_BALANCE"
         ? errorFor("INSUFFICIENT_BALANCE")
-        : safeProviderError(error);
+        : error?.fileError ? errorFor(error.fileError) : safeProviderError(error);
     await failTurn(turn, leaseToken, protocol, {
       knownNoCharge: [400, 401, 403, 404, 422, 429].includes(error?.status),
     });

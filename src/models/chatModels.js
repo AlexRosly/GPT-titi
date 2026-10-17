@@ -33,6 +33,7 @@ const ContentSchema = Schema(
 
 const ChatModelsSchema = Schema(
   {
+    textInputEnabled: { type: Boolean, default: true },
     fileOutputEnabled: { type: Boolean, default: true }, // absent on older records also means enabled
     modelId: { type: String }, // gpt-4o-mini
     label: { type: String },

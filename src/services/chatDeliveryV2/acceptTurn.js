@@ -42,7 +42,7 @@ const acceptTurn = async ({ userId, payload }) => {
   }).select("_id").lean();
   if (!conversation) throw protocolError("CONVERSATION_NOT_FOUND");
 
-  const model = await ChatModels.findOne({ modelId, enabled: true }).select("modelId inputPerM outputPerM fileOutputEnabled").lean();
+  const model = await ChatModels.findOne({ modelId, enabled: true }).select("modelId inputPerM outputPerM fileOutputEnabled textInputEnabled").lean();
   if (!model) throw protocolError("MODEL_NOT_AVAILABLE");
 
   if (!require("../files/config").enabled() && !files.some(f => f?.storage === "private")) await validateFilesOwnership(userId, files);
@@ -74,8 +74,12 @@ const acceptTurn = async ({ userId, payload }) => {
         return { turn: duplicate, disposition: "duplicate" };
       }
       const canonicalFiles = (require("../files/config").enabled() || files.some(f => f?.storage === "private"))
-        ? await require("../files/messages").resolve(userId, files, session) : files;
-      await reserve({ userId, amount: estimate.appTokens, turnId, session });
+        ? await require("../files/messages").resolve(userId, files, session, model) : files;
+      const textContext = require("../files/textContext");
+      const prior = (await textContext.prior(userId, conversationId, session)).reverse();
+      const textBudget = await textContext.estimate(userId, [...prior, { role: "user", attachments: canonicalFiles }], model, session);
+      const reservedAmount = estimate.appTokens + require("../files/textInput").reserveAmount(textBudget.promptBytes, model.inputPerM, APP_TOKEN_VALUE_USD);
+      await reserve({ userId, amount: reservedAmount, turnId, session });
       const [userMessage] = await ChatMessage.create(
         [{
           user: userId,
@@ -103,7 +107,8 @@ const acceptTurn = async ({ userId, payload }) => {
           message,
           files: canonicalFiles,
           outputFile,
-          reservedAppTokens: estimate.appTokens,
+          reservedAppTokens: reservedAmount,
+          contextMessageIds: prior.map(m => m._id),
           reservationState: "held",
           pricing: { inputPerM: model.inputPerM, outputPerM: model.outputPerM, tokenValueUsd: APP_TOKEN_VALUE_USD },
           status: "queued",

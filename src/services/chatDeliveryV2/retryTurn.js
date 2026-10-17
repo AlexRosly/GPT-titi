@@ -16,10 +16,13 @@ const retryTurn = async ({ turnId, userId }) => {
       const model = await ChatModels.findOne({ modelId: turn.modelId, enabled: true }).session(session).lean();
       if (!model) throw protocolError("MODEL_NOT_AVAILABLE");
       const estimate = await estimateCost(turn.modelId, estimateTokens(turn.message));
-      await reserve({ userId, amount: estimate.appTokens, turnId, attempt: turn.attempt + 1, session });
+      const textContext = require("../files/textContext");
+      const textBudget = await textContext.estimate(userId, await textContext.forTurn(turn, session), model, session);
+      const reservedAmount = estimate.appTokens + require("../files/textInput").reserveAmount(textBudget.promptBytes, model.inputPerM, APP_TOKEN_VALUE_USD);
+      await reserve({ userId, amount: reservedAmount, turnId, attempt: turn.attempt + 1, session });
       return ChatTurn.findOneAndUpdate({ _id: turn._id, status: "failed", attempt: turn.attempt }, {
         $set: { status: "queued", lastSeq: 0, partialContent: "", error: null, processingStartedAt: null,
-          leaseToken: null, leaseUntil: null, reservedAppTokens: estimate.appTokens, reservationState: "held",
+          leaseToken: null, leaseUntil: null, reservedAppTokens: reservedAmount, reservationState: "held",
           reservationClosedAt: null, providerStartedAt: null, providerResult: null, needsReconciliation: false,
           pricing: { inputPerM: model.inputPerM, outputPerM: model.outputPerM, tokenValueUsd: APP_TOKEN_VALUE_USD } },
         $inc: { attempt: 1 },

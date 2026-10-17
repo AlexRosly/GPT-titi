@@ -2,9 +2,10 @@ const File = require('../../models/managedFile');
 const ChatMessage = require('../../models/chatMessage');
 const store = require('./store');
 const config = require('./config');
+const textInput = require('./textInput');
 const { fail } = require('./validation');
 const privateFile = (f) => f?.storage === 'private';
-const resolve = async (user, files, session) => {
+const resolve = async (user, files, session, model) => {
   if (!Array.isArray(files) || files.length > config.maxAttachments) throw fail('INVALID_ATTACHMENTS');
   const out = [];
   let totalBytes = 0;
@@ -15,9 +16,8 @@ const resolve = async (user, files, session) => {
     const file = await store.owned(user, id, { session });
     totalBytes += file.size;
     if (totalBytes > config.maxBytes()) throw fail("ATTACHMENTS_TOO_LARGE", 413);
-    // This release stores documents but only sends raster images to the model.
-    // Do not charge a request while silently ignoring its document attachment.
-    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.mimetype)) throw fail('DOCUMENT_PROCESSING_NOT_ENABLED', 415);
+    if (textInput.supported(file)) await textInput.readPart(user, file, { session, model });
+    else if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.mimetype)) throw fail('DOCUMENT_PROCESSING_NOT_ENABLED', 415);
     await File.updateOne({ _id: file._id, status: 'ready' }, { $set: { expiresAt: null } }, { session });
     out.push({ ...store.dto(file), expiresAt: null, storage: 'private' });
   }
@@ -39,18 +39,24 @@ const hydrate = async (user, messages) => {
     return { ...store.dto(current), storage: 'private' };
   }) }));
 };
-const providerContent = async (user, text, files = []) => {
+const providerContent = async (user, text, files = [], options = {}) => {
   const content = text ? [{ type: 'text', text }] : [];
   for (const f of files) {
     if (privateFile(f)) {
-      if (!['image/png', 'image/jpeg', 'image/webp'].includes(f.mimetype)) continue;
+
       // Read private bytes ourselves. No public URL or bearer token goes to OpenAI.
       try {
+        const metadata = await store.owned(user, String(f.fileId));
+        if (textInput.supported(metadata)) {
+          content.push(await textInput.readPart(user, metadata, options));
+          continue;
+        }
+        if (!['image/png', 'image/jpeg', 'image/webp'].includes(metadata.mimetype)) throw fail('DOCUMENT_PROCESSING_NOT_ENABLED', 415);
         const { file, buffer } = await store.read(user, String(f.fileId));
         content.push({ type: 'image_url', image_url: { url: `data:${file.mimetype};base64,${buffer.toString('base64')}` } });
       } catch (error) {
         if (error.fileError !== 'FILE_NOT_FOUND') throw error;
-        content.push({ type: 'text', text: '[A previously attached image was deleted and is no longer available.]' });
+        content.push({ type: 'text', text: '[A previously attached file was deleted or expired and is no longer available.]' });
       }
     } else if (f?.mimetype?.startsWith('image/') && f.url && !f.deletedAt && (!f.expiresAt || new Date(f.expiresAt) > new Date())) {
       content.push({ type: 'image_url', image_url: { url: f.url } });

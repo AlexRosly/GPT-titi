@@ -33,6 +33,7 @@ for (const scenario of ['concurrent winner', 'retry after aborted writes', 'conf
     });
     t.mock.method(reservations, 'reserve', async () => { reserves++; });
     t.mock.method(utils, 'estimateCost', async () => ({ appTokens: 1 }));
+    t.mock.method(models.ChatMessage, 'find', () => ({ sort() { return this; }, limit() { return this; }, session() { return this; }, lean: async () => [] }));
     t.mock.method(models.ChatMessage, 'create', async () => [{ _id: 'discarded-message' }]);
     t.mock.method(models.ChatTurn, 'create', async () => [{ toObject: () => ({ turnId: 'discarded-turn' }) }]);
     t.mock.method(ledger, 'notifyCommitted', () => { notified++; });

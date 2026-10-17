@@ -160,3 +160,87 @@ test('model opt-out blocks explicit output and removes tools from automatic requ
     assert.equal((await models.ChatTurn.findOne({ turnId: accepted.turn.turnId })).status, 'completed');
   } finally { await models.ChatModels.updateOne({ modelId }, { $unset: { fileOutputEnabled: 1 } }); }
 });
+
+test('text attachment reaches provider, survives retry/history, generates a file and is billed once per attempt', { skip: !uri }, async t => {
+  const { Completions } = require('openai/resources/chat/completions');
+  const retry = require('../../src/services/chatDeliveryV2/retryTurn');
+  const chat = await models.ChatConversation.create({ user: user._id, modelId });
+  const input = await store.create({ user: user._id, name: 'дані.csv', mimetype: 'text/plain', buffer: Buffer.from('Товар,Кількість\nЯблука,42\nГруші,7') });
+  const payload = { clientMessageId: crypto.randomUUID(), conversationId: chat.id, modelId, message: 'Підсумуй файл', files: [{ fileId: String(input._id), storage: 'private', originalName: 'forged', url: 'https://evil.test' }] };
+  const accepted = await accept({ userId: user._id, payload });
+  const baseline = await require('../../src/utils/estimateCost')(modelId, require('../../src/utils/tokenEstimate')(payload.message));
+  assert.ok(accepted.turn.reservedAppTokens > baseline.appTokens);
+  assert.equal((await File.findById(input._id)).expiresAt, null);
+  assert.equal((await accept({ userId: user._id, payload })).disposition, 'duplicate');
+  let rejectOnce = true, deleted = false, calls = 0;
+  t.mock.method(Completions.prototype, 'create', async function* (request) {
+    calls++;
+    const parts = request.messages.filter(m => m.role === 'user').flatMap(m => m.content);
+    if (deleted) {
+      assert.ok(parts.some(p => p.text?.includes('no longer available')));
+      assert.equal(parts.some(p => p.text?.includes('Яблука')), false);
+    } else {
+      assert.match(request.messages[0].content, /untrusted source data/);
+      assert.ok(parts.some(p => p.text?.includes('Яблука') && p.text.includes('дані.csv')));
+      assert.doesNotMatch(JSON.stringify(parts), /forged|evil\.test/);
+    }
+    if (rejectOnce) { rejectOnce = false; throw Object.assign(new Error('rate limit'), { status: 429 }); }
+    const args = JSON.stringify({ filename: 'summary.txt', content: 'Яблука 42, груші 7', summary: 'Готово' });
+    yield { choices: [{ delta: { tool_calls: [{ index: 0, function: { name: 'create_file', arguments: args } }] }, finish_reason: 'tool_calls' }] };
+    yield { choices: [], usage: { prompt_tokens: 80, completion_tokens: 30, total_tokens: 110 } };
+  });
+  await worker.processTurn(await worker.claimTurn(accepted.turn.turnId));
+  const failed = await models.ChatTurn.findOne({ turnId: accepted.turn.turnId });
+  assert.equal(failed.status, 'failed'); assert.equal(failed.reservationState, 'released');
+  const retried = await retry({ userId: user._id, turnId: accepted.turn.turnId });
+  assert.equal(retried.reservedAppTokens, accepted.turn.reservedAppTokens);
+  await worker.processTurn(await worker.claimTurn(accepted.turn.turnId));
+  const completed = await models.ChatTurn.findOne({ turnId: accepted.turn.turnId });
+  assert.equal(completed.status, 'completed');
+  assert.equal(await models.ChatBillingLedger.countDocuments({ turnId: completed.turnId }), 1);
+  const restored = await snapshot(completed);
+  assert.equal((await store.read(user._id, restored.assistantMessage.attachments[0].fileId)).buffer.toString(), 'Яблука 42, груші 7');
+  const follow = await accept({ userId: user._id, payload: { ...payload, clientMessageId: crypto.randomUUID(), files: [], message: 'Нагадай дані' } });
+  assert.ok(follow.turn.reservedAppTokens > baseline.appTokens);
+  await worker.processTurn(await worker.claimTurn(follow.turn.turnId));
+  assert.equal((await models.ChatTurn.findOne({ turnId: follow.turn.turnId })).status, 'completed');
+  await store.remove(user._id, String(input._id)); deleted = true;
+  const last = await accept({ userId: user._id, payload: { ...payload, clientMessageId: crypto.randomUUID(), files: [] } });
+  await worker.processTurn(await worker.claimTurn(last.turn.turnId));
+  assert.equal((await models.ChatTurn.findOne({ turnId: last.turn.turnId })).status, 'completed');
+  assert.equal(calls, 4);
+});
+
+test('invalid, oversized, foreign and disabled text inputs create no turn or reservation', { skip: !uri }, async () => {
+  const chat = await models.ChatConversation.create({ user: user._id, modelId });
+  const before = await models.User.findById(user._id);
+  for (const [name, buffer, expected] of [['large.txt', Buffer.alloc(65537, 65), 'TEXT_ATTACHMENT_TOO_LARGE'], ['bad.txt', Buffer.from([255]), 'INVALID_UTF8'], ['binary.txt', Buffer.from('a\0b'), 'INVALID_TEXT']]) {
+    const file = await store.create({ user: user._id, name, mimetype: 'text/plain', buffer });
+    const payload = { clientMessageId: crypto.randomUUID(), conversationId: chat.id, modelId, message: 'Read', files: [{ fileId: String(file._id), storage: 'private' }] };
+    await assert.rejects(accept({ userId: user._id, payload }), e => e.fileError === expected);
+    assert.equal(await models.ChatTurn.countDocuments({ clientMessageId: payload.clientMessageId }), 0);
+    assert.notEqual((await File.findById(file._id)).expiresAt, null);
+    await store.remove(user._id, String(file._id));
+  }
+  const foreign = await store.create({ user: new mongoose.Types.ObjectId(), name: 'private.txt', mimetype: 'text/plain', buffer: Buffer.from('secret') });
+  await assert.rejects(accept({ userId: user._id, payload: { clientMessageId: crypto.randomUUID(), conversationId: chat.id, modelId, message: 'Read', files: [{ fileId: String(foreign._id), storage: 'private' }] } }), e => e.fileError === 'FILE_NOT_FOUND');
+  const own = await store.create({ user: user._id, name: 'own.txt', mimetype: 'text/plain', buffer: Buffer.from('hello') });
+  await models.ChatModels.updateOne({ modelId }, { $set: { textInputEnabled: false } });
+  try {
+    await assert.rejects(accept({ userId: user._id, payload: { clientMessageId: crypto.randomUUID(), conversationId: chat.id, modelId, message: 'Read', files: [{ fileId: String(own._id), storage: 'private' }] } }), e => e.fileError === 'TEXT_INPUT_DISABLED');
+  } finally { await models.ChatModels.updateOne({ modelId }, { $unset: { textInputEnabled: 1 } }); }
+  const after = await models.User.findById(user._id);
+  assert.equal(after.reservedAppTokens, before.reservedAppTokens); assert.equal(after.appTokens, before.appTokens);
+});
+
+test('aggregate text budget and attachment reserve reject before admission without retaining uploads', { skip: !uri }, async () => {
+  const poor = await models.User.create({ email: 'text-budget@example.test', name: 'Budget', status: 'active', appTokens: 0 });
+  const chat = await models.ChatConversation.create({ user: poor._id, modelId });
+  const input = await store.create({ user: poor._id, name: 'large.txt', mimetype: 'text/plain', buffer: Buffer.alloc(65536, 65) });
+  const payload = { clientMessageId: crypto.randomUUID(), conversationId: chat.id, modelId, message: 'Read', files: [{ storage: 'private', fileId: String(input._id) }] };
+  await assert.rejects(accept({ userId: poor._id, payload: { ...payload, files: Array(3).fill(payload.files[0]) } }), e => e.fileError === 'TEXT_ATTACHMENTS_CONTEXT_TOO_LARGE');
+  await assert.rejects(accept({ userId: poor._id, payload }), e => e.protocolError?.code === 'INSUFFICIENT_BALANCE');
+  assert.equal(await models.ChatTurn.countDocuments({ user: poor._id }), 0);
+  assert.notEqual((await File.findById(input._id)).expiresAt, null);
+  assert.equal((await models.User.findById(poor._id)).reservedAppTokens || 0, 0);
+});

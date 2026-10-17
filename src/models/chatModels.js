@@ -33,6 +33,7 @@ const ContentSchema = Schema(
 
 const ChatModelsSchema = Schema(
   {
+    pdfInputEnabled: { type: Boolean, default: true },
     officeInputEnabled: { type: Boolean, default: true },
     textInputEnabled: { type: Boolean, default: true },
     fileOutputEnabled: { type: Boolean, default: true }, // absent on older records also means enabled

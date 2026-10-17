@@ -42,7 +42,7 @@ const acceptTurn = async ({ userId, payload }) => {
   }).select("_id").lean();
   if (!conversation) throw protocolError("CONVERSATION_NOT_FOUND");
 
-  const model = await ChatModels.findOne({ modelId, enabled: true }).select("modelId inputPerM outputPerM fileOutputEnabled textInputEnabled officeInputEnabled").lean();
+  const model = await ChatModels.findOne({ modelId, enabled: true }).select("modelId inputPerM outputPerM fileOutputEnabled textInputEnabled officeInputEnabled pdfInputEnabled").lean();
   if (!model) throw protocolError("MODEL_NOT_AVAILABLE");
 
   if (!require("../files/config").enabled() && !files.some(f => f?.storage === "private")) await validateFilesOwnership(userId, files);

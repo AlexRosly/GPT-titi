@@ -2,6 +2,15 @@ const crypto = require("crypto");
 const mongoose = require("mongoose");
 
 const CODES = {
+  PDF_INPUT_DISABLED: ["Reading PDF attachments is disabled for this model or server.", false],
+  PDF_ATTACHMENT_TOO_LARGE: ["PDF attachments must be nonempty and no larger than 5 MiB.", false],
+  PDF_PAGE_LIMIT: ["The PDF exceeds 50 pages. Split it into smaller documents.", false],
+  PDF_EXTRACTED_TEXT_TOO_LARGE: ["The PDF exceeds 64 KiB of extracted text. Split it into smaller documents.", false],
+  PDF_OCR_REQUIRED: ["No readable text layer was found. Scanned PDF pages need OCR, which is not available yet. Upload a PDF with selectable text or a text file.", false],
+  PDF_PASSWORD_PROTECTED: ["Encrypted or password-protected PDFs cannot be read. Upload an unencrypted copy you are authorized to use.", false],
+  INVALID_PDF_DOCUMENT: ["The PDF is damaged or its text cannot be read. Export a new copy with a text layer.", false],
+  PDF_PROCESSING_TIMEOUT: ["PDF processing exceeded the time limit. Use a smaller document.", false],
+  PDF_PROCESSING_BUSY: ["PDF processing is busy. Please try again shortly.", true],
   OFFICE_INPUT_DISABLED: ["Reading DOCX/XLSX is disabled for this model or server.", false],
   OFFICE_ATTACHMENT_TOO_LARGE: ["Office attachments must be nonempty and no larger than 5 MiB.", false],
   OFFICE_EXTRACTED_TEXT_TOO_LARGE: ["The document contains more than 64 KiB of extracted text. Split it into smaller documents.", false],

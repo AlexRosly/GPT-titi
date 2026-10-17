@@ -310,3 +310,72 @@ test('Office rejection rolls back retention, turn and reservation; opt-out and o
   assert.equal(after.reservedAppTokens, before.reservedAppTokens);
   assert.equal(after.appTokens, before.appTokens);
 });
+
+test('PDF private input reaches provider with page markers, retries and restores history with one debit', { skip: !uri }, async t => {
+  const { makePdf } = require('./fixtures/pdfInput');
+  const { Completions } = require('openai/resources/chat/completions');
+  const retry = require('../../src/services/chatDeliveryV2/retryTurn');
+  const chat = await models.ChatConversation.create({ user: user._id, modelId });
+  const input = await store.create({ user: user._id, name: 'звіт.pdf', mimetype: 'application/pdf', buffer: await makePdf() });
+  const payload = { clientMessageId: crypto.randomUUID(), conversationId: chat.id, modelId, message: 'Підсумуй сторінки', files: [{ fileId: String(input._id), storage: 'private', url: 'https://forged.test' }] };
+  const accepted = await accept({ userId: user._id, payload });
+  assert.equal((await accept({ userId: user._id, payload })).disposition, 'duplicate');
+  const baseline = await require('../../src/utils/estimateCost')(modelId, require('../../src/utils/tokenEstimate')(payload.message));
+  assert.ok(accepted.turn.reservedAppTokens > baseline.appTokens);
+  let calls = 0, deleted = false;
+  t.mock.method(Completions.prototype, 'create', async function* (request) {
+    calls++;
+    const parts = JSON.stringify(request.messages.filter(m => m.role === 'user'));
+    if (deleted) { assert.match(parts, /no longer available/); assert.doesNotMatch(parts, /Україна/); }
+    else { assert.match(parts, /звіт.pdf/); assert.match(parts, /Україна/); assert.match(parts, /PDF PAGE 2 OF 2/); assert.match(parts, /731/); }
+    assert.doesNotMatch(parts, /forged.test/);
+    if (calls === 1) throw Object.assign(new Error('rate limited'), { status: 429 });
+    yield { choices: [{ delta: { content: 'Сторінка 2: 731' }, finish_reason: 'stop' }] };
+    yield { choices: [], usage: { prompt_tokens: 150, completion_tokens: 20, total_tokens: 170 } };
+  });
+  await worker.processTurn(await worker.claimTurn(accepted.turn.turnId));
+  assert.equal((await models.ChatTurn.findOne({ turnId: accepted.turn.turnId })).reservationState, 'released');
+  const retried = await retry({ userId: user._id, turnId: accepted.turn.turnId });
+  assert.equal(retried.reservedAppTokens, accepted.turn.reservedAppTokens);
+  await worker.processTurn(await worker.claimTurn(accepted.turn.turnId));
+  const completed = await models.ChatTurn.findOne({ turnId: accepted.turn.turnId });
+  assert.equal(completed.status, 'completed');
+  assert.equal(await models.ChatBillingLedger.countDocuments({ turnId: completed.turnId }), 1);
+  assert.equal((await models.ChatMessage.findById(completed.userMessage)).attachments[0].originalName, 'звіт.pdf');
+  assert.equal((await File.findById(input._id)).expiresAt, null);
+  const follow = await accept({ userId: user._id, payload: { ...payload, clientMessageId: crypto.randomUUID(), files: [], message: 'Нагадай число' } });
+  await worker.processTurn(await worker.claimTurn(follow.turn.turnId));
+  assert.equal((await models.ChatTurn.findOne({ turnId: follow.turn.turnId })).status, 'completed');
+  await store.remove(user._id, String(input._id)); deleted = true;
+  const last = await accept({ userId: user._id, payload: { ...payload, clientMessageId: crypto.randomUUID(), files: [] } });
+  await worker.processTurn(await worker.claimTurn(last.turn.turnId));
+  assert.equal((await models.ChatTurn.findOne({ turnId: last.turn.turnId })).status, 'completed');
+  assert.equal(calls, 4);
+});
+
+test('PDF scans, corruption, size, opt-out and foreign files reject without turn, retention or reserve', { skip: !uri }, async () => {
+  const { makePdf } = require('./fixtures/pdfInput');
+  const chat = await models.ChatConversation.create({ user: user._id, modelId });
+  const before = await models.User.findById(user._id);
+  const valid = await store.create({ user: user._id, name: 'valid.pdf', mimetype: 'application/pdf', buffer: await makePdf() });
+  const send = async (files, expected) => {
+    const payload = { clientMessageId: crypto.randomUUID(), conversationId: chat.id, modelId, message: 'Read', files: files.map(f => ({ fileId: String(f._id), storage: 'private' })) };
+    await assert.rejects(accept({ userId: user._id, payload }), e => e.fileError === expected);
+    assert.equal(await models.ChatTurn.countDocuments({ clientMessageId: payload.clientMessageId }), 0);
+    assert.notEqual((await File.findById(valid._id)).expiresAt, null);
+  };
+  for (const [buffer, expected] of [[await makePdf(['']), 'PDF_OCR_REQUIRED'], [Buffer.from('%PDF-1.7\ninvalid'), 'INVALID_PDF_DOCUMENT'], [Buffer.alloc(5 * 1024 * 1024 + 1), 'PDF_ATTACHMENT_TOO_LARGE'], [await makePdf(['secret'], { userPassword: 'secret' }), 'PDF_PASSWORD_PROTECTED']]) {
+    const file = await store.create({ user: user._id, name: 'bad.pdf', mimetype: 'application/pdf', buffer });
+    await send([valid, file], expected);
+  }
+  const foreign = await store.create({ user: new mongoose.Types.ObjectId(), name: 'foreign.pdf', mimetype: 'application/pdf', buffer: await makePdf() });
+  await send([foreign], 'FILE_NOT_FOUND');
+  await models.ChatModels.updateOne({ modelId }, { $set: { pdfInputEnabled: false } });
+  try { await send([valid], 'PDF_INPUT_DISABLED'); }
+  finally { await models.ChatModels.updateOne({ modelId }, { $unset: { pdfInputEnabled: 1 } }); }
+  const text = await store.create({ user: user._id, name: 'full.txt', mimetype: 'text/plain', buffer: Buffer.alloc(65536, 65) });
+  await send([valid, text, text], 'TEXT_ATTACHMENTS_CONTEXT_TOO_LARGE');
+  const after = await models.User.findById(user._id);
+  assert.equal(after.reservedAppTokens, before.reservedAppTokens);
+  assert.equal(after.appTokens, before.appTokens);
+});

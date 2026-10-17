@@ -15,7 +15,7 @@ const validateUpload = ({ originalname, buffer }) => {
   if (ext === 'webp' && buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP') mimetype = 'image/webp';
   if (ext === 'pdf' && buffer.toString('ascii', 0, 5) === '%PDF-') mimetype = 'application/pdf';
   if (['docx', 'xlsx', 'pptx', 'zip'].includes(ext) && buffer.length >= 4 && buffer.readUInt32LE(0) === 0x04034b50) {
-    // Stored as opaque downloads only; container parsing is a later phase.
+    // Container identity is verified by the bounded Office reader before chat admission.
     mimetype = 'application/octet-stream';
   }
   if (textExtensions.has(ext)) {

@@ -74,7 +74,7 @@ integration('message references canonical metadata, retain upload and block docu
   const hydrated = await messages.hydrate(user, [{ attachments: result }]);
   assert.equal(hydrated[0].attachments[0].status, 'deleted');
   assert.equal(hydrated[0].attachments[0].downloadUrl, null);
-  const doc = await store.create({ user, name: 'file.docx', mimetype: 'application/octet-stream', buffer: Buffer.from('doc') });
+  const doc = await store.create({ user, name: 'file.pdf', mimetype: 'application/pdf', buffer: Buffer.from('doc') });
   await assert.rejects(store.transaction(s => messages.resolve(user, [{ fileId: String(doc._id) }], s)), { fileError: 'DOCUMENT_PROCESSING_NOT_ENABLED' });
   await store.remove(user, String(doc._id));
 });

@@ -1,6 +1,7 @@
 const { ChatMessage } = require('../../models');
 const store = require('./store');
 const textInput = require('./textInput');
+const inputReader = require('./inputReader');
 // Freeze the existing 20-message window at acceptance: 19 prior messages + current.
 const prior = (user, conversation, session) => ChatMessage.find({ user, conversation, deleted: null })
   .sort({ createdAt: -1, _id: -1 }).limit(19).session(session).lean();
@@ -23,7 +24,7 @@ const estimate = async (user, history, model, session) => {
       let file;
       try { file = await store.owned(user, String(attachment.fileId), { session }); }
       catch (error) { if (error.fileError === 'FILE_NOT_FOUND') continue; throw error; }
-      if (textInput.supported(file)) await textInput.readPart(user, file, { model, session, state });
+      if (inputReader.supported(file)) await inputReader.readPart(user, file, { model, session, state });
     }
   }
   return state;

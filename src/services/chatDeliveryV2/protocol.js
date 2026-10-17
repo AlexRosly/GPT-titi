@@ -2,8 +2,17 @@ const crypto = require("crypto");
 const mongoose = require("mongoose");
 
 const CODES = {
+  OFFICE_INPUT_DISABLED: ["Reading DOCX/XLSX is disabled for this model or server.", false],
+  OFFICE_ATTACHMENT_TOO_LARGE: ["Office attachments must be nonempty and no larger than 5 MiB.", false],
+  OFFICE_EXTRACTED_TEXT_TOO_LARGE: ["The document contains more than 64 KiB of extracted text. Split it into smaller documents.", false],
+  OFFICE_DOCUMENT_LIMIT: ["The document exceeds safe parsing limits. Split it into smaller documents.", false],
+  OFFICE_DOCUMENT_UNSUPPORTED: ["This document uses unsupported protection, embedded objects, external data or macros. Save a plain DOCX/XLSX copy.", false],
+  INVALID_OFFICE_DOCUMENT: ["The DOCX/XLSX is invalid, damaged or unsupported. Save a new unencrypted copy.", false],
+  OFFICE_DOCUMENT_EMPTY: ["No readable document text or spreadsheet cells were found. Images are not read at this stage.", false],
+  OFFICE_PROCESSING_TIMEOUT: ["Document processing exceeded the time limit. Use a smaller document.", false],
+  OFFICE_PROCESSING_BUSY: ["Document processing is busy. Please try again shortly.", true],
   TEXT_ATTACHMENT_TOO_LARGE: ["A text attachment exceeds 64 KiB. Split it into smaller files.", false],
-  TEXT_ATTACHMENTS_CONTEXT_TOO_LARGE: ["Text attachments in this conversation window exceed 128 KiB. Start a new chat or use smaller files.", false],
+  TEXT_ATTACHMENTS_CONTEXT_TOO_LARGE: ["Extracted attachment text in this conversation window exceed 128 KiB. Start a new chat or use smaller files.", false],
   TEXT_INPUT_DISABLED: ["Reading text attachments is disabled for this model or server.", false],
   INVALID_UTF8: ["Save the attachment as UTF-8 text and upload it again.", false],
   INVALID_TEXT: ["The attachment contains unsupported binary or control characters.", false],

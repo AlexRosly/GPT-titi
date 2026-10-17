@@ -2,7 +2,7 @@ const File = require('../../models/managedFile');
 const ChatMessage = require('../../models/chatMessage');
 const store = require('./store');
 const config = require('./config');
-const textInput = require('./textInput');
+const inputReader = require('./inputReader');
 const { fail } = require('./validation');
 const privateFile = (f) => f?.storage === 'private';
 const resolve = async (user, files, session, model) => {
@@ -16,7 +16,7 @@ const resolve = async (user, files, session, model) => {
     const file = await store.owned(user, id, { session });
     totalBytes += file.size;
     if (totalBytes > config.maxBytes()) throw fail("ATTACHMENTS_TOO_LARGE", 413);
-    if (textInput.supported(file)) await textInput.readPart(user, file, { session, model });
+    if (inputReader.supported(file)) await inputReader.readPart(user, file, { session, model });
     else if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.mimetype)) throw fail('DOCUMENT_PROCESSING_NOT_ENABLED', 415);
     await File.updateOne({ _id: file._id, status: 'ready' }, { $set: { expiresAt: null } }, { session });
     out.push({ ...store.dto(file), expiresAt: null, storage: 'private' });
@@ -47,8 +47,8 @@ const providerContent = async (user, text, files = [], options = {}) => {
       // Read private bytes ourselves. No public URL or bearer token goes to OpenAI.
       try {
         const metadata = await store.owned(user, String(f.fileId));
-        if (textInput.supported(metadata)) {
-          content.push(await textInput.readPart(user, metadata, options));
+        if (inputReader.supported(metadata)) {
+          content.push(await inputReader.readPart(user, metadata, options));
           continue;
         }
         if (!['image/png', 'image/jpeg', 'image/webp'].includes(metadata.mimetype)) throw fail('DOCUMENT_PROCESSING_NOT_ENABLED', 415);

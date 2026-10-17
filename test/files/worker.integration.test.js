@@ -244,3 +244,69 @@ test('aggregate text budget and attachment reserve reject before admission witho
   assert.notEqual((await File.findById(input._id)).expiresAt, null);
   assert.equal((await models.User.findById(poor._id)).reservedAppTokens || 0, 0);
 });
+
+test('DOCX/XLSX private input reaches provider, retries once, restores history and bills once', { skip: !uri }, async t => {
+  const fixtures = require('./fixtures/officeInput');
+  const { Completions } = require('openai/resources/chat/completions');
+  const retry = require('../../src/services/chatDeliveryV2/retryTurn');
+  const chat = await models.ChatConversation.create({ user: user._id, modelId });
+  const inputs = [];
+  for (const ext of ['docx', 'xlsx']) inputs.push(await store.create({ user: user._id, name: `дані.${ext}`, mimetype: 'application/octet-stream', buffer: await fixtures[ext]() }));
+  const payload = { clientMessageId: crypto.randomUUID(), conversationId: chat.id, modelId, message: 'Порівняй документи', files: inputs.map(f => ({ fileId: String(f._id), storage: 'private', url: 'https://forged.test' })) };
+  const accepted = await accept({ userId: user._id, payload });
+  assert.equal((await accept({ userId: user._id, payload })).disposition, 'duplicate');
+  const baseline = await require('../../src/utils/estimateCost')(modelId, require('../../src/utils/tokenEstimate')(payload.message));
+  assert.ok(accepted.turn.reservedAppTokens > baseline.appTokens);
+  let calls = 0;
+  t.mock.method(Completions.prototype, 'create', async function* (request) {
+    calls++;
+    const parts = request.messages.filter(m => m.role === 'user').flatMap(m => m.content);
+    const text = JSON.stringify(parts);
+    assert.match(text, /дані.docx/); assert.match(text, /дані.xlsx/);
+    assert.match(text, /Україна/); assert.match(text, /SUM/); assert.match(text, /not recalculated/);
+    assert.doesNotMatch(text, /forged\.test/);
+    if (calls === 1) throw Object.assign(new Error('rate limited'), { status: 429 });
+    yield { choices: [{ delta: { content: 'Яблука: 42' }, finish_reason: 'stop' }] };
+    yield { choices: [], usage: { prompt_tokens: 150, completion_tokens: 20, total_tokens: 170 } };
+  });
+  await worker.processTurn(await worker.claimTurn(accepted.turn.turnId));
+  assert.equal((await models.ChatTurn.findOne({ turnId: accepted.turn.turnId })).reservationState, 'released');
+  const retried = await retry({ userId: user._id, turnId: accepted.turn.turnId });
+  assert.equal(retried.reservedAppTokens, accepted.turn.reservedAppTokens);
+  await worker.processTurn(await worker.claimTurn(accepted.turn.turnId));
+  const completed = await models.ChatTurn.findOne({ turnId: accepted.turn.turnId });
+  assert.equal(completed.status, 'completed');
+  assert.equal(await models.ChatBillingLedger.countDocuments({ turnId: completed.turnId }), 1);
+  const message = await models.ChatMessage.findById(completed.userMessage);
+  assert.equal(message.attachments.length, 2);
+  const follow = await accept({ userId: user._id, payload: { ...payload, clientMessageId: crypto.randomUUID(), files: [], message: 'Нагадай значення' } });
+  await worker.processTurn(await worker.claimTurn(follow.turn.turnId));
+  assert.equal((await models.ChatTurn.findOne({ turnId: follow.turn.turnId })).status, 'completed');
+  assert.equal(calls, 3);
+  for (const file of inputs) assert.equal((await File.findById(file._id)).expiresAt, null);
+});
+
+test('Office rejection rolls back retention, turn and reservation; opt-out and owner checks apply', { skip: !uri }, async () => {
+  const fixtures = require('./fixtures/officeInput');
+  const chat = await models.ChatConversation.create({ user: user._id, modelId });
+  const before = await models.User.findById(user._id);
+  const valid = await store.create({ user: user._id, name: 'valid.docx', mimetype: 'application/octet-stream', buffer: await fixtures.docx() });
+  const invalid = await store.create({ user: user._id, name: 'bad.xlsx', mimetype: 'application/octet-stream', buffer: Buffer.from('PK invalid') });
+  const send = async (files, expected) => {
+    const payload = { clientMessageId: crypto.randomUUID(), conversationId: chat.id, modelId, message: 'Read', files: files.map(f => ({ fileId: String(f._id), storage: 'private' })) };
+    await assert.rejects(accept({ userId: user._id, payload }), e => e.fileError === expected);
+    assert.equal(await models.ChatTurn.countDocuments({ clientMessageId: payload.clientMessageId }), 0);
+  };
+  await send([valid, invalid], 'INVALID_OFFICE_DOCUMENT');
+  assert.notEqual((await File.findById(valid._id)).expiresAt, null);
+  const foreign = await store.create({ user: new mongoose.Types.ObjectId(), name: 'foreign.docx', mimetype: 'application/octet-stream', buffer: await fixtures.docx() });
+  await send([foreign], 'FILE_NOT_FOUND');
+  await models.ChatModels.updateOne({ modelId }, { $set: { officeInputEnabled: false } });
+  try { await send([valid], 'OFFICE_INPUT_DISABLED'); }
+  finally { await models.ChatModels.updateOne({ modelId }, { $unset: { officeInputEnabled: 1 } }); }
+  const large = await store.create({ user: user._id, name: 'large.docx', mimetype: 'application/octet-stream', buffer: await fixtures.docx('A'.repeat(60000)) });
+  await send([large, large, large], 'TEXT_ATTACHMENTS_CONTEXT_TOO_LARGE');
+  const after = await models.User.findById(user._id);
+  assert.equal(after.reservedAppTokens, before.reservedAppTokens);
+  assert.equal(after.appTokens, before.appTokens);
+});

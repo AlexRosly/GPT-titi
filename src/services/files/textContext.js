@@ -24,7 +24,7 @@ const estimate = async (user, history, model, session) => {
       let file;
       try { file = await store.owned(user, String(attachment.fileId), { session }); }
       catch (error) { if (error.fileError === 'FILE_NOT_FOUND') continue; throw error; }
-      if (inputReader.supported(file)) await inputReader.readPart(user, file, { model, session, state });
+      if (inputReader.supported(file, model)) await inputReader.readPart(user, file, { model, session, state });
     }
   }
   return state;

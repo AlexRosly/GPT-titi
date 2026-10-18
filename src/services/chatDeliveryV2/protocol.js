@@ -2,6 +2,19 @@ const crypto = require("crypto");
 const mongoose = require("mongoose");
 
 const CODES = {
+  FILE_QUOTA_EXCEEDED: ["Private file storage is full, including extracted text. Delete unused files and try again.", false],
+  OCR_INPUT_DISABLED: ["OCR is disabled for this model or server.", false],
+  OCR_UNAVAILABLE: ["OCR is not ready on the server. Please contact support or upload a text-layer PDF or text file.", false],
+  OCR_FILE_TOO_LARGE: ["Files for OCR must be nonempty and no larger than 5 MiB. Split or resize the file.", false],
+  OCR_PAGE_LIMIT: ["A PDF can contain at most 10 pages that need OCR. Split the document.", false],
+  OCR_IMAGE_LIMIT: ["The image exceeds the OCR limit of 16 megapixels or 10,000 pixels per side. Resize the image.", false],
+  OCR_TEXT_TOO_LARGE: ["Extracted document text exceeds 64 KiB. Split the document.", false],
+  OCR_NO_TEXT: ["OCR could not recognize text in this PDF. Try a clearer, upright scan or upload a text copy.", false],
+  OCR_INVALID_IMAGE: ["This image cannot be read by OCR. Use a valid, static PNG, JPG or WEBP image.", false],
+  OCR_FAILED: ["OCR could not process this file. Try a clearer or smaller copy.", false],
+  OCR_PROCESSING_TIMEOUT: ["OCR exceeded the processing time limit. Split the document or use a smaller image.", false],
+  OCR_PROCESSING_BUSY: ["OCR processing is busy. Please try again shortly.", true],
+  OCR_NOT_READY: ["Attachment processing changed while sending. Please try again.", true],
   PDF_INPUT_DISABLED: ["Reading PDF attachments is disabled for this model or server.", false],
   PDF_ATTACHMENT_TOO_LARGE: ["PDF attachments must be nonempty and no larger than 5 MiB.", false],
   PDF_PAGE_LIMIT: ["The PDF exceeds 50 pages. Split it into smaller documents.", false],

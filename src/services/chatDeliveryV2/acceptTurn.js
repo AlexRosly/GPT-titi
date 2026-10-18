@@ -42,7 +42,7 @@ const acceptTurn = async ({ userId, payload }) => {
   }).select("_id").lean();
   if (!conversation) throw protocolError("CONVERSATION_NOT_FOUND");
 
-  const model = await ChatModels.findOne({ modelId, enabled: true }).select("modelId inputPerM outputPerM fileOutputEnabled textInputEnabled officeInputEnabled pdfInputEnabled").lean();
+  const model = await ChatModels.findOne({ modelId, enabled: true }).select("modelId inputPerM outputPerM fileOutputEnabled textInputEnabled officeInputEnabled pdfInputEnabled ocrInputEnabled limits").lean();
   if (!model) throw protocolError("MODEL_NOT_AVAILABLE");
 
   if (!require("../files/config").enabled() && !files.some(f => f?.storage === "private")) await validateFilesOwnership(userId, files);
@@ -58,6 +58,14 @@ const acceptTurn = async ({ userId, payload }) => {
     return { turn: existing, disposition: "duplicate" };
   }
 
+  // OCR may be slow: prepare private immutable text before opening a Mongo transaction.
+  const ocr = require("../files/ocrInput");
+  if (ocr.enabled(model)) {
+    if (!Array.isArray(files) || files.length > require("../files/config").maxAttachments) throw require("../files/validation").fail("INVALID_ATTACHMENTS");
+    const preparationDeadline = Date.now() + 45000;
+    await ocr.prepareFiles(userId, files, model, preparationDeadline);
+    await ocr.prepareHistory(userId, await require("../files/textContext").prior(userId, conversationId, null), model, preparationDeadline);
+  }
   const estimatedTokens = estimateTokens(message);
   const estimate = await estimateCost(modelId, estimatedTokens);
   const turnId = crypto.randomUUID();

@@ -26,6 +26,27 @@ router.post('/', (req, res, next) => upload.single('file')(req, res, (err) => {
   const file = await store.create({ user: req.user._id, name, mimetype, buffer: req.file.buffer });
   res.status(201).json({ success: true, file: store.dto(file) });
 }));
+// Frontend prepares attachments before chat:send, avoiding the short V2 ACK timeout.
+router.post('/:id/prepare', express.json({ limit: '1kb' }), handle(async (req, res) => {
+  const file = await store.owned(req.user._id, req.params.id);
+  if (!req.body || typeof req.body.modelId !== 'string' || !req.body.modelId || req.body.modelId.length > 200 || Object.keys(req.body).some(k => k !== 'modelId')) {
+    return res.status(400).json({ error: 'INVALID_ENVELOPE' });
+  }
+  const model = await require('../models/chatModels').findOne({ modelId: req.body.modelId, enabled: true }).lean();
+  if (!model) return res.status(404).json({ error: 'MODEL_NOT_AVAILABLE' });
+  const ocr = require('../services/files/ocrInput');
+  res.set({ 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
+  if (!ocr.eligible(file, model)) return res.json({ success: true, processing: { status: 'not_required' } });
+  try {
+    await ocr.prepare(req.user._id, req.params.id, model);
+    const ready = await store.owned(req.user._id, req.params.id);
+    return res.json({ success: true, processing: { status: 'ready', method: 'local_ocr', ocrPages: ready.ocrCache.pages, textBytes: Buffer.byteLength(ready.ocrCache.text), scripts: [...new Set((ready.ocrCache.detections || []).map(d => d.script).filter(Boolean))], uncertain: (ready.ocrCache.detections || []).some(d => d.uncertain) } });
+  } catch (error) {
+    if (!error.fileError) throw error;
+    const detail = require('../services/chatDeliveryV2/protocol').errorFor(error.fileError);
+    return res.status(error.status || 422).json({ error: detail.code, message: detail.message, retryable: detail.retryable });
+  }
+}));
 router.get('/', handle(async (req, res) => {
   const File = require('../models/managedFile');
   const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);

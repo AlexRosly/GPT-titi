@@ -1,3 +1,4 @@
+process.env.OCR_ENABLED = 'false'; // Compatibility path; OCR is covered separately.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const pdf = require('../../src/services/files/pdfInput');

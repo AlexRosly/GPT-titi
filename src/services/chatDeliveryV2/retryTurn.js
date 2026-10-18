@@ -5,6 +5,13 @@ const { reserve, protocolError } = require("./reservations");
 const { APP_TOKEN_VALUE_USD } = require("../../config/billing");
 
 const retryTurn = async ({ turnId, userId }) => {
+  const previous = await ChatTurn.findOne({ turnId, user: userId }).lean();
+  if (!previous) throw protocolError("TURN_NOT_FOUND");
+  if (previous.status !== "failed" || !previous.error?.retryable || previous.needsReconciliation || previous.reservationState === "held") throw protocolError("TURN_NOT_RETRYABLE");
+  const ocrModel = await ChatModels.findOne({ modelId: previous.modelId, enabled: true }).lean();
+  if (!ocrModel) throw protocolError("MODEL_NOT_AVAILABLE");
+  const ocr = require("../files/ocrInput");
+  if (ocr.enabled(ocrModel)) await ocr.prepareHistory(userId, await require("../files/textContext").forTurn(previous), ocrModel);
   const session = await mongoose.startSession();
   try {
     const result = await session.withTransaction(async () => {

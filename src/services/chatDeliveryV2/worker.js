@@ -380,7 +380,7 @@ const processTurn = async (claimed) => {
     }, HEARTBEAT_MS);
 
     const fileModel = await ChatModels.findOne({ modelId: turn.modelId, enabled: true })
-      .select("fileOutputEnabled textInputEnabled officeInputEnabled pdfInputEnabled").lean();
+      .select("fileOutputEnabled textInputEnabled officeInputEnabled pdfInputEnabled ocrInputEnabled limits").lean();
     const history = await require("../files/textContext").forTurn(turn);
     const textInput = require("../files/textInput");
     const textBudget = textInput.budget();

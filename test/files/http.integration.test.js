@@ -1,3 +1,4 @@
+process.env.OCR_ENABLED = 'false'; // Compatibility path; OCR is covered separately.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const mongoose = require('mongoose');
@@ -64,4 +65,28 @@ test('generated PDF/DOCX/XLSX have private structured previews and full download
     assert.equal((await require('../../src/models/managedFile').findById(file.id)).generatedPreview, null);
     assert.equal((await fetch(`${root}/${file.id}/preview`, { headers: own })).status, 404);
   }
+});
+
+test('OCR preparation endpoint is private, idempotent, model-aware and returns actionable errors', { skip: !uri }, async t => {
+  process.env.OCR_ENABLED = 'true'; process.env.OCR_LANGUAGES = 'eng';
+  t.after(() => { process.env.OCR_ENABLED = 'false'; });
+  const { makeImage, makeScan } = require('./fixtures/ocr');
+  const modelId = 'ocr-http-test';
+  const Model = require('../../src/models/chatModels'); await Model.create({ modelId, enabled: true });
+  const file = await store.create({ user: user._id, name: 'scan.png', mimetype: 'image/png', buffer: makeImage() });
+  const request = (id, authToken = token) => fetch(`${root}/${id}/prepare`, { method: 'POST', headers: { authorization: `Bearer ${authToken}`, 'content-type': 'application/json' }, body: JSON.stringify({ modelId }) });
+  assert.equal((await request(file.id, stranger)).status, 404);
+  const prepared = await request(file.id); assert.equal(prepared.status, 200);
+  const body = await prepared.json(); assert.equal(body.processing.ocrPages, 1); assert.equal(body.processing.status, 'ready'); assert.ok(body.processing.textBytes > 0);
+  assert.match(prepared.headers.get('cache-control'), /no-store/);
+  assert.deepEqual(await (await request(file.id)).json(), body);
+  const original = await fetch(`${root}/${file.id}`, { headers: { authorization: `Bearer ${token}` } });
+  assert.equal('ocrCache' in (await original.json()).file, false);
+  await Model.updateOne({ modelId }, { ocrInputEnabled: false });
+  assert.equal((await (await request(file.id)).json()).processing.status, 'not_required');
+  await Model.updateOne({ modelId }, { ocrInputEnabled: true });
+  const blank = await store.create({ user: user._id, name: 'blank.pdf', mimetype: 'application/pdf', buffer: await makeScan(['']) });
+  const rejected = await request(blank.id); assert.equal(rejected.status, 422);
+  const error = await rejected.json(); assert.equal(error.error, 'OCR_NO_TEXT'); assert.match(error.message, /clearer/); assert.equal(error.retryable, false);
+  await store.remove(user._id, file.id); assert.equal((await request(file.id)).status, 404);
 });

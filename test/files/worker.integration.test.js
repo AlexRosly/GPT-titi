@@ -1,3 +1,4 @@
+process.env.OCR_ENABLED = 'false'; // Compatibility path; OCR is covered separately.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
@@ -378,4 +379,123 @@ test('PDF scans, corruption, size, opt-out and foreign files reject without turn
   const after = await models.User.findById(user._id);
   assert.equal(after.reservedAppTokens, before.reservedAppTokens);
   assert.equal(after.appTokens, before.appTokens);
+});
+
+const enableOcr = t => {
+  process.env.OCR_ENABLED = 'true'; process.env.OCR_LANGUAGES = 'eng';
+  t.after(() => { process.env.OCR_ENABLED = 'false'; });
+};
+test('OCR scan cache survives reread, preserves reserve/retry/history and commits one debit', { skip: !uri }, async t => {
+  enableOcr(t);
+  const { makeScan } = require('./fixtures/ocr');
+  const { Completions } = require('openai/resources/chat/completions');
+  const processOcr = require('../../src/services/files/ocrProcess');
+  const realExtract = processOcr.extract;
+  let extractions = 0;
+  t.mock.method(processOcr, 'extract', (...args) => { extractions++; return realExtract(...args); });
+  const chat = await models.ChatConversation.create({ user: user._id, modelId });
+  const input = await store.create({ user: user._id, name: 'private-scan.pdf', mimetype: 'application/pdf', buffer: await makeScan() });
+  const payload = { clientMessageId: crypto.randomUUID(), conversationId: chat.id, modelId, message: 'Read scanned invoice', files: [{ fileId: input.id, storage: 'private', url: 'https://forged.test' }] };
+  const accepted = await accept({ userId: user._id, payload });
+  assert.equal((await accept({ userId: user._id, payload })).disposition, 'duplicate');
+  const persisted = await File.findById(input._id).lean();
+  assert.match(persisted.ocrCache.text, /731/); assert.ok(persisted.derivedBytes > 0);
+  const baseline = await require('../../src/utils/estimateCost')(modelId, require('../../src/utils/tokenEstimate')(payload.message));
+  const state = await require('../../src/services/files/textContext').estimate(user._id, [{ role: 'user', attachments: accepted.turn.files }], {}, null);
+  assert.equal(accepted.turn.reservedAppTokens, baseline.appTokens + require('../../src/services/files/textInput').reserveAmount(state.promptBytes, 1, require('../../src/config/billing').APP_TOKEN_VALUE_USD));
+  let calls = 0;
+  t.mock.method(Completions.prototype, 'create', async function* (request) {
+    calls++; const content = JSON.stringify(request.messages);
+    assert.match(content, /731/); assert.match(content, /PDF PAGE 1 OF 1/); assert.doesNotMatch(content, /forged.test/);
+    if (calls === 1) throw Object.assign(new Error('rate limited'), { status: 429 });
+    yield { choices: [{ delta: { content: 'Invoice 731' }, finish_reason: 'stop' }] };
+    yield { choices: [], usage: { prompt_tokens: 200, completion_tokens: 10, total_tokens: 210 } };
+  });
+  await worker.processTurn(await worker.claimTurn(accepted.turn.turnId));
+  const retried = await require('../../src/services/chatDeliveryV2/retryTurn')({ userId: user._id, turnId: accepted.turn.turnId });
+  assert.equal(retried.reservedAppTokens, accepted.turn.reservedAppTokens);
+  await worker.processTurn(await worker.claimTurn(accepted.turn.turnId));
+  assert.equal((await models.ChatTurn.findOne({ turnId: accepted.turn.turnId })).status, 'completed');
+  assert.equal(await models.ChatBillingLedger.countDocuments({ turnId: accepted.turn.turnId }), 1);
+  const follow = await accept({ userId: user._id, payload: { ...payload, clientMessageId: crypto.randomUUID(), files: [], message: 'Recall invoice' } });
+  await worker.processTurn(await worker.claimTurn(follow.turn.turnId));
+  assert.equal(extractions, 1); assert.equal(calls, 3);
+});
+test('OCR concurrent preparation claims derived quota once; delete and expiry clear it', { skip: !uri }, async t => {
+  enableOcr(t);
+  const ocr = require('../../src/services/files/ocrInput');
+  const { makeImage } = require('./fixtures/ocr');
+  const before = await Quota.findById(user._id).lean();
+  const input = await store.create({ user: user._id, name: 'scan.png', mimetype: 'image/png', buffer: makeImage() });
+  await Promise.all([ocr.prepare(user._id, input.id, {}), ocr.prepare(user._id, input.id, {})]);
+  const cached = await File.findById(input._id).lean();
+  assert.equal((await Quota.findById(user._id)).bytes, before.bytes + input.size + cached.derivedBytes);
+  await store.remove(user._id, input.id); await store.remove(user._id, input.id);
+  assert.equal((await Quota.findById(user._id)).bytes, before.bytes);
+  assert.equal((await File.findById(input._id)).ocrCache, null);
+  const expired = await store.create({ user: user._id, name: 'expiry.png', mimetype: 'image/png', buffer: makeImage() });
+  await ocr.prepare(user._id, expired.id, {});
+  await File.updateOne({ _id: expired._id }, { expiresAt: new Date(0) }); await store.cleanup();
+  assert.equal((await File.findById(expired._id)).ocrCache, null);
+  assert.equal((await Quota.findById(user._id)).bytes, before.bytes);
+});
+test('OCR rejection creates no turn or reservation and foreign/disabled files are not processed', { skip: !uri }, async t => {
+  enableOcr(t);
+  const { makeScan } = require('./fixtures/ocr');
+  const chat = await models.ChatConversation.create({ user: user._id, modelId });
+  const before = await models.User.findById(user._id);
+  for (const [buffer, expected] of [[await makeScan(['']), 'OCR_NO_TEXT'], [await makeScan(['secret'], { userPassword: 'secret' }), 'PDF_PASSWORD_PROTECTED'], [Buffer.alloc(5 * 1024 * 1024 + 1), 'OCR_FILE_TOO_LARGE']]) {
+    const file = await store.create({ user: user._id, name: 'scan.pdf', mimetype: 'application/pdf', buffer });
+    const payload = { clientMessageId: crypto.randomUUID(), conversationId: chat.id, modelId, message: 'Read', files: [{ fileId: file.id, storage: 'private' }] };
+    await assert.rejects(accept({ userId: user._id, payload }), { fileError: expected });
+    assert.equal(await models.ChatTurn.countDocuments({ clientMessageId: payload.clientMessageId }), 0);
+    const record = await File.findById(file._id); assert.notEqual(record.expiresAt, null); assert.equal(record.ocrCache, null);
+  }
+  const foreign = await store.create({ user: new mongoose.Types.ObjectId(), name: 'foreign.pdf', mimetype: 'application/pdf', buffer: await makeScan() });
+  await assert.rejects(require('../../src/services/files/ocrInput').prepare(user._id, foreign.id, {}), { fileError: 'FILE_NOT_FOUND' });
+  const disabled = await store.create({ user: user._id, name: 'disabled.pdf', mimetype: 'application/pdf', buffer: await makeScan() });
+  await require('../../src/services/files/ocrInput').prepare(user._id, disabled.id, { ocrInputEnabled: false });
+  assert.equal((await File.findById(disabled._id)).ocrCache, null);
+  const after = await models.User.findById(user._id);
+  assert.equal(after.appTokens, before.appTokens); assert.equal(after.reservedAppTokens, before.reservedAppTokens);
+});
+test('OCR context overflow and insufficient reserve never admit or bill a turn', { skip: !uri }, async t => {
+  enableOcr(t);
+  const { makeScan } = require('./fixtures/ocr');
+  const chat = await models.ChatConversation.create({ user: user._id, modelId });
+  const input = await store.create({ user: user._id, name: 'invoice.pdf', mimetype: 'application/pdf', buffer: await makeScan() });
+  const full = await store.create({ user: user._id, name: 'full.txt', mimetype: 'text/plain', buffer: Buffer.alloc(65536, 65) });
+  const payload = { clientMessageId: crypto.randomUUID(), conversationId: chat.id, modelId, message: 'Read', files: [input, full, full].map(f => ({ fileId: f.id, storage: 'private' })) };
+  const before = await models.User.findById(user._id).lean();
+  await assert.rejects(accept({ userId: user._id, payload }), { fileError: 'TEXT_ATTACHMENTS_CONTEXT_TOO_LARGE' });
+  assert.equal(await models.ChatTurn.countDocuments({ clientMessageId: payload.clientMessageId }), 0);
+  assert.notEqual((await File.findById(input._id)).expiresAt, null);
+  const after = await models.User.findById(user._id).lean();
+  assert.equal(after.appTokens, before.appTokens); assert.equal(after.reservedAppTokens, before.reservedAppTokens);
+  const poor = await models.User.create({ email: 'ocr-poor@example.test', name: 'Poor', status: 'active', appTokens: 0 });
+  const poorChat = await models.ChatConversation.create({ user: poor._id, modelId });
+  const poorFile = await store.create({ user: poor._id, name: 'scan.pdf', mimetype: 'application/pdf', buffer: await makeScan() });
+  const request = { ...payload, clientMessageId: crypto.randomUUID(), conversationId: poorChat.id, files: [{ fileId: poorFile.id, storage: 'private' }] };
+  await assert.rejects(accept({ userId: poor._id, payload: request }), e => e.protocolError?.code === 'INSUFFICIENT_BALANCE');
+  assert.equal(await models.ChatTurn.countDocuments({ clientMessageId: request.clientMessageId }), 0);
+  assert.equal(await models.ChatBillingLedger.countDocuments({ user: poor._id }), 0);
+  assert.notEqual((await File.findById(poorFile._id)).expiresAt, null);
+});
+test('international OCR policy and per-page choices persist privately and are reused', { skip: !uri }, async t => {
+  enableOcr(t); process.env.OCR_LANGUAGES = 'auto';
+  t.after(() => { process.env.OCR_LANGUAGES = 'eng'; });
+  const bytes = require('node:fs').readFileSync(require('node:path').join(__dirname, 'fixtures/international/cyrillic.png'));
+  const file = await store.create({ user: user._id, name: 'international.png', mimetype: 'image/png', buffer: bytes });
+  const ocr = require('../../src/services/files/ocrInput');
+  await ocr.prepare(user._id, file.id, {});
+  const saved = await File.findById(file._id).lean();
+  assert.equal(saved.ocrCache.version, 2); assert.equal(saved.ocrCache.languages, 'auto');
+  assert.equal(saved.ocrCache.detections[0].script, 'Cyrillic');
+  assert.match(saved.ocrCache.text, /Україна/);
+  assert.ok(saved.derivedBytes > Buffer.byteLength(saved.ocrCache.text));
+  t.mock.method(require('../../src/services/files/ocrProcess'), 'extract', () => { throw new Error('must reuse existing cache'); });
+  await ocr.prepare(user._id, file.id, {});
+  assert.deepEqual((await File.findById(file._id).lean()).ocrCache, saved.ocrCache);
+  assert.equal('ocrCache' in store.dto(saved), false);
+  await store.remove(user._id, file.id);
 });

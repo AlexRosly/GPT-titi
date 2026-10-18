@@ -10,12 +10,14 @@ const supported = f => images.has(f.mimetype) || (f.mimetype === 'application/pd
 const enabled = model => config.enabled() && process.env.OCR_ENABLED !== 'false' && model?.ocrInputEnabled !== false;
 const eligible = (file, model) => supported(file) && enabled(model) &&
   (file.mimetype !== 'application/pdf' || (process.env.PDF_INPUT_ENABLED !== 'false' && model?.pdfInputEnabled !== false));
-const cached = file => file.ocrCache?.version === 2 && file.ocrCache?.checksum === file.checksum &&
+const cached = file => [2, 3].includes(file.ocrCache?.version) && file.ocrCache?.checksum === file.checksum &&
   typeof file.ocrCache.text === 'string' && Buffer.byteLength(file.ocrCache.text) <= 65536;
+// Old caches remain readable for turns already admitted before deployment.
+const fresh = file => cached(file) && file.ocrCache.version === 3;
 const pending = new Map();
 const prepare = async (user, id, model) => {
   const file = await store.owned(user, id); // Always authorize before cache lookup, including in-flight jobs.
-  if (!eligible(file, model) || cached(file)) return;
+  if (!eligible(file, model) || fresh(file)) return;
   if (file.size > 5 * 1024 * 1024) throw fail('OCR_FILE_TOO_LARGE', 413);
   const key = `${user}:${id}:${file.checksum}`;
   if (pending.has(key)) return pending.get(key);
@@ -25,13 +27,13 @@ const prepare = async (user, id, model) => {
     const bytes = Buffer.byteLength(result.text) + (result.detections?.length ? Buffer.byteLength(JSON.stringify(result.detections)) : 0);
     await store.transaction(async session => {
       const latest = await store.owned(user, id, { session });
-      if (cached(latest)) return; // Concurrent process winner; no duplicate quota claim.
+      if (fresh(latest)) return; // Concurrent process winner; no duplicate quota claim.
       if (latest.checksum !== current.checksum) throw fail('FILE_UNAVAILABLE', 503);
       const delta = bytes - (latest.derivedBytes || 0);
       const claim = await Quota.updateOne({ _id: user, bytes: { $lte: config.quotaBytes() - delta } }, { $inc: { bytes: delta } }, { session });
       if (!claim.matchedCount) throw fail('FILE_QUOTA_EXCEEDED', 413);
       await File.updateOne({ _id: latest._id, user, status: 'ready', checksum: current.checksum }, { $set: {
-        derivedBytes: bytes, ocrCache: { version: 2, checksum: current.checksum, text: result.text, pages: result.pages, languages: result.languages, detections: result.detections || [] },
+        derivedBytes: bytes, ocrCache: { version: 3, checksum: current.checksum, text: result.text, pages: result.pages, languages: result.languages, detections: result.detections || [] },
       } }, { session });
     });
   })();

@@ -18,7 +18,7 @@ const parseOsd = output => {
   const value = Number(/^Script confidence:\s*([\d.]+)\s*$/m.exec(output)?.[1]);
   return { script, confidence: Number.isFinite(value) && value >= 0 ? value : null };
 };
-const aliases = { Han: ['HanS','HanT','Japanese'], Hiragana: ['Japanese'], Katakana: ['Japanese'], Korean: ['Hangul'], Bengali: ['Bengali'], Devanagari: ['Devanagari'] };
+const aliases = { Han: ['HanS', 'HanT'], Hiragana: ['Japanese'], Katakana: ['Japanese'], Korean: ['Hangul'], Bengali: ['Bengali'], Devanagari: ['Devanagari'] };
 const select = (setting, available, detection) => {
   if (setting !== 'auto') {
     if (missing(setting, available).length) throw fail('OCR_UNAVAILABLE', 503);
@@ -27,11 +27,14 @@ const select = (setting, available, detection) => {
   const known = detection.script && (aliases[detection.script] || (SCRIPTS.includes(detection.script) ? [detection.script] : null));
   // Short/noisy samples can defeat OSD. A bounded fallback covers common scripts,
   // with an explicit warning; it is not advertised as universal language detection.
-  const chosen = known ? [...known, 'Latin'] : ['Latin', 'Cyrillic', 'Arabic', 'HanS'];
+  // Avoid a separate Latin recognizer competing with Cyrillic lookalikes.
+  // Pure Han uses Chinese models without the Japanese model competing for
+  // shared glyphs; Japanese/Kana pages retain their own model.
+  const chosen = known ? (['Cyrillic', 'Han', 'Japanese', 'Korean', 'Hangul'].includes(detection.script) ? known : [...known, 'Latin']) : ['Latin', 'Cyrillic', 'Arabic', 'HanS'];
   const models = [...new Set(chosen)].map(name => resolveScript(name, available));
   if (!available.has('osd') || models.some(name => !name)) throw fail('OCR_UNAVAILABLE', 503);
   return { models, script: known ? detection.script : null, confidence: detection.confidence,
-    uncertain: !known || detection.confidence === null || detection.confidence < 2, mode: 'auto' };
+    uncertain: detection.script === 'Han' || !known || detection.confidence === null || detection.confidence < 2, mode: 'auto' };
 };
 const scriptPattern = {
   Cyrillic: /\p{Script=Cyrillic}/u, Greek: /\p{Script=Greek}/u, Arabic: /\p{Script=Arabic}/u,
@@ -43,6 +46,7 @@ const scriptQuality = (script, text) => {
   const letters = [...text].filter(c => /\p{L}/u.test(c));
   const pattern = scriptPattern[script];
   const matching = pattern ? letters.filter(c => pattern.test(c)).length : letters.length;
-  return { matching, retryLayout: Boolean(pattern && letters.length >= 8 && matching / letters.length < 0.5) };
+  const minimum = ['Korean', 'Hangul'].includes(script) ? 0.9 : 0.5;
+  return { matching, retryLayout: Boolean(pattern && letters.length >= 8 && matching / letters.length < minimum) };
 };
 module.exports = { scriptQuality, SCRIPTS, mode, listModels, resolveScript, required, missing, parseOsd, select };

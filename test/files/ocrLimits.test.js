@@ -5,10 +5,10 @@ const PDFDocument = require('pdfkit');
 const { createCanvas } = require('@napi-rs/canvas');
 const { extract } = require('../../src/services/files/ocrProcess');
 process.env.OCR_LANGUAGES = 'eng';
-test('A4 raster uses 150 DPI instead of forced 2800-pixel upscaling, with bounded large pages', () => {
+test('A4 raster uses 200 DPI for small text, with bounded large pages', () => {
   const scale = limits.RENDER_DPI / 72;
-  assert.equal(limits.renderSide({width: 595.276*scale, height:841.89*scale}), 1754);
-  assert.equal(limits.renderSide({width:841.89*scale, height:595.276*scale}), 1754);
+  assert.equal(limits.renderSide({width: 595.276*scale, height:841.89*scale}), 2339);
+  assert.equal(limits.renderSide({width:841.89*scale, height:595.276*scale}), 2339);
   assert.equal(limits.renderSide({width:200,height:300}), 300);
   assert.equal(limits.renderSide({width:20000,height:30000}), 2800);
   for (const height of [NaN,Infinity,0,-1]) assert.throws(() => limits.renderSide({width:height,height}), {fileError:'INVALID_PDF_DOCUMENT'});
@@ -35,5 +35,24 @@ test('four-page image-only PDF returns every physical page with distinct numbers
   for(let page=1;page<=4;page++) {
     const section=result.text.split(`[PDF PAGE ${page} OF 4 — OCR]`)[1]?.split('[PDF PAGE')[0];
     assert.ok(section);assert.match(section,new RegExp(`ORDER ${730+page}`));
+  }
+});
+
+test('small printed rows retain their dates, quantities and amounts in source order', async () => {
+  const rows = ['DATE 15.10.2026', 'ITEM 731 QUANTITY 12 TOTAL 548.04',
+    'ITEM 732 QUANTITY 25 TOTAL 1200.50', 'ITEM 733 QUANTITY 54 TOTAL 925.28'];
+  const canvas = createCanvas(1654, 2339), ctx = canvas.getContext('2d');
+  ctx.fillStyle = 'white'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = 'black'; ctx.font = '24px sans-serif';
+  rows.forEach((row, index) => ctx.fillText(row, 100, 150 + index * 50));
+  const data = await new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ size: 'A4' }), chunks = [];
+    doc.on('data', b => chunks.push(b)); doc.on('end', () => resolve(Buffer.concat(chunks))); doc.on('error', reject);
+    doc.image(canvas.toBuffer('image/png'), 0, 0, { width: 595.28, height: 841.89 }); doc.end();
+  });
+  const result = await extract(data, 'pdf');
+  let previous = -1;
+  for (const row of rows) {
+    const index = result.text.indexOf(row); assert.ok(index > previous, row); previous = index;
   }
 });

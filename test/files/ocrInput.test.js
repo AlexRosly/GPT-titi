@@ -13,7 +13,7 @@ process.env.PRIVATE_FILES_ENABLED = 'true';
 process.env.OCR_ENABLED = 'true';
 process.env.OCR_LANGUAGES = 'eng';
 const cache = (content = 'Private OCR 731') => ({ _id: '0123456789abcdef01234567', originalName: 'scan.png', mimetype: 'image/png', size: 100,
-  checksum: 'hash', ocrCache: { version: 2, checksum: 'hash', text: content, pages: 1, languages: 'eng' } });
+  checksum: 'hash', ocrCache: { version: 3, checksum: 'hash', text: content, pages: 1, languages: 'eng' } });
 test('real OCR reads PNG, JPEG and WEBP without losing the existing visual input', async () => {
   for (const type of ['image/png', 'image/jpeg', 'image/webp']) {
     const result = await processOcr.extract(makeImage(undefined, type), 'image');
@@ -140,4 +140,23 @@ test('OCR quota failure never publishes a cache and deletion before save cannot 
 test('preparation deadline prevents unbounded historical OCR work', async t => {
   t.mock.method(store, 'owned', async () => { throw new Error('must not begin more OCR work'); });
   await assert.rejects(ocr.prepareHistory('owner', [{ role: 'user', attachments: [{ storage: 'private', fileId: '0123456789abcdef01234567' }] }], {}, Date.now() - 1), { fileError: 'OCR_NOT_READY' });
+});
+
+test('old cache remains readable but next preparation upgrades it once and only charges the byte delta', async t => {
+  const file = cache('old recognized text'); file.ocrCache.version = 2; file.derivedBytes = 200;
+  const File = require('../../src/models/managedFile'), Quota = require('../../src/models/fileQuota');
+  let runs = 0, claims = 0;
+  t.mock.method(store, 'owned', async () => file);
+  t.mock.method(store, 'read', async () => ({ file, buffer: makeImage() }));
+  t.mock.method(store, 'transaction', async fn => fn('session'));
+  const old = await ocr.readPart('owner', file, { model: {} });
+  assert.match(old.text, /old recognized text/);
+  t.mock.method(processOcr, 'extract', async () => { runs++; return { text: 'new recognized text', pages: 1, languages: 'auto', detections: [] }; });
+  t.mock.method(Quota, 'updateOne', async (query, update) => {
+    assert.equal(update.$inc.bytes, Buffer.byteLength('new recognized text') - 200); claims++; return { matchedCount: 1 };
+  });
+  t.mock.method(File, 'updateOne', async (query, update) => { Object.assign(file, update.$set); return { modifiedCount: 1 }; });
+  await ocr.prepare('owner', String(file._id), {}); await ocr.prepare('owner', String(file._id), {});
+  assert.equal(file.ocrCache.version, 3); assert.equal(runs, 1); assert.equal(claims, 1);
+  assert.equal(file.derivedBytes, Buffer.byteLength('new recognized text'));
 });

@@ -489,7 +489,7 @@ test('international OCR policy and per-page choices persist privately and are re
   const ocr = require('../../src/services/files/ocrInput');
   await ocr.prepare(user._id, file.id, {});
   const saved = await File.findById(file._id).lean();
-  assert.equal(saved.ocrCache.version, 2); assert.equal(saved.ocrCache.languages, 'auto');
+  assert.equal(saved.ocrCache.version, 3); assert.equal(saved.ocrCache.languages, 'auto');
   assert.equal(saved.ocrCache.detections[0].script, 'Cyrillic');
   assert.match(saved.ocrCache.text, /Україна/);
   assert.ok(saved.derivedBytes > Buffer.byteLength(saved.ocrCache.text));
@@ -498,4 +498,27 @@ test('international OCR policy and per-page choices persist privately and are re
   assert.deepEqual((await File.findById(file._id).lean()).ocrCache, saved.ocrCache);
   assert.equal('ocrCache' in store.dto(saved), false);
   await store.remove(user._id, file.id);
+});
+
+test('v2 OCR cache upgrades once to v3 with an atomic quota delta and normal deletion', { skip: !uri }, async t => {
+  enableOcr(t);
+  const { makeImage } = require('./fixtures/ocr');
+  const ocr = require('../../src/services/files/ocrInput');
+  let calls = 0;
+  t.mock.method(require('../../src/services/files/ocrProcess'), 'extract', async () => ({
+    text: ++calls === 1 ? 'old text' : 'new longer text with original numbers 15.40.2026', pages: 1, languages: 'eng', detections: [],
+  }));
+  const before = (await Quota.findById(user._id)).bytes;
+  const file = await store.create({ user: user._id, name: 'upgrade.png', mimetype: 'image/png', buffer: makeImage() });
+  await ocr.prepare(user._id, file.id, {});
+  await File.updateOne({ _id: file._id }, { $set: { 'ocrCache.version': 2 } });
+  const old = await File.findById(file._id).lean(), oldQuota = (await Quota.findById(user._id)).bytes;
+  await Promise.all([ocr.prepare(user._id, file.id, {}), ocr.prepare(user._id, file.id, {})]);
+  const current = await File.findById(file._id).lean();
+  assert.equal(calls, 2); assert.equal(current.ocrCache.version, 3);
+  assert.match(current.ocrCache.text, /15\.40\.2026/);
+  assert.equal((await Quota.findById(user._id)).bytes - oldQuota, current.derivedBytes - old.derivedBytes);
+  await ocr.prepare(user._id, file.id, {}); assert.equal(calls, 2);
+  await store.remove(user._id, file.id);
+  assert.equal((await Quota.findById(user._id)).bytes, before);
 });

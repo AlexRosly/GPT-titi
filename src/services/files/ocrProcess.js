@@ -4,6 +4,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { fail } = require('./validation');
+const limits = require('./ocrLimits');
 let active = 0;
 let lastCleanup = 0;
 const cleanupTemporary = async () => {
@@ -31,13 +32,13 @@ const extract = async (buffer, kind) => {
     dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gptiti-ocr-')); // 0700, random; never served by HTTP.
     await fs.writeFile(path.join(dir, 'input'), buffer, { mode: 0o600 });
     return await new Promise((resolve, reject) => {
-      const child = spawn('prlimit', ['--as=2147483648', '--cpu=40', '--core=0', '--', process.execPath, '--max-old-space-size=192', '--disable-wasm-trap-handler', '--v8-pool-size=1', path.join(__dirname, 'ocrProcessWorker.js'), dir, kind, lang], {
+      const child = spawn('prlimit', ['--as=2147483648', `--cpu=${limits.CPU_SECONDS}`, '--core=0', '--', process.execPath, '--max-old-space-size=192', '--disable-wasm-trap-handler', '--v8-pool-size=1', path.join(__dirname, 'ocrProcessWorker.js'), dir, kind, lang], {
         detached: true, stdio: ['ignore', 'pipe', 'ignore'],
         env: { PATH: process.env.PATH, HOME: dir, TMPDIR: dir, OMP_THREAD_LIMIT: '1', MALLOC_ARENA_MAX: '2', RAYON_NUM_THREADS: '1', UV_THREADPOOL_SIZE: '1', ...(process.env.OCR_TESSDATA_DIR ? { TESSDATA_PREFIX: process.env.OCR_TESSDATA_DIR } : {}) },
       });
       let output = '', bytes = 0, error;
       const kill = () => { try { process.kill(-child.pid, 'SIGKILL'); } catch {} };
-      const timer = setTimeout(() => { error = fail('OCR_PROCESSING_TIMEOUT', 413); kill(); }, 45000);
+      const timer = setTimeout(() => { error = fail('OCR_PROCESSING_TIMEOUT', 413); kill(); }, limits.JOB_MS);
       child.stdout.setEncoding('utf8');
       child.stdout.on('data', chunk => {
         bytes += Buffer.byteLength(chunk);

@@ -22,6 +22,17 @@ docker compose -f docker-compose.whisper.yml --profile cpu up -d
 
 Защищённый JWT endpoint: `POST /gpt-titi/api/upload/transcriptions`, multipart/form-data, поле `file`. Дополнительно можно передать `language` (например, `ru`) и `prompt`. Ответ: `{ "text": "...", "model": "..." }`. Максимальный размер файла настраивается через `TRANSCRIPTION_MAX_FILE_SIZE` (по умолчанию 25 MiB). Файл потоково сохраняется во временную директорию сервера и удаляется после обработки, в том числе при ошибке.
 
+## Перед застосуванням
+
+Потрібні Linux (сервер Ubuntu підходить), Node.js >=22.13.0, MongoDB replica set, PRIVATE_FILES_ENABLED=true. OCR локальний: Tesseract + Poppler; зовнішній OCR API та його ключ не потрібні.
+
+Встановити системні залежності на сервері, де працює бек:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y tesseract-ocr tesseract-ocr-all poppler-utils util-linux
+```
+
 ## Необхідні змінні .env для WebSocket
 
 Для налаштування WebSocket-сервера потрібно вказати у `.env` тільки такі змінні:

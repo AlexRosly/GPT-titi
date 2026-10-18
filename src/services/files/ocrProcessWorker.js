@@ -8,6 +8,7 @@ const { createCanvas, loadImage } = require('@napi-rs/canvas');
 const clean = value => value.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '').trim();
 const readable = value => /[^\s\uFFFD]/u.test(value);
 const languagePolicy = require('./ocrLanguages');
+const limits = require('./ocrLimits');
 let available;
 const detections = [];
 function recognize(buffer, page) {
@@ -32,7 +33,7 @@ function recognize(buffer, page) {
     const selection = languagePolicy.select(languages, available, detection);
     detections.push({ page, ...selection });
     const run = psm => clean(execFileSync('tesseract', [input, 'stdout', '-l', selection.models.join('+'), '--oem', '1', '--psm', String(psm)], {
-      encoding: 'utf8', timeout: 10000, killSignal: 'SIGKILL', maxBuffer: 65536,
+      encoding: 'utf8', timeout: limits.RECOGNITION_MS, killSignal: 'SIGKILL', maxBuffer: 65536,
       stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, OMP_THREAD_LIMIT: '1' },
     }));
     let recognized = run(3);
@@ -107,9 +108,11 @@ function recognize(buffer, page) {
         else {
           if (pages >= 10) throw fail('OCR_PAGE_LIMIT');
           const prefix = path.join(dir, 'rendered');
+          // -scale-to forces a size even with -r: never upscale every A4 page to 2800.
+          const side = limits.renderSide(page.getViewport({ scale: limits.RENDER_DPI / 72 }));
           try {
             // Poppler runs under native memory/CPU limits; no remote assets or shell.
-            const rendering = spawnSync('prlimit', ['--as=1073741824', '--cpu=12', '--', 'pdftoppm', '-f', String(n), '-l', String(n), '-singlefile', '-r', '150', '-scale-to', '2800', '-png', '-hide-annotations', path.join(dir, 'input'), prefix], {
+            const rendering = spawnSync('prlimit', ['--as=1073741824', '--cpu=12', '--', 'pdftoppm', '-f', String(n), '-l', String(n), '-singlefile', '-r', String(limits.RENDER_DPI), '-scale-to', String(side), '-png', '-hide-annotations', path.join(dir, 'input'), prefix], {
               timeout: 15000, killSignal: 'SIGKILL', maxBuffer: 65536, stdio: ['ignore', 'ignore', 'pipe'],
             });
             if (rendering.error) throw rendering.error;

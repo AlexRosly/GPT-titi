@@ -81,3 +81,11 @@ test('frozen history restores original ordering, skips deleted entries and exclu
   const result = await textContext.forTurn({ user: 'owner', conversation: 'chat', contextMessageIds: ['first', 'deleted'], userMessage: 'current' });
   assert.deepEqual(result.map(x => x.content), ['Before', 'Now']);
 });
+
+test('attachment reserve includes the full provider instructions and wrapper allowance', () => {
+  const bytes = 19132;
+  const inputPerM = 2.5, tokenValueUsd = 0.000001;
+  const expected = Math.ceil((bytes + Buffer.byteLength(textInput.instructions) + 64) / 1e6 * inputPerM / tokenValueUsd);
+  assert.equal(textInput.reserveAmount(bytes, inputPerM, tokenValueUsd), expected);
+  assert.equal(textInput.reserveAmount(0, inputPerM, tokenValueUsd), 0);
+});

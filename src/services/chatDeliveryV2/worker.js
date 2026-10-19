@@ -408,6 +408,16 @@ const processTurn = async (claimed) => {
       : automaticFiles
         ? artifacts.autoToolOptions()
         : {};
+    const exact = require("../files/exactTranscription");
+    const exactFiles = turn.outputFile ? [] : await exact.candidates(turn.user, history, fileModel);
+    const exactCollector = exactFiles.length ? exact.collector() : null;
+    if (exactCollector) {
+      const option = exact.options(exactFiles);
+      messages[0].content += " " + option.instruction;
+      fileTools.tools = [...(fileTools.tools || []), option.tool];
+      fileTools.tool_choice = "auto";
+      fileTools.parallel_tool_calls = false;
+    }
     const started = await ChatTurn.updateOne(
       {
         _id: turn._id,
@@ -452,6 +462,7 @@ const processTurn = async (claimed) => {
     let emittedSince = 0;
     for await (const chunk of stream) {
       fileCollector?.add(chunk);
+      exactCollector?.add(chunk);
       const delta = turn.outputFile ? null : chunk.choices?.[0]?.delta?.content;
       if (chunk.usage) {
         usage = {
@@ -463,7 +474,7 @@ const processTurn = async (claimed) => {
       if (!delta) continue;
       pending += delta;
       emittedSince += delta.length;
-      if (Date.now() - lastFlush >= BATCH_MS || emittedSince >= 256) {
+      if (!exactCollector && (Date.now() - lastFlush >= BATCH_MS || emittedSince >= 256)) {
         const chunkText = pending;
         assistantText += chunkText;
         pending = "";
@@ -488,7 +499,7 @@ const processTurn = async (claimed) => {
       }
     }
 
-    if (pending) {
+    if (pending && !exactCollector) {
       const chunkText = pending;
       assistantText += chunkText;
       pending = "";
@@ -510,8 +521,11 @@ const processTurn = async (claimed) => {
       });
     }
 
-    const streamedTextTokens = estimateTokens(assistantText);
-    const fileOutput = fileCollector ? fileCollector.finish() : {};
+    const streamedTextTokens = estimateTokens(assistantText + pending);
+    const exactSelection = exactCollector?.finish();
+    const fileOutput = exactSelection ? {} : (fileCollector ? fileCollector.finish() : {});
+    if (exactSelection) assistantText = await exact.render(turn.user, exactSelection, exactFiles);
+    else if (exactCollector) assistantText += pending;
     if (fileOutput.artifact || fileOutput.artifactError)
       assistantText =
         fileOutput.artifact?.summary || "File generation finished.";
@@ -522,7 +536,7 @@ const processTurn = async (claimed) => {
         JSON.stringify({ messages, ...fileTools }),
       );
       const completionTokens =
-        streamedTextTokens + Math.ceil((fileOutput.argumentChars || 0) / 4);
+        streamedTextTokens + Math.ceil((exactSelection?.argumentChars || fileOutput.argumentChars || 0) / 4);
       usage = {
         promptTokens,
         completionTokens,

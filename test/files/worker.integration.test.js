@@ -1185,7 +1185,7 @@ test(
       accepted.turn.reservedAppTokens,
       baseline.appTokens +
         require("../../src/services/files/textInput").reserveAmount(
-          state.promptBytes,
+          state.promptBytes + require("../../src/services/files/exactTranscription").reserveBytes,
           1,
           require("../../src/config/billing").APP_TOKEN_VALUE_USD,
         ),
@@ -1539,3 +1539,45 @@ test(
     assert.equal((await Quota.findById(user._id)).bytes, before);
   },
 );
+
+test('exact transcription uses cached bytes, multilingual intent tool, recovery and provider-only billing', { skip: !uri }, async t => {
+  process.env.OCR_ENABLED = 'true';
+  t.after(() => { process.env.OCR_ENABLED = 'false'; });
+  const Completions = require('openai/resources/chat/completions').Completions;
+  const exact = require('../../src/services/files/exactTranscription');
+  const input = await store.create({ user: user._id, name: 'scan.png', mimetype: 'image/png', buffer: require('./fixtures/ocr').makeImage() });
+  const text = '[PDF PAGE 1 OF 1 — OCR]\n4 462,64\n123\n3 501,601\n```\n<script>x</script>\nשלום';
+  await File.updateOne({ _id: input._id }, { $set: { ocrCache: { version: 3, checksum: input.checksum, text, pages: 1, detections: [] } } });
+  let calls = 0;
+  t.mock.method(Completions.prototype, 'create', async function* (request) {
+    calls++;
+    assert.ok(request.tools.some(tool => tool.function.name === exact.NAME));
+    assert.equal(request.parallel_tool_calls, false);
+    // Even unwanted prose emitted before the tool must never enter the final transcription.
+    yield { choices: [{ delta: { content: 'Wrong: 4 462,68' } }] };
+    yield { choices: [{ delta: { tool_calls: [{ index: 0, function: { name: exact.NAME, arguments: JSON.stringify({ fileIds: [input.id] }) } }] }, finish_reason: 'tool_calls' }] };
+    yield { choices: [], usage: { prompt_tokens: 100, completion_tokens: 12, total_tokens: 112 } };
+  });
+  const payload = { clientMessageId: crypto.randomUUID(), conversationId: conversation.id, modelId, message: '全文をそのまま表示してください', files: [{ fileId: input.id, storage: 'private' }] };
+  const accepted = await accept({ userId: user._id, payload });
+  await worker.processTurn(await worker.claimTurn(accepted.turn.turnId));
+  const done = await models.ChatTurn.findOne({ turnId: accepted.turn.turnId }).lean();
+  assert.equal(done.status, 'completed');
+  const answer = await models.ChatMessage.findById(done.assistantMessage).lean();
+  assert.ok(answer.content.includes('````text\n' + text + '\n````'));
+  assert.ok(!answer.content.includes('Wrong:'));
+  assert.equal(answer.tokens, 12);
+  assert.equal(await models.ChatBillingLedger.countDocuments({ turnId: done.turnId }), 1);
+  assert.equal((await accept({ userId: user._id, payload })).disposition, 'duplicate');
+  assert.equal(calls, 1);
+  // A saved result after a crash is finalized locally, including exact content and usage.
+  const next = await accept({ userId: user._id, payload: { ...payload, clientMessageId: crypto.randomUUID(), message: 'Copy the full text' } });
+  const claim = await worker.claimTurn(next.turn.turnId);
+  await models.ChatTurn.updateOne({ _id: claim.turn._id }, { $set: { providerStartedAt: new Date(), leaseUntil: new Date(0), providerResult: { assistantText: answer.content, usage: { promptTokens: 100, completionTokens: 12, totalTokens: 112 } } } });
+  await worker.recoverExpired();
+  const recovered = await models.ChatTurn.findOne({ turnId: next.turn.turnId }).lean();
+  assert.equal(recovered.status, 'completed');
+  assert.equal((await models.ChatMessage.findById(recovered.assistantMessage)).content, answer.content);
+  assert.equal(await models.ChatBillingLedger.countDocuments({ turnId: recovered.turnId }), 1);
+  assert.equal(calls, 1);
+});

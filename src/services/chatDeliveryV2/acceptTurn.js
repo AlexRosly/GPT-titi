@@ -86,7 +86,9 @@ const acceptTurn = async ({ userId, payload }) => {
       const textContext = require("../files/textContext");
       const prior = (await textContext.prior(userId, conversationId, session)).reverse();
       const textBudget = await textContext.estimate(userId, [...prior, { role: "user", attachments: canonicalFiles }], model, session);
-      const reservedAmount = estimate.appTokens + require("../files/textInput").reserveAmount(textBudget.promptBytes, model.inputPerM, APP_TOKEN_VALUE_USD);
+      const exact = require("../files/exactTranscription");
+      const exactBytes = !outputFile && exact.potential([...prior, { role: "user", attachments: canonicalFiles }], model) ? exact.reserveBytes : 0;
+      const reservedAmount = estimate.appTokens + require("../files/textInput").reserveAmount(textBudget.promptBytes + exactBytes, model.inputPerM, APP_TOKEN_VALUE_USD);
       await reserve({ userId, amount: reservedAmount, turnId, session });
       const [userMessage] = await ChatMessage.create(
         [{

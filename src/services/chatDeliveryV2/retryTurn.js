@@ -24,8 +24,11 @@ const retryTurn = async ({ turnId, userId }) => {
       if (!model) throw protocolError("MODEL_NOT_AVAILABLE");
       const estimate = await estimateCost(turn.modelId, estimateTokens(turn.message));
       const textContext = require("../files/textContext");
-      const textBudget = await textContext.estimate(userId, await textContext.forTurn(turn, session), model, session);
-      const reservedAmount = estimate.appTokens + require("../files/textInput").reserveAmount(textBudget.promptBytes, model.inputPerM, APP_TOKEN_VALUE_USD);
+      const history = await textContext.forTurn(turn, session);
+      const textBudget = await textContext.estimate(userId, history, model, session);
+      const exact = require("../files/exactTranscription");
+      const exactBytes = !turn.outputFile && exact.potential(history, model) ? exact.reserveBytes : 0;
+      const reservedAmount = estimate.appTokens + require("../files/textInput").reserveAmount(textBudget.promptBytes + exactBytes, model.inputPerM, APP_TOKEN_VALUE_USD);
       await reserve({ userId, amount: reservedAmount, turnId, attempt: turn.attempt + 1, session });
       return ChatTurn.findOneAndUpdate({ _id: turn._id, status: "failed", attempt: turn.attempt }, {
         $set: { status: "queued", lastSeq: 0, partialContent: "", error: null, processingStartedAt: null,

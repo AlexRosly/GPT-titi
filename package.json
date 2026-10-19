@@ -28,7 +28,7 @@
     "test:balance-sync": "node --test test/balanceSync.integration.test.js test/tokenTransfers.http.test.js",
     "test:token-history": "node --test test/tokenHistoryQuery.test.js test/tokenHistory.integration.test.js",
     "db:indexes:files": "node scripts/createFileIndexes.js",
-    "test:files": "node --test test/files/artifacts.test.js test/files/office.test.js test/files/textInput.test.js test/files/officeInput.test.js test/files/pdfInput.test.js test/files/ocrInput.test.js test/files/ocrInternational.test.js test/files/ocrLimits.test.js test/files/ocrQuality.test.js test/chatDeliveryV2.protocol.test.js test/chatDeliveryV2/historyDto.test.js test/chatDeliveryV2/acceptDuplicate.test.js",
+    "test:files": "node --test test/files/artifacts.test.js test/files/office.test.js test/files/textInput.test.js test/files/officeInput.test.js test/files/pdfInput.test.js test/files/ocrInput.test.js test/files/ocrInternational.test.js test/files/ocrLimits.test.js test/files/ocrQuality.test.js test/chatDeliveryV2.protocol.test.js test/chatDeliveryV2/historyDto.test.js test/chatDeliveryV2/acceptDuplicate.test.js test/files/ocrRead.test.js",
     "test:files:integration": "node scripts/testFilesIntegration.js",
     "ocr:file": "node scripts/checkOcrFile.js",
     "ocr:check": "node scripts/checkOcr.js"

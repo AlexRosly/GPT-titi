@@ -68,6 +68,26 @@ router.get('/:id/download', handle(async (req, res) => {
     'Content-Disposition': `attachment; filename="download"; filename*=UTF-8''${encodeURIComponent(file.originalName).replace(/'/g, '%27')}` });
   res.send(buffer);
 }));
+// Read an existing cache only: never start OCR, call a provider or create a charge.
+router.get('/:id/ocr', handle(async (req, res) => {
+  res.set({ 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff',
+    'Content-Security-Policy': "sandbox; default-src 'none'" });
+  const file = await store.owned(req.user._id, req.params.id);
+  const ocr = require('../services/files/ocrInput');
+  if (!ocr.supported(file)) return res.status(415).json({ error: 'OCR_UNSUPPORTED' });
+  if (!ocr.cached(file)) return res.status(409).json({ error: 'OCR_NOT_READY' });
+  const cache = file.ocrCache;
+  if (req.query.download === '1') {
+    const name = file.originalName + '.ocr.txt';
+    res.set({ 'Content-Type': 'text/plain; charset=utf-8',
+      'Content-Disposition': `attachment; filename="recognized-text.txt"; filename*=UTF-8''${encodeURIComponent(name).replace(/'/g, '%27')}` });
+    return res.send(Buffer.from(cache.text, 'utf8'));
+  }
+  res.json({ kind: 'ocr', text: cache.text, version: cache.version,
+    textBytes: Buffer.byteLength(cache.text), ocrPages: cache.pages,
+    uncertain: (cache.detections || []).some(d => d.uncertain === true),
+    legacy: cache.version !== 3 });
+}));
 router.get('/:id/preview', handle(async (req, res) => {
   const { file, buffer } = await store.read(req.user._id, req.params.id);
   if (['image/png', 'image/jpeg', 'image/webp', 'image/svg+xml'].includes(file.mimetype)) {

@@ -90,3 +90,38 @@ test('OCR preparation endpoint is private, idempotent, model-aware and returns a
   const error = await rejected.json(); assert.equal(error.error, 'OCR_NO_TEXT'); assert.match(error.message, /clearer/); assert.equal(error.retryable, false);
   await store.remove(user._id, file.id); assert.equal((await request(file.id)).status, 404);
 });
+
+test('saved OCR is owner-only, exact, read-only and unavailable after deletion', { skip: !uri }, async t => {
+  const File = require('../../src/models/managedFile');
+  const processOcr = require('../../src/services/files/ocrProcess');
+  t.mock.method(processOcr, 'extract', async () => { throw new Error('GET must never recognize'); });
+  const file = await store.create({ user: user._id, name: 'scan.pdf', mimetype: 'application/pdf', buffer: Buffer.from('%PDF-test') });
+  const own = { authorization: `Bearer ${token}` }, other = { authorization: `Bearer ${stranger}` };
+  const url = `${root}/${file.id}/ocr`;
+  assert.equal((await fetch(url)).status, 401);
+  assert.equal((await fetch(url, { headers: other })).status, 404);
+  assert.equal((await fetch(url, { headers: own })).status, 409);
+  const text = '[PDF PAGE 1 OF 1 — OCR]\n123 501,601\n<script>alert(1)</script>\nשלום';
+  await File.updateOne({ _id: file._id }, { $set: { ocrCache: { version: 3, checksum: file.checksum, text, pages: 1, detections: [{ uncertain: true }] } } });
+  const before = await File.findById(file._id).lean();
+  const res = await fetch(url, { headers: own });
+  assert.equal(res.status, 200); assert.match(res.headers.get('cache-control'), /no-store/);
+  const data = await res.json(); assert.equal(data.text, text); assert.equal(data.uncertain, true);
+  assert.equal('checksum' in data, false);
+  const downloaded = await fetch(url + '?download=1', { headers: own });
+  assert.match(downloaded.headers.get('content-disposition'), /^attachment/);
+  assert.equal(downloaded.headers.get('x-content-type-options'), 'nosniff');
+  assert.deepEqual(Buffer.from(await downloaded.arrayBuffer()), Buffer.from(text));
+  assert.deepEqual(await File.findById(file._id).lean(), before);
+  assert.equal(processOcr.extract.mock.callCount(), 0);
+  await File.updateOne({ _id: file._id }, { $set: { 'ocrCache.checksum': 'stale' } });
+  assert.equal((await fetch(url, { headers: own })).status, 409);
+  await File.updateOne({ _id: file._id }, { $set: { 'ocrCache.checksum': file.checksum, 'ocrCache.version': 2 } });
+  assert.equal((await (await fetch(url, { headers: own })).json()).legacy, true);
+  await File.updateOne({ _id: file._id }, { $set: { expiresAt: new Date(0) } });
+  assert.equal((await fetch(url, { headers: own })).status, 404);
+  await File.updateOne({ _id: file._id }, { $set: { expiresAt: null } });
+  await store.remove(user._id, file.id);
+  assert.equal((await fetch(url, { headers: own })).status, 404);
+  assert.equal((await fetch(url + '?download=1', { headers: other })).status, 404);
+});

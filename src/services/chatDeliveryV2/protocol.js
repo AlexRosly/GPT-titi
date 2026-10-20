@@ -2,6 +2,22 @@ const crypto = require("crypto");
 const mongoose = require("mongoose");
 
 const CODES = {
+  WEB_TOO_MANY_URLS: ["Use at most three web URLs in one request.", false],
+  WEB_INVALID_URL: ["Use a valid public HTTP or HTTPS URL without credentials or a custom port.", false],
+  WEB_BLOCKED_ADDRESS: ["This address cannot be accessed by the web reader.", false],
+  WEB_INPUT_DISABLED: ["Web reading is disabled for this model or server.", false],
+  WEB_CONTEXT_TOO_LARGE: ["This request exceeds the web-reading context budget. Shorten the conversation or attachments.", false],
+  WEB_CONFIGURATION_ERROR: ["Web reading pricing is not configured. Contact support.", false],
+  WEB_INVALID_TOOL_RESULT: ["The model could not select web pages correctly. Please send a new request.", false],
+  WEB_TIMEOUT: ["The website did not respond within 15 seconds.", true],
+  WEB_REDIRECT_LIMIT: ["The website redirected too many times or returned an invalid redirect.", false],
+  WEB_UNAVAILABLE: ["The web page could not be retrieved.", true],
+  WEB_ACCESS_DENIED: ["The website requires access, login, CAPTCHA, or is limiting requests.", false],
+  WEB_UNSUPPORTED_TYPE: ["This link does not return an HTML web page. Upload documents using Add files.", false],
+  WEB_UNSUPPORTED_ENCODING: ["The website uses an unsupported encoding.", false],
+  WEB_PAGE_TOO_LARGE: ["The web page exceeds the 2 MiB download or parsing limit.", false],
+  WEB_JAVASCRIPT_REQUIRED: ["This page requires JavaScript rendering, which is not supported yet.", false],
+  WEB_NO_READABLE_TEXT: ["No readable text was found on this page.", false],
   FILE_QUOTA_EXCEEDED: ["Private file storage is full, including extracted text. Delete unused files and try again.", false],
   OCR_INPUT_DISABLED: ["OCR is disabled for this model or server.", false],
   OCR_UNAVAILABLE: ["OCR is not ready on the server. Please contact support or upload a text-layer PDF or text file.", false],

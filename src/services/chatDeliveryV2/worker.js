@@ -13,6 +13,7 @@ const { errorFor } = require("./protocol");
 const { release } = require("./reservations");
 const { createScheduler } = require("./scheduler");
 const { messageDto } = require("./snapshot");
+const webFlow = require("../web/flow");
 
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -139,15 +140,22 @@ const failTurn = async (
         ...(expiredOnly ? { leaseUntil: { $lte: new Date() } } : {}),
       }).session(session);
       if (!current || current.providerResult) return;
-      const uncertain = Boolean(current.providerStartedAt) && !knownNoCharge;
+      const knownWebUsage = current.webState?.usage;
+      const webBoundary = ["selection_received", "reading", "ready"].includes(current.webState?.phase);
+      const uncertain = Boolean(current.providerStartedAt) && !knownNoCharge && !webBoundary;
+      const partialWebCharge = !uncertain && knownWebUsage?.totalTokens > 0;
+      if (partialWebCharge) await finalizeChargeInTransaction({ session, turnId: current.turnId,
+        userId: current.user, modelId: current.modelId, conversationId: current.conversation,
+        pricing: current.pricing, usage: knownWebUsage });
       const terminalError = uncertain
         ? errorFor(
             "PROCESS_INTERRUPTED",
             "Generation was interrupted. Its token charge is being reconciled.",
             false,
           )
-        : errorObject;
-      if (!uncertain) await release(current, session);
+        : partialWebCharge ? { ...errorObject, retryable: false,
+          message: errorObject.message + " Completed model work was charged; please send a new request." } : errorObject;
+      if (!uncertain) await release(current, session, partialWebCharge ? "settled" : "released");
       updated = await ChatTurn.findOneAndUpdate(
         { _id: current._id, leaseToken, attempt: current.attempt },
         {
@@ -155,6 +163,7 @@ const failTurn = async (
             status: "failed",
             error: terminalError,
             needsReconciliation: uncertain,
+            ...(partialWebCharge ? { usage: knownWebUsage } : {}),
             leaseToken: null,
             leaseUntil: null,
           },
@@ -257,6 +266,8 @@ const commitCompletion = async (turn, leaseToken, assistantText, usage) => {
         }
       }
 
+      if (fileResult && current.webPlan) assistantText += webFlow.footer(current);
+
       const cost = await finalizeChargeInTransaction({
         session,
         turnId: turn.turnId,
@@ -287,6 +298,7 @@ const commitCompletion = async (turn, leaseToken, assistantText, usage) => {
               content: assistantText,
               attachments,
               fileResult,
+              webSources: webFlow.sources(current),
               modelId: turn.modelId,
               tokens: usage.completionTokens,
               turnId: turn.turnId,
@@ -322,6 +334,7 @@ const commitCompletion = async (turn, leaseToken, assistantText, usage) => {
             billingAppliedAt: completedAt,
             needsReconciliation: false,
             providerResult: null,
+            webState: null,
             status: "completed",
             completedAt,
             leaseToken: null,
@@ -380,7 +393,7 @@ const processTurn = async (claimed) => {
     }, HEARTBEAT_MS);
 
     const fileModel = await ChatModels.findOne({ modelId: turn.modelId, enabled: true })
-      .select("fileOutputEnabled textInputEnabled officeInputEnabled pdfInputEnabled ocrInputEnabled limits").lean();
+      .select("webInputEnabled fileOutputEnabled textInputEnabled officeInputEnabled pdfInputEnabled ocrInputEnabled limits").lean();
     const history = await require("../files/textContext").forTurn(turn);
     const textInput = require("../files/textInput");
     const textBudget = textInput.budget();
@@ -440,15 +453,29 @@ const processTurn = async (claimed) => {
       tools: fileTools.tools?.map((t) => t.function?.name),
       toolChoice: fileTools.tool_choice,
     });
+    let webUsage = webFlow.zero();
+    if (turn.webPlan) {
+      const prepared = await webFlow.prepare({ turn, leaseToken, model: fileModel, messages, client,
+        signal: controller.signal, progress: payload => emit(turn.user, "chat:progress", {
+          protocolVersion: 2, event: "chat:progress", type: "progress", turnId: turn.turnId,
+          clientMessageId: turn.clientMessageId, conversationId: turn.conversation.toString(), attempt: turn.attempt, payload,
+        }) });
+      webUsage = prepared.usage;
+      messages[0].content += " " + webFlow.instruction;
+      messages.push(...prepared.messages);
+      webFlow.assertBudget(turn.webPlan, messages, fileTools.tools);
+      await webFlow.startFinal(turn, leaseToken);
+    }
     const stream = await client.chat.completions.create(
       {
         model: turn.modelId,
         messages,
         stream: true,
+        ...(turn.webPlan ? { max_completion_tokens: turn.webPlan.outputLimit } : {}),
         stream_options: { include_usage: true },
         ...fileTools,
       },
-      { signal: controller.signal },
+      { signal: controller.signal, ...(turn.webPlan ? { timeout: 60000 } : {}) },
     );
 
     const fileCollector =
@@ -544,6 +571,10 @@ const processTurn = async (claimed) => {
       };
     }
 
+    if (turn.webPlan) {
+      usage = webFlow.addUsage(webUsage, usage);
+      assistantText += webFlow.footer(turn);
+    }
     // Persist the completed provider result before billing. Recovery can finish
     // this exact charge without making another provider request.
     const saved = await ChatTurn.updateOne(
@@ -582,9 +613,9 @@ const processTurn = async (claimed) => {
     const protocol =
       error?.code === "INSUFFICIENT_BALANCE"
         ? errorFor("INSUFFICIENT_BALANCE")
-        : error?.fileError ? errorFor(error.fileError) : safeProviderError(error);
+        : error?.protocolError || (error?.fileError ? errorFor(error.fileError) : safeProviderError(error));
     await failTurn(turn, leaseToken, protocol, {
-      knownNoCharge: [400, 401, 403, 404, 422, 429].includes(error?.status),
+      knownNoCharge: [400, 401, 403, 404, 422, 429].includes(error?.status) || Boolean(error.webError && !["selecting", "final_started"].includes(turn.webState?.phase)),
     });
   } finally {
     clearInterval(heartbeatTimer);
@@ -638,6 +669,12 @@ const recoverExpired = async () => {
           error.message,
         );
       }
+    } else if (turn.webPlan && ["reading", "ready"].includes(turn.webState?.phase)) {
+      const leaseToken = crypto.randomUUID();
+      const current = await ChatTurn.findOneAndUpdate({ _id: turn._id, status: "processing",
+        leaseToken: turn.leaseToken, leaseUntil: { $lte: new Date() } },
+        { $set: { leaseToken, leaseUntil: new Date(Date.now() + LEASE_MS) } }, { new: true });
+      if (current) await processTurn({ turn: current, leaseToken });
     } else {
       await failTurn(turn, turn.leaseToken, errorFor("PROCESS_INTERRUPTED"), {
         expiredOnly: true,

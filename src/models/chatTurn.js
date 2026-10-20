@@ -56,6 +56,8 @@ const ChatTurnSchema = new Schema(
     reservationClosedAt: { type: Date, default: null },
     pricing: { inputPerM: Number, outputPerM: Number, tokenValueUsd: Number },
     providerStartedAt: { type: Date, default: null },
+    webPlan: { type: Schema.Types.Mixed, default: null },
+    webState: { type: Schema.Types.Mixed, default: null },
     providerResult: { type: Schema.Types.Mixed, default: null },
     reconciliation: { type: Schema.Types.Mixed, default: null },
     needsReconciliation: { type: Boolean, default: false },

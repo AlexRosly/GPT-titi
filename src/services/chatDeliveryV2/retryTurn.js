@@ -28,12 +28,14 @@ const retryTurn = async ({ turnId, userId }) => {
       const textBudget = await textContext.estimate(userId, history, model, session);
       const exact = require("../files/exactTranscription");
       const exactBytes = !turn.outputFile && exact.potential(history, model) ? exact.reserveBytes : 0;
-      const reservedAmount = estimate.appTokens + require("../files/textInput").reserveAmount(textBudget.promptBytes + exactBytes, model.inputPerM, APP_TOKEN_VALUE_USD);
+      const web = require("../web/policy");
+      const webPlan = web.plan(turn.message, model, history, textBudget);
+      const reservedAmount = webPlan ? web.reservation(webPlan, model, APP_TOKEN_VALUE_USD) : estimate.appTokens + require("../files/textInput").reserveAmount(textBudget.promptBytes + exactBytes, model.inputPerM, APP_TOKEN_VALUE_USD);
       await reserve({ userId, amount: reservedAmount, turnId, attempt: turn.attempt + 1, session });
       return ChatTurn.findOneAndUpdate({ _id: turn._id, status: "failed", attempt: turn.attempt }, {
         $set: { status: "queued", lastSeq: 0, partialContent: "", error: null, processingStartedAt: null,
           leaseToken: null, leaseUntil: null, reservedAppTokens: reservedAmount, reservationState: "held",
-          reservationClosedAt: null, providerStartedAt: null, providerResult: null, needsReconciliation: false,
+          webPlan, webState: null, reservationClosedAt: null, providerStartedAt: null, providerResult: null, needsReconciliation: false,
           pricing: { inputPerM: model.inputPerM, outputPerM: model.outputPerM, tokenValueUsd: APP_TOKEN_VALUE_USD } },
         $inc: { attempt: 1 },
       }, { new: true, session });

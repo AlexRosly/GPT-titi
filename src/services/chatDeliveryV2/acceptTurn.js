@@ -42,7 +42,7 @@ const acceptTurn = async ({ userId, payload }) => {
   }).select("_id").lean();
   if (!conversation) throw protocolError("CONVERSATION_NOT_FOUND");
 
-  const model = await ChatModels.findOne({ modelId, enabled: true }).select("modelId inputPerM outputPerM fileOutputEnabled textInputEnabled officeInputEnabled pdfInputEnabled ocrInputEnabled limits").lean();
+  const model = await ChatModels.findOne({ modelId, enabled: true }).select("modelId inputPerM outputPerM webInputEnabled fileOutputEnabled textInputEnabled officeInputEnabled pdfInputEnabled ocrInputEnabled limits").lean();
   if (!model) throw protocolError("MODEL_NOT_AVAILABLE");
 
   if (!require("../files/config").enabled() && !files.some(f => f?.storage === "private")) await validateFilesOwnership(userId, files);
@@ -88,7 +88,9 @@ const acceptTurn = async ({ userId, payload }) => {
       const textBudget = await textContext.estimate(userId, [...prior, { role: "user", attachments: canonicalFiles }], model, session);
       const exact = require("../files/exactTranscription");
       const exactBytes = !outputFile && exact.potential([...prior, { role: "user", attachments: canonicalFiles }], model) ? exact.reserveBytes : 0;
-      const reservedAmount = estimate.appTokens + require("../files/textInput").reserveAmount(textBudget.promptBytes + exactBytes, model.inputPerM, APP_TOKEN_VALUE_USD);
+      const web = require("../web/policy");
+      const webPlan = web.plan(message, model, [...prior, { role: "user", content: message, attachments: canonicalFiles }], textBudget);
+      const reservedAmount = webPlan ? web.reservation(webPlan, model, APP_TOKEN_VALUE_USD) : estimate.appTokens + require("../files/textInput").reserveAmount(textBudget.promptBytes + exactBytes, model.inputPerM, APP_TOKEN_VALUE_USD);
       await reserve({ userId, amount: reservedAmount, turnId, session });
       const [userMessage] = await ChatMessage.create(
         [{
@@ -117,6 +119,7 @@ const acceptTurn = async ({ userId, payload }) => {
           message,
           files: canonicalFiles,
           outputFile,
+          webPlan,
           reservedAppTokens: reservedAmount,
           contextMessageIds: prior.map(m => m._id),
           reservationState: "held",

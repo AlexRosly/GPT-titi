@@ -14,7 +14,7 @@ const getChatHistory = async (req, res) => {
     })
       .sort({ createdAt: -1, _id: -1 })
       .limit(HISTORY_LIMIT)
-      .select("role content modelId tokens attachments fileResult turnId clientMessageId attempt createdAt updatedAt")
+      .select("role content modelId tokens attachments fileResult webSources turnId clientMessageId attempt createdAt updatedAt")
       .lean();
 
     res.json({

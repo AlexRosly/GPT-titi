@@ -5,12 +5,12 @@ const PDFDocument = require('pdfkit');
 const { createCanvas } = require('@napi-rs/canvas');
 const { extract } = require('../../src/services/files/ocrProcess');
 process.env.OCR_LANGUAGES = 'eng';
-test('A4 raster uses 200 DPI for small text, with bounded large pages', () => {
+test('A4 raster uses 300 DPI for small text, with bounded large pages', () => {
   const scale = limits.RENDER_DPI / 72;
-  assert.equal(limits.renderSide({width: 595.276*scale, height:841.89*scale}), 2339);
-  assert.equal(limits.renderSide({width:841.89*scale, height:595.276*scale}), 2339);
+  assert.equal(limits.renderSide({width: 595.276*scale, height:841.89*scale}), 3508);
+  assert.equal(limits.renderSide({width:841.89*scale, height:595.276*scale}), 3508);
   assert.equal(limits.renderSide({width:200,height:300}), 300);
-  assert.equal(limits.renderSide({width:20000,height:30000}), 2800);
+  assert.equal(limits.renderSide({width:20000,height:30000}), 3600);
   for (const height of [NaN,Infinity,0,-1]) assert.throws(() => limits.renderSide({width:height,height}), {fileError:'INVALID_PDF_DOCUMENT'});
 });
 test('OCR remains bounded below the HTTP timeout despite longer dense-page recognition', () => {
@@ -41,7 +41,7 @@ test('four-page image-only PDF returns every physical page with distinct numbers
 test('small printed rows retain their dates, quantities and amounts in source order', async () => {
   const rows = ['DATE 15.10.2026', 'ITEM 731 QUANTITY 12 TOTAL 548.04',
     'ITEM 732 QUANTITY 25 TOTAL 1200.50', 'ITEM 733 QUANTITY 54 TOTAL 925.28'];
-  const canvas = createCanvas(1654, 2339), ctx = canvas.getContext('2d');
+  const canvas = createCanvas(1654, 3508), ctx = canvas.getContext('2d');
   ctx.fillStyle = 'white'; ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.fillStyle = 'black'; ctx.font = '24px sans-serif';
   rows.forEach((row, index) => ctx.fillText(row, 100, 150 + index * 50));

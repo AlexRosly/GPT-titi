@@ -13,7 +13,19 @@ process.env.PRIVATE_FILES_ENABLED = 'true';
 process.env.OCR_ENABLED = 'true';
 process.env.OCR_LANGUAGES = 'eng';
 const cache = (content = 'Private OCR 731') => ({ _id: '0123456789abcdef01234567', originalName: 'scan.png', mimetype: 'image/png', size: 100,
-  checksum: 'hash', ocrCache: { version: 3, checksum: 'hash', text: content, pages: 1, languages: 'eng' } });
+  checksum: 'hash', ocrCache: { version: 3, qualityRevision: 1, checksum: 'hash', text: content, pages: 1, languages: 'eng' } });
+test('failed quality upgrade preserves the previous readable OCR and releases the pending job', async t => {
+  const file = cache('old text 15.40.2026'); delete file.ocrCache.qualityRevision;
+  const original = JSON.stringify(file);
+  t.mock.method(store, 'owned', async () => file);
+  t.mock.method(store, 'read', async () => ({ file, buffer: makeImage() }));
+  t.mock.method(store, 'transaction', async () => { throw new Error('must not write failed OCR'); });
+  const extract = t.mock.method(processOcr, 'extract', async () => { throw Object.assign(new Error(), { fileError: 'OCR_FAILED' }); });
+  for (let attempt = 0; attempt < 2; attempt++) await assert.rejects(ocr.prepare('owner', String(file._id), {}), { fileError: 'OCR_FAILED' });
+  assert.equal(extract.mock.callCount(), 2);
+  assert.equal(JSON.stringify(file), original);
+  assert.match((await ocr.readPart('owner', file, { model: {} })).text, /old text 15\.40\.2026/);
+});
 test('real OCR reads PNG, JPEG and WEBP without losing the existing visual input', async () => {
   for (const type of ['image/png', 'image/jpeg', 'image/webp']) {
     const result = await processOcr.extract(makeImage(undefined, type), 'image');
@@ -142,8 +154,8 @@ test('preparation deadline prevents unbounded historical OCR work', async t => {
   await assert.rejects(ocr.prepareHistory('owner', [{ role: 'user', attachments: [{ storage: 'private', fileId: '0123456789abcdef01234567' }] }], {}, Date.now() - 1), { fileError: 'OCR_NOT_READY' });
 });
 
-test('old cache remains readable but next preparation upgrades it once and only charges the byte delta', async t => {
-  const file = cache('old recognized text'); file.ocrCache.version = 2; file.derivedBytes = 200;
+for (const oldVersion of [2, 3]) test(`v${oldVersion} cache remains readable and upgrades quality once with only the byte delta`, async t => {
+  const file = cache('old recognized text'); file.ocrCache.version = oldVersion; delete file.ocrCache.qualityRevision; file.derivedBytes = 200;
   const File = require('../../src/models/managedFile'), Quota = require('../../src/models/fileQuota');
   let runs = 0, claims = 0;
   t.mock.method(store, 'owned', async () => file);
@@ -157,6 +169,6 @@ test('old cache remains readable but next preparation upgrades it once and only 
   });
   t.mock.method(File, 'updateOne', async (query, update) => { Object.assign(file, update.$set); return { modifiedCount: 1 }; });
   await ocr.prepare('owner', String(file._id), {}); await ocr.prepare('owner', String(file._id), {});
-  assert.equal(file.ocrCache.version, 3); assert.equal(runs, 1); assert.equal(claims, 1);
+  assert.equal(file.ocrCache.version, 3); assert.equal(file.ocrCache.qualityRevision, 1); assert.equal(runs, 1); assert.equal(claims, 1);
   assert.equal(file.derivedBytes, Buffer.byteLength('new recognized text'));
 });

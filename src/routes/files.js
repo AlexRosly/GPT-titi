@@ -86,7 +86,7 @@ router.get('/:id/ocr', handle(async (req, res) => {
   res.json({ kind: 'ocr', text: cache.text, version: cache.version,
     textBytes: Buffer.byteLength(cache.text), ocrPages: cache.pages,
     uncertain: (cache.detections || []).some(d => d.uncertain === true),
-    legacy: cache.version !== 3 });
+    legacy: cache.version !== 3 || cache.qualityRevision !== 1 });
 }));
 router.get('/:id/preview', handle(async (req, res) => {
   const { file, buffer } = await store.read(req.user._id, req.params.id);

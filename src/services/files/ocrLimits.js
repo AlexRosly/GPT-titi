@@ -3,8 +3,8 @@
 const JOB_MS = 55000;
 const CPU_SECONDS = 50;
 const RECOGNITION_MS = 20000;
-const RENDER_DPI = 200;
-const MAX_RENDER_SIDE = 2800;
+const RENDER_DPI = 300;
+const MAX_RENDER_SIDE = 3600;
 const renderSide = viewport => {
   const longest = Math.max(viewport.width, viewport.height);
   if (!Number.isFinite(longest) || longest <= 0) throw require('./validation').fail('INVALID_PDF_DOCUMENT');

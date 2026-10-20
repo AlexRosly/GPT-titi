@@ -102,7 +102,7 @@ test('saved OCR is owner-only, exact, read-only and unavailable after deletion',
   assert.equal((await fetch(url, { headers: other })).status, 404);
   assert.equal((await fetch(url, { headers: own })).status, 409);
   const text = '[PDF PAGE 1 OF 1 — OCR]\n123 501,601\n<script>alert(1)</script>\nשלום';
-  await File.updateOne({ _id: file._id }, { $set: { ocrCache: { version: 3, checksum: file.checksum, text, pages: 1, detections: [{ uncertain: true }] } } });
+  await File.updateOne({ _id: file._id }, { $set: { ocrCache: { version: 3, qualityRevision: 1, checksum: file.checksum, text, pages: 1, detections: [{ uncertain: true }] } } });
   const before = await File.findById(file._id).lean();
   const res = await fetch(url, { headers: own });
   assert.equal(res.status, 200); assert.match(res.headers.get('cache-control'), /no-store/);

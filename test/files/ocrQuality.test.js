@@ -40,3 +40,16 @@ test('optional OCR retries leave time for remaining pages and never extend the j
   assert.equal(retryBudget(29000, 0, 1), 0);
   assert.equal(retryBudget(0, 0, 2), 0);
 });
+
+test('fragmented single-column rows prefer a fuller layout without requiring higher confidence', () => {
+  let raw = header;
+  for (const line of [1, 3, 2, 4]) raw += word(`ROW ${line}`, { line, width: 500 });
+  const primary = parseTsv(raw);
+  assert.equal(primary.fragmentation, 1);
+  assert.match(primary.text, /ROW 3\nROW 2/); // diagnosis never silently sorts the source
+  const alternative = { ...primary, fragmentation: 0, confidence: primary.confidence - 0.5 };
+  assert.equal(preferAlternative(primary, alternative), true);
+  assert.equal(preferAlternative(primary, { ...alternative, characters: primary.characters * 0.94 }), false);
+  assert.equal(preferAlternative(primary, { ...alternative, confidence: primary.confidence - 2 }), false);
+  assert.equal(preferAlternative({ ...primary, singleColumn: false }, alternative), false);
+});

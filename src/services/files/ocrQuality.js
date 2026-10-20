@@ -17,7 +17,8 @@ function parseTsv(tsv) {
     const word = fields[11].replace(/[\x00-\x1f\x7f]/g, '').trim();
     if (!word) continue;
     const key = fields.slice(1, 5).join(':');
-    if (current?.key !== key) { current = { key, paragraph: fields.slice(1, 4).join(':'), words: [], left, right: left + width }; lines.push(current); }
+    if (current?.key !== key) { current = { key, paragraph: fields.slice(1, 4).join(':'), words: [], left, right: left + width, top, bottom: top + height }; lines.push(current); }
+    current.top = Math.min(current.top, top); current.bottom = Math.max(current.bottom, top + height);
     current.words.push(word); current.left = Math.min(current.left, left); current.right = Math.max(current.right, left + width);
     minX = Math.min(minX, left); maxX = Math.max(maxX, left + width);
     weight += word.length; confidenceSum += Math.max(0, confidence) * word.length;
@@ -29,13 +30,25 @@ function parseTsv(tsv) {
   const confidence = weight ? confidenceSum / weight : 0;
   const lowFraction = weight ? lowWeight / weight : 0;
   const wide = lines.filter(line => line.right - line.left >= (maxX - minX) * 0.65).length;
+  const singleColumn = lines.length >= 4 && wide / lines.length >= 0.4;
+  let fragmentation = 0;
+  if (singleColumn) for (let i = 1; i < lines.length; i++) {
+    const a = lines[i - 1], b = lines[i];
+    const overlap = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+    // Only diagnose; never reorder words geometrically (would break RTL/columns).
+    if (b.bottom < a.top || (a.key !== b.key && overlap > Math.min(a.bottom-a.top, b.bottom-b.top) * 0.5 && (a.right <= b.left || b.right <= a.left))) fragmentation++;
+  }
   return { text, characters: weight, confidence, lowFraction,
-    singleColumn: lines.length >= 4 && wide / lines.length >= 0.4,
+    singleColumn, fragmentation,
     uncertain: weight > 0 && (confidence < 85 || lowFraction > 0.12 || uncertainNumber) };
 }
 function preferAlternative(primary, alternative) {
   // Confidence is a heuristic, never proof of correctness; don't choose a
   // short, high-confidence fragment over a substantially fuller result.
+  if (primary.singleColumn && primary.fragmentation > 0 &&
+      alternative.fragmentation < primary.fragmentation &&
+      alternative.characters >= primary.characters * 0.95 && alternative.confidence >= primary.confidence - 1)
+    return true;
   return alternative.characters >= primary.characters * 0.9 && alternative.confidence >= primary.confidence + 2;
 }
 function retryBudget(elapsedMs, remainingPages, retries) {

@@ -5,5 +5,5 @@ if (!uri || !/\/gptiti_files_test_[a-zA-Z0-9_-]+(?:\?|$)/.test(uri)) {
   process.exit(1);
 }
 const result = spawnSync(process.execPath, ['--test', '--test-concurrency=1',
-  'test/files/storage.integration.test.js', 'test/files/http.integration.test.js', 'test/files/worker.integration.test.js', 'test/web/worker.integration.test.js'], { stdio: 'inherit' });
+  'test/files/storage.integration.test.js', 'test/files/http.integration.test.js', 'test/files/worker.integration.test.js'], { stdio: 'inherit' });
 process.exit(result.status ?? 1);

@@ -33,7 +33,6 @@ const ContentSchema = Schema(
 
 const ChatModelsSchema = Schema(
   {
-    webInputEnabled: { type: Boolean, default: true },
     ocrInputEnabled: { type: Boolean, default: true },
     pdfInputEnabled: { type: Boolean, default: true },
     officeInputEnabled: { type: Boolean, default: true },

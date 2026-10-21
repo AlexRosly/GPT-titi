@@ -16,25 +16,17 @@ module.exports = async ({ turnId, attempt, noCharge, usage, reason }) => {
     return await session.withTransaction(async () => {
       const turn = await ChatTurn.findOne({ turnId, attempt, status: "failed", needsReconciliation: true }).session(session);
       if (!turn) throw new Error("No unresolved failed attempt matches");
-      // For web turns, supplied usage concerns the unresolved provider call.
-      // Previously checkpointed selection usage must also be settled exactly once.
-      const known = turn.webState?.usage;
-      const chargedUsage = known?.totalTokens > 0 ? {
-        prompt_tokens: known.promptTokens + (usage?.prompt_tokens || 0),
-        completion_tokens: known.completionTokens + (usage?.completion_tokens || 0),
-        total_tokens: known.totalTokens + (usage?.total_tokens || 0),
-      } : usage;
-      if (chargedUsage) await finalizeChargeInTransaction({ session, turnId, userId: turn.user, modelId: turn.modelId,
-        conversationId: turn.conversation, pricing: turn.pricing, usage: chargedUsage });
-      await release(turn, session, chargedUsage ? "settled" : "released");
+      if (usage) await finalizeChargeInTransaction({ session, turnId, userId: turn.user, modelId: turn.modelId,
+        conversationId: turn.conversation, pricing: turn.pricing, usage });
+      await release(turn, session, usage ? "settled" : "released");
       await ChatTurn.updateOne({ _id: turn._id, attempt }, { $set: {
         needsReconciliation: false,
-        reconciliation: { reason, at: new Date(), noCharge: !chargedUsage, usage: chargedUsage || null },
-        error: errorFor("PROCESS_INTERRUPTED", chargedUsage
+        reconciliation: { reason, at: new Date(), noCharge: noCharge === true, usage: usage || null },
+        error: errorFor("PROCESS_INTERRUPTED", usage
           ? "Generation was interrupted. Its provider usage has been charged. Please send a new request."
-          : "Generation was interrupted without a charge. You can retry.", !chargedUsage),
+          : "Generation was interrupted without a charge. You can retry.", !usage),
       } }, { session });
-      return { turnId, attempt, charged: Boolean(chargedUsage) };
+      return { turnId, attempt, charged: Boolean(usage) };
     });
   } finally { await session.endSession(); require("../tokenLedger").notifyCommitted(); }
 };

@@ -45,6 +45,7 @@ const ChatTurnSchema = new Schema(
     webPlan: { type: Schema.Types.Mixed, default: null },
     webState: { type: Schema.Types.Mixed, default: null },
     webBudget: { type: Schema.Types.Mixed, default: null },
+    browserState: { type: Schema.Types.Mixed, default: null },
     outputFile: { type: Schema.Types.Mixed, default: null },
     contextMessageIds: { type: [Schema.Types.ObjectId], default: null },
     files: { type: [Schema.Types.Mixed], default: [] },

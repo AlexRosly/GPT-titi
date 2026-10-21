@@ -42,7 +42,7 @@ const acceptTurn = async ({ userId, payload }) => {
   }).select("_id").lean();
   if (!conversation) throw protocolError("CONVERSATION_NOT_FOUND");
 
-  const model = await ChatModels.findOne({ modelId, enabled: true }).select("modelId inputPerM outputPerM webInputEnabled fileOutputEnabled textInputEnabled officeInputEnabled pdfInputEnabled ocrInputEnabled limits").lean();
+  const model = await ChatModels.findOne({ modelId, enabled: true }).select("modelId inputPerM outputPerM browserInputEnabled webInputEnabled fileOutputEnabled textInputEnabled officeInputEnabled pdfInputEnabled ocrInputEnabled limits").lean();
   if (!model) throw protocolError("MODEL_NOT_AVAILABLE");
 
   if (!require("../files/config").enabled() && !files.some(f => f?.storage === "private")) await validateFilesOwnership(userId, files);
@@ -59,6 +59,7 @@ const acceptTurn = async ({ userId, payload }) => {
   }
 
   const webPlan = require("../web/policy").plan(message, model);
+  if (webPlan && require("../browser/policy").enabled(model)) webPlan.mode = "browser";
 
   // OCR may be slow: prepare private immutable text before opening a Mongo transaction.
   const ocr = require("../files/ocrInput");

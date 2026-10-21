@@ -22,6 +22,7 @@ const retryTurn = async ({ turnId, userId }) => {
       }
       const model = await ChatModels.findOne({ modelId: turn.modelId, enabled: true }).session(session).lean();
       if (!model) throw protocolError("MODEL_NOT_AVAILABLE");
+      if (turn.webPlan?.mode === "browser" && !require("../browser/policy").enabled(model)) throw protocolError("BROWSER_DISABLED");
       if (turn.webPlan && !require("../web/policy").enabled(model)) throw protocolError("WEB_INPUT_DISABLED");
       const estimate = await estimateCost(turn.modelId, estimateTokens(turn.message));
       const textContext = require("../files/textContext");
@@ -34,8 +35,8 @@ const retryTurn = async ({ turnId, userId }) => {
       return ChatTurn.findOneAndUpdate({ _id: turn._id, status: "failed", attempt: turn.attempt }, {
         $set: { status: "queued", lastSeq: 0, partialContent: "", error: null, processingStartedAt: null,
           leaseToken: null, leaseUntil: null, reservedAppTokens: reservedAmount, reservationState: "held",
-          webBudget: null,
-          webState: turn.webState ? { version: 2, results: (turn.webState.results || []).filter(r => r.status === "ready") } : null,
+          webBudget: null, browserState: null,
+          webState: turn.webPlan?.mode !== "browser" && turn.webState ? { version: 2, results: (turn.webState.results || []).filter(r => r.status === "ready") } : null,
           reservationClosedAt: null, providerStartedAt: null, providerResult: null, needsReconciliation: false,
           pricing: { inputPerM: model.inputPerM, outputPerM: model.outputPerM, tokenValueUsd: APP_TOKEN_VALUE_USD } },
         $inc: { attempt: 1 },

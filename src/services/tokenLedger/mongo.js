@@ -137,12 +137,13 @@ const changeReservation = ({ userId, amount, turnId, attempt, releasing = false,
 };
 
 // A separate idempotency key from the admission hold; called only in the
-// transaction that claims the single web provider launch for this attempt.
-const increaseWebReservation = ({ userId, amount, turnId, attempt, session, filter }) => {
+// transaction that claims a web/browser provider launch for this attempt.
+const increaseWebReservation = ({ userId, amount, turnId, attempt, phase, session, filter }) => {
   assertAmount(amount);
+  if (phase !== undefined && (!Number.isSafeInteger(phase) || phase < 1 || phase > 5)) throw new Error("Invalid browser call identity");
   if (!session || !turnId || !Number.isSafeInteger(attempt)) throw new Error("Reservation identity required");
   return mutate({ userId, delta: 0, kind: "reservation_hold",
-    key: `reservation_hold:web:${turnId}:${attempt}`, session, filter,
+    key: `reservation_hold:web:${turnId}:${attempt}${phase === undefined ? "" : ":browser:" + phase}`, session, filter,
     increments: { reservedAppTokens: amount, reservationVersion: 1 },
     context: { turnId, reservedTokens: amount, attempt } });
 };

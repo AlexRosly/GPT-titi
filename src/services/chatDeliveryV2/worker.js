@@ -393,7 +393,7 @@ const processTurn = async (claimed) => {
 
     const web = require("../web/context");
     const fileModel = await ChatModels.findOne({ modelId: turn.modelId, enabled: true })
-      .select("webInputEnabled fileOutputEnabled textInputEnabled officeInputEnabled pdfInputEnabled ocrInputEnabled limits").lean();
+      .select("browserInputEnabled browserVisionEnabled webInputEnabled fileOutputEnabled textInputEnabled officeInputEnabled pdfInputEnabled ocrInputEnabled limits").lean();
     if (turn.webPlan && !fileModel) throw require("../web/policy").fail("WEB_INPUT_DISABLED");
     const history = await require("../files/textContext").forTurn(turn);
     const textInput = require("../files/textInput");
@@ -423,7 +423,7 @@ const processTurn = async (claimed) => {
         ? artifacts.autoToolOptions()
         : {};
     const exact = require("../files/exactTranscription");
-    const exactFiles = turn.outputFile ? [] : await exact.candidates(turn.user, history, fileModel);
+    const exactFiles = turn.outputFile || turn.webPlan?.mode === "browser" ? [] : await exact.candidates(turn.user, history, fileModel);
     const exactCollector = exactFiles.length ? exact.collector() : null;
     if (exactCollector) {
       const option = exact.options(exactFiles);
@@ -431,6 +431,23 @@ const processTurn = async (claimed) => {
       fileTools.tools = [...(fileTools.tools || []), option.tool];
       fileTools.tool_choice = "auto";
       fileTools.parallel_tool_calls = false;
+    }
+    if (turn.webPlan?.mode === "browser") {
+      // Browser loop owns every provider boundary and accumulates actual usage.
+      // Exact-transcription tools remain on their existing non-browser path.
+      const browserTools = turn.outputFile ? artifacts.toolOptions(turn.outputFile)
+        : automaticFiles ? artifacts.autoToolOptions() : {};
+      const data = await require("../browser/agent").run(turn, leaseToken, fileModel,
+        messages, browserTools, client, controller.signal);
+      const saved = await ChatTurn.updateOne(require("../browser/accounting").guard(turn,leaseToken),
+        { $set: { providerResult: data } });
+      if (!saved.matchedCount) return;
+      resultStored = true;
+      const completion = await commitCompletion(turn,leaseToken,data.assistantText,data.usage);
+      emit(turn.user, "chat:end", {protocolVersion:2,event:"chat:end",type:"completed",
+        turnId:turn.turnId,clientMessageId:turn.clientMessageId,conversationId:turn.conversation.toString(),
+        attempt:turn.attempt,payload:{assistantMessage:messageDto(completion.assistant),billing:completion.billing}});
+      return;
     }
     const webContent = await web.prepare(turn, leaseToken, fileModel, controller.signal);
     let webBudget;
@@ -614,7 +631,7 @@ const processTurn = async (claimed) => {
         ? errorFor("INSUFFICIENT_BALANCE")
         : error?.protocolError || (error?.fileError ? errorFor(error.fileError) : safeProviderError(error));
     await failTurn(turn, leaseToken, protocol, {
-      knownNoCharge: [400, 401, 403, 404, 422, 429].includes(error?.status),
+      knownNoCharge: turn.webPlan?.mode !== "browser" && [400, 401, 403, 404, 422, 429].includes(error?.status),
     });
   } finally {
     clearInterval(heartbeatTimer);
@@ -629,6 +646,14 @@ const recoverExpired = async () => {
     leaseUntil: { $lte: new Date() },
   });
   for (const turn of expired) {
+    if (turn.webPlan?.mode === "browser" && !turn.providerResult && turn.browserState && !turn.browserState.pending && turn.providerStartedAt) {
+      // Completed calls are accounted for. Do not replay browser actions after a crash.
+      const data = require("../browser/agent").partial(turn, "PROCESS_INTERRUPTED");
+      const saved = await ChatTurn.updateOne({_id:turn._id,status:"processing",attempt:turn.attempt,
+        leaseToken:turn.leaseToken,leaseUntil:{$lte:new Date()},providerResult:null},{$set:{providerResult:data}});
+      if (!saved.matchedCount) continue;
+      turn.providerResult = data;
+    }
     if (turn.providerResult) {
       const leaseToken = crypto.randomUUID();
       const current = await ChatTurn.findOneAndUpdate(
@@ -669,7 +694,7 @@ const recoverExpired = async () => {
           error.message,
         );
       }
-    } else if (turn.webPlan && !turn.providerStartedAt) {
+    } else if (turn.webPlan && turn.webPlan.mode !== "browser" && !turn.providerStartedAt) {
       // No model call was started: keep completed page reads and let the normal
       // scheduler reclaim the job within its concurrency limit.
       await ChatTurn.updateOne({ _id: turn._id, status: "processing", attempt: turn.attempt,

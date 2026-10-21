@@ -2,6 +2,14 @@ const crypto = require("crypto");
 const mongoose = require("mongoose");
 
 const CODES = {
+  BROWSER_MODEL_UNSUPPORTED: ["This model rejected the browser tool request. Select a model that supports function calling.", false],
+  BROWSER_DISABLED: ["Browser navigation is disabled for this model or server.", false],
+  BROWSER_UNAVAILABLE: ["The isolated browser is unavailable. Please try again or contact support.", true],
+  BROWSER_BUSY: ["Browser capacity is busy. Please try again shortly.", true],
+  BROWSER_TIMEOUT: ["Browser navigation reached its time limit.", true],
+  BROWSER_LIMIT: ["Browser navigation reached its action or download limit.", false],
+  BROWSER_ACTION_BLOCKED: ["This action is outside public read-only navigation.", false],
+  BROWSER_INVALID_ACTION: ["The model returned an unsupported browser action.", false],
   WEB_TOO_MANY_URLS: ["Use at most three web URLs in one request.", false],
   WEB_INVALID_URL: ["Use a valid public HTTP or HTTPS URL without credentials or a custom port.", false],
   WEB_BLOCKED_ADDRESS: ["This address cannot be accessed by the web reader.", false],

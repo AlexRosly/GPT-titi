@@ -40,8 +40,8 @@ const snapshot = async (turn) => {
     lastSeq: turn.lastSeq,
     partialContent: turn.partialContent || "",
     webStatus: turn.status === "processing" && turn.webPlan ? {
-      stage: turn.providerStartedAt ? "answering" : "reading_web",
-      completed: turn.webState?.results?.length || 0, total: turn.webPlan.urls.length
+      stage: turn.webPlan.mode === "browser" ? (turn.browserState?.stage || "opening_browser") : turn.providerStartedAt ? "answering" : "reading_web",
+      completed: turn.webState?.results?.length || 0, total: turn.webPlan.mode === "browser" ? 5 : turn.webPlan.urls.length
     } : null,
     outputFile: turn.outputFile || null,
     assistantMessage: messageDto(assistant),

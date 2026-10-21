@@ -31,7 +31,9 @@
     "test:files": "node --test test/files/artifacts.test.js test/files/office.test.js test/files/textInput.test.js test/files/officeInput.test.js test/files/pdfInput.test.js test/files/ocrInput.test.js test/files/ocrInternational.test.js test/files/ocrLimits.test.js test/files/ocrQuality.test.js test/chatDeliveryV2.protocol.test.js test/chatDeliveryV2/historyDto.test.js test/chatDeliveryV2/acceptDuplicate.test.js test/files/ocrRead.test.js test/files/exactTranscription.test.js",
     "test:files:integration": "node scripts/testFilesIntegration.js",
     "ocr:file": "node scripts/checkOcrFile.js",
-    "ocr:check": "node scripts/checkOcr.js"
+    "ocr:check": "node scripts/checkOcr.js",
+    "test:web": "node --test test/web/reader.test.js test/web/budget.test.js test/web/context.test.js",
+    "test:web:integration": "node scripts/testWebIntegration.js"
   },
   "repository": {
     "type": "git",
@@ -79,6 +81,10 @@
     "streamifier": "^0.1.1",
     "stripe": "^20.1.0",
     "swagger-ui-express": "^5.0.1",
-    "yamljs": "^0.3.0"
+    "yamljs": "^0.3.0",
+    "htmlparser2": "10.0.0",
+    "ipaddr.js": "2.2.0",
+    "iconv-lite": "0.6.3",
+    "js-tiktoken": "1.0.21"
   }
 }

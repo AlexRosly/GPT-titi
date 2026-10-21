@@ -17,6 +17,7 @@ const ChatMessageSchema = new Schema(
       index: true,
     },
 
+    webSources: { type: [Schema.Types.Mixed], default: [] },
     role: {
       type: String,
       enum: ["user", "assistant", "system"],

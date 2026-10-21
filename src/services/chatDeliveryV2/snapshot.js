@@ -11,6 +11,7 @@ const messageDto = (message) => {
     modelId: message.modelId,
     tokens: message.tokens || 0,
     attachments: message.attachments || [],
+    webSources: message.webSources || [],
     fileResult: message.fileResult || null,
     turnId: message.turnId || null,
     createdAt: toIso(message.createdAt),
@@ -38,6 +39,10 @@ const snapshot = async (turn) => {
     attempt: turn.attempt,
     lastSeq: turn.lastSeq,
     partialContent: turn.partialContent || "",
+    webStatus: turn.status === "processing" && turn.webPlan ? {
+      stage: turn.providerStartedAt ? "answering" : "reading_web",
+      completed: turn.webState?.results?.length || 0, total: turn.webPlan.urls.length
+    } : null,
     outputFile: turn.outputFile || null,
     assistantMessage: messageDto(assistant),
     billing: turn.billing || null,

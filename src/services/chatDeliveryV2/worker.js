@@ -166,6 +166,11 @@ const failTurn = async (
     await session.endSession();
   }
   if (updated) {
+    if (updated.webPlan) console.info("WEB_V2_RESULT", {
+      turnId: updated.turnId, attempt: updated.attempt, modelId: updated.modelId,
+      status: updated.status, error: updated.error?.code,
+      reservationState: updated.reservationState, needsReconciliation: updated.needsReconciliation,
+    });
     require("../tokenLedger").notifyCommitted();
     emitFailure(updated, updated.error);
   }
@@ -204,10 +209,13 @@ const commitCompletion = async (turn, leaseToken, assistantText, usage) => {
       renderError = error;
     }
   }
+  const providerAssistantText = assistantText;
   const session = await mongoose.startSession();
   let result;
   try {
     await session.withTransaction(async () => {
+      // Mongo may retry the callback: never append the source footer twice.
+      assistantText = providerAssistantText;
       const current = await ChatTurn.findOne({
         _id: turn._id,
         turnId: turn.turnId,
@@ -257,6 +265,8 @@ const commitCompletion = async (turn, leaseToken, assistantText, usage) => {
         }
       }
 
+      assistantText += require("../web/context").footer(current);
+
       const cost = await finalizeChargeInTransaction({
         session,
         turnId: turn.turnId,
@@ -287,6 +297,7 @@ const commitCompletion = async (turn, leaseToken, assistantText, usage) => {
               content: assistantText,
               attachments,
               fileResult,
+              webSources: require("../web/context").sources(current),
               modelId: turn.modelId,
               tokens: usage.completionTokens,
               turnId: turn.turnId,
@@ -356,6 +367,7 @@ const commitCompletion = async (turn, leaseToken, assistantText, usage) => {
 const processTurn = async (claimed) => {
   const { turn, leaseToken } = claimed;
   let heartbeatTimer;
+  let providerTimer;
   let resultStored = false;
   const controller = new AbortController();
   try {
@@ -379,8 +391,10 @@ const processTurn = async (claimed) => {
         .catch(() => controller.abort());
     }, HEARTBEAT_MS);
 
+    const web = require("../web/context");
     const fileModel = await ChatModels.findOne({ modelId: turn.modelId, enabled: true })
-      .select("fileOutputEnabled textInputEnabled officeInputEnabled pdfInputEnabled ocrInputEnabled limits").lean();
+      .select("webInputEnabled fileOutputEnabled textInputEnabled officeInputEnabled pdfInputEnabled ocrInputEnabled limits").lean();
+    if (turn.webPlan && !fileModel) throw require("../web/policy").fail("WEB_INPUT_DISABLED");
     const history = await require("../files/textContext").forTurn(turn);
     const textInput = require("../files/textInput");
     const textBudget = textInput.budget();
@@ -418,7 +432,16 @@ const processTurn = async (claimed) => {
       fileTools.tool_choice = "auto";
       fileTools.parallel_tool_calls = false;
     }
-    const started = await ChatTurn.updateOne(
+    const webContent = await web.prepare(turn, leaseToken, fileModel, controller.signal);
+    let webBudget;
+    if (webContent) {
+      messages[0].content += " " + web.instructions;
+      // Source data precedes the current user request, so the request remains last.
+      messages.splice(Math.max(1, messages.length - 1), 0, webContent);
+      if (controller.signal.aborted) throw controller.signal.reason;
+      webBudget = await require("../web/reservation").startProvider(turn, leaseToken, messages, fileTools.tools);
+    }
+    const started = webBudget ? { matchedCount: 1 } : await ChatTurn.updateOne(
       {
         _id: turn._id,
         attempt: turn.attempt,
@@ -440,6 +463,7 @@ const processTurn = async (claimed) => {
       tools: fileTools.tools?.map((t) => t.function?.name),
       toolChoice: fileTools.tool_choice,
     });
+    if (webBudget) providerTimer = setTimeout(() => controller.abort(new Error("Provider deadline exceeded")), 120000);
     const stream = await client.chat.completions.create(
       {
         model: turn.modelId,
@@ -447,8 +471,9 @@ const processTurn = async (claimed) => {
         stream: true,
         stream_options: { include_usage: true },
         ...fileTools,
+        ...(webBudget ? { max_completion_tokens: webBudget.outputTokens } : {}),
       },
-      { signal: controller.signal },
+      { signal: controller.signal, ...(webBudget ? { timeout: 120000 } : {}) },
     );
 
     const fileCollector =
@@ -456,11 +481,13 @@ const processTurn = async (claimed) => {
         ? artifacts.collector({ optional: automaticFiles })
         : null;
     let usage;
+    let finishReason;
     let pending = "";
     let lastFlush = Date.now();
 
     let emittedSince = 0;
     for await (const chunk of stream) {
+      if (chunk.choices?.[0]?.finish_reason) finishReason = chunk.choices[0].finish_reason;
       fileCollector?.add(chunk);
       exactCollector?.add(chunk);
       const delta = turn.outputFile ? null : chunk.choices?.[0]?.delta?.content;
@@ -544,6 +571,9 @@ const processTurn = async (claimed) => {
       };
     }
 
+    if (webBudget && finishReason === "length")
+      assistantText += "\n\n[Response reached the output limit and may be incomplete.]";
+
     // Persist the completed provider result before billing. Recovery can finish
     // this exact charge without making another provider request.
     const saved = await ChatTurn.updateOne(
@@ -582,12 +612,13 @@ const processTurn = async (claimed) => {
     const protocol =
       error?.code === "INSUFFICIENT_BALANCE"
         ? errorFor("INSUFFICIENT_BALANCE")
-        : error?.fileError ? errorFor(error.fileError) : safeProviderError(error);
+        : error?.protocolError || (error?.fileError ? errorFor(error.fileError) : safeProviderError(error));
     await failTurn(turn, leaseToken, protocol, {
       knownNoCharge: [400, 401, 403, 404, 422, 429].includes(error?.status),
     });
   } finally {
     clearInterval(heartbeatTimer);
+    clearTimeout(providerTimer);
     controller.abort();
   }
 };
@@ -638,6 +669,12 @@ const recoverExpired = async () => {
           error.message,
         );
       }
+    } else if (turn.webPlan && !turn.providerStartedAt) {
+      // No model call was started: keep completed page reads and let the normal
+      // scheduler reclaim the job within its concurrency limit.
+      await ChatTurn.updateOne({ _id: turn._id, status: "processing", attempt: turn.attempt,
+        leaseToken: turn.leaseToken, leaseUntil: { $lte: new Date() }, providerStartedAt: null },
+        { $set: { status: "queued", leaseToken: null, leaseUntil: null } });
     } else {
       await failTurn(turn, turn.leaseToken, errorFor("PROCESS_INTERRUPTED"), {
         expiredOnly: true,

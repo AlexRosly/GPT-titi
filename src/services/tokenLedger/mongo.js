@@ -136,6 +136,17 @@ const changeReservation = ({ userId, amount, turnId, attempt, releasing = false,
   });
 };
 
+// A separate idempotency key from the admission hold; called only in the
+// transaction that claims the single web provider launch for this attempt.
+const increaseWebReservation = ({ userId, amount, turnId, attempt, session, filter }) => {
+  assertAmount(amount);
+  if (!session || !turnId || !Number.isSafeInteger(attempt)) throw new Error("Reservation identity required");
+  return mutate({ userId, delta: 0, kind: "reservation_hold",
+    key: `reservation_hold:web:${turnId}:${attempt}`, session, filter,
+    increments: { reservedAppTokens: amount, reservationVersion: 1 },
+    context: { turnId, reservedTokens: amount, attempt } });
+};
+
 const transfer = async ({ senderId, recipientId, amount, key, session }) => {
   assertAmount(amount);
   if (!amount) throw new LedgerError("INVALID_AMOUNT", "Transfer amount must be positive.", 400);
@@ -215,4 +226,4 @@ const createAccount = async (details) => inTransaction(null, async (session) => 
   return User.findById(user._id).session(session);
 });
 
-module.exports = { changeReservation, createAccount, getBalance, getOperation, credit, debit, transfer, claimBonus, refund, notifyCommitted: wake, LedgerError };
+module.exports = { increaseWebReservation, changeReservation, createAccount, getBalance, getOperation, credit, debit, transfer, claimBonus, refund, notifyCommitted: wake, LedgerError };

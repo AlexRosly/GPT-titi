@@ -42,7 +42,7 @@ const acceptTurn = async ({ userId, payload }) => {
   }).select("_id").lean();
   if (!conversation) throw protocolError("CONVERSATION_NOT_FOUND");
 
-  const model = await ChatModels.findOne({ modelId, enabled: true }).select("modelId inputPerM outputPerM fileOutputEnabled textInputEnabled officeInputEnabled pdfInputEnabled ocrInputEnabled limits").lean();
+  const model = await ChatModels.findOne({ modelId, enabled: true }).select("modelId inputPerM outputPerM webInputEnabled fileOutputEnabled textInputEnabled officeInputEnabled pdfInputEnabled ocrInputEnabled limits").lean();
   if (!model) throw protocolError("MODEL_NOT_AVAILABLE");
 
   if (!require("../files/config").enabled() && !files.some(f => f?.storage === "private")) await validateFilesOwnership(userId, files);
@@ -57,6 +57,8 @@ const acceptTurn = async ({ userId, payload }) => {
     if (existing.requestHash !== requestHash) throw protocolError("IDEMPOTENCY_CONFLICT");
     return { turn: existing, disposition: "duplicate" };
   }
+
+  const webPlan = require("../web/policy").plan(message, model);
 
   // OCR may be slow: prepare private immutable text before opening a Mongo transaction.
   const ocr = require("../files/ocrInput");
@@ -117,6 +119,7 @@ const acceptTurn = async ({ userId, payload }) => {
           message,
           files: canonicalFiles,
           outputFile,
+          webPlan,
           reservedAppTokens: reservedAmount,
           contextMessageIds: prior.map(m => m._id),
           reservationState: "held",

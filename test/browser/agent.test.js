@@ -50,3 +50,23 @@ test('vision is explicit capability; screenshots never persist in source metadat
   let calls=0;await run(f.turn,'lease',{browserVisionEnabled:true},messages,{},client(async req=>{if(++calls===1){assert.match(JSON.stringify(req.messages),/data:image\/jpeg/);return choose({kind:'done'});}return {usage,choices:[{finish_reason:'stop',message:{content:'Answer'}}]};}));
   assert.equal(f.turn.webState.results[0].image,undefined);
 });
+test('nullable model action navigates without another provider retry and persists safe diagnostics',async t=>{
+  const f=setup(t);let calls=0;const events=[];
+  t.mock.method(console,'info',(name,value)=>events.push({name,value}));
+  const result=await run(f.turn,'lease',{},messages,{},client(async()=>{
+    calls++;if(calls===1)return choose({kind:'follow',ref:'b1',query:null,url:null});
+    if(calls===2)return choose({kind:'done',ref:null,query:null,url:null});
+    return {usage,choices:[{finish_reason:'stop',message:{content:'Article summary'}}]};
+  }));
+  assert.equal(calls,3);assert.equal(f.actions(),2);assert.equal(result.usage.totalTokens,45);
+  assert.equal(result.assistantText,'Article summary');assert.equal(events.length,2);
+  assert.equal(f.turn.browserState.lastActionDiagnostic.reason,'ACCEPTED');
+});
+test('rejected argument records exact reason, bills consumed usage once and performs no extra action',async t=>{
+  const f=setup(t);let calls=0;const events=[];t.mock.method(console,'warn',(name,value)=>events.push({name,value}));
+  const result=await run(f.turn,'lease',{},messages,{},client(async()=>{calls++;return choose({kind:'done',query:'PRIVATE_SECRET'});}));
+  assert.equal(calls,1);assert.equal(f.actions(),1);assert.equal(result.usage.totalTokens,15);
+  assert.equal(f.turn.browserState.lastActionDiagnostic.reason,'UNUSED_ARGUMENT_NOT_EMPTY');
+  assert.equal(events[0].name,'BROWSER_ACTION_REJECTED');assert.ok(!JSON.stringify(events).includes('PRIVATE_SECRET'));
+  assert.equal(f.turn.browserState.pending,false);
+});

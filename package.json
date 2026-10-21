@@ -34,7 +34,7 @@
     "ocr:check": "node scripts/checkOcr.js",
     "test:web": "node --test test/web/reader.test.js test/web/budget.test.js test/web/context.test.js",
     "test:web:integration": "node scripts/testWebIntegration.js",
-    "test:browser": "node --test test/browser/policy.test.js test/browser/agent.test.js",
+    "test:browser": "node --test test/browser/policy.test.js test/browser/agent.test.js test/browser/actions.test.js",
     "test:browser:integration": "node scripts/testBrowserIntegration.js",
     "test:browser:smoke": "node --test test/browser/smoke.test.js",
     "browser:build": "docker build -t gptiti-browser:21 browser-worker"

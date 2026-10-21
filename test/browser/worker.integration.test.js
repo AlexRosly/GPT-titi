@@ -84,3 +84,29 @@ test('model opt-out uses working HTML reader, ordinary requests never launch bro
   const f=await fixture({model:{browserInputEnabled:false}});t.mock.method(reader,'read',async url=>page(url));
   const actions=browser(t);provider(t);const row=await run(f);assert.equal(row.webPlan.mode,undefined);assert.equal(row.status,'completed');assert.equal(actions(),0);
 });
+test('nullable browse arguments execute canonical action, persist diagnostic and settle one aggregate charge',opts,async t=>{
+  const f=await fixture();const performed=[];let calls=0;
+  t.mock.method(sessions,'create',()=>({close(){},async action(a){performed.push(a);return {...page('https://example.com/a'),controls:[{kind:'follow',ref:'b1'}]};}}));
+  t.mock.method(Completions.prototype,'create',async req=>{
+    calls++;
+    if(calls<3){
+      assert.equal(req.tools[0].function.strict,true);
+      return {usage,choices:[{finish_reason:'tool_calls',message:{tool_calls:[{id:'1',type:'function',function:{name:'browse',arguments:JSON.stringify(calls===1?{kind:'follow',ref:'b1',query:null,url:null}:{kind:'done',ref:null,query:null,url:null})}}]}}]};
+    }
+    return {usage,choices:[{finish_reason:'stop',message:{content:'Actual article summary'}}]};
+  });
+  const row=await run(f);assert.equal(row.status,'completed');assert.equal(calls,3);assert.equal(performed.length,2);
+  assert.deepEqual(performed[1],{kind:'follow',ref:'b1'});assert.equal(row.usage.totalTokens,360);
+  assert.equal(row.browserState.lastActionDiagnostic.reason,'ACCEPTED');assert.equal(row.reservationState,'settled');
+  assert.equal((await models.User.findById(f.user.id)).reservedAppTokens,0);
+  assert.equal(await models.TokenOperation.countDocuments({'context.turnId':row.turnId,'entries.delta':{$lt:0}}),1);
+});
+test('rejection diagnostic survives reload without raw arguments or an additional provider call',opts,async t=>{
+  const f=await fixture();const actions=browser(t);let calls=0;
+  t.mock.method(Completions.prototype,'create',async()=>{calls++;return {usage,choices:[{finish_reason:'tool_calls',message:{tool_calls:[{type:'function',function:{name:'browse',arguments:'{"kind":"done","query":"PRIVATE_SECRET"}'}}]}}]};});
+  const row=await run(f);assert.equal(calls,1);assert.equal(actions(),1);assert.equal(row.status,'completed');
+  assert.equal(row.browserState.lastActionDiagnostic.reason,'UNUSED_ARGUMENT_NOT_EMPTY');
+  assert.equal(row.browserState.lastActionDiagnostic.field,'query');assert.ok(!JSON.stringify(row.browserState).includes('PRIVATE_SECRET'));
+  assert.equal(row.usage.totalTokens,120);assert.equal(row.reservationState,'settled');
+  assert.equal(await models.TokenOperation.countDocuments({'context.turnId':row.turnId,'entries.delta':{$lt:0}}),1);
+});

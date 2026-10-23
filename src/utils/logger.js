@@ -1,6 +1,7 @@
 const pino = require("pino");
 
 const logger = pino({
+  redact: require("./logRedaction"),
   transport: {
     target: "pino-pretty",
     options: { colorize: true, translateTime: "SYS:standard" },

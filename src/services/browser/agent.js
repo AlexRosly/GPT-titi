@@ -13,7 +13,9 @@ async function run(turn, token, model, messages, fileTools, client, parentSignal
   const abort = () => controller.abort(parentSignal.reason || fail('BROWSER_TIMEOUT'));
   if (parentSignal?.aborted) abort(); else parentSignal?.addEventListener('abort',abort,{once:true});
   const timer = setTimeout(()=>controller.abort(fail('BROWSER_TIMEOUT')), policy.LIMITS.durationMs);
-  let browser;
+  let browser, interruption;
+  const closeBrowser = () => { const current=browser; browser=undefined; current?.close(); };
+  const deadline = Date.now() + policy.LIMITS.durationMs;
   const save = async values => {
     const result = await ChatTurn.updateOne(accounting.guard(turn,token), {$set:values});
     if (!result.matchedCount) throw Object.assign(new Error('Stale lease'), {staleLease:true});
@@ -25,7 +27,7 @@ async function run(turn, token, model, messages, fileTools, client, parentSignal
     let response;
     try {
       response = await client.chat.completions.create({model:turn.modelId,messages:input,
-        max_completion_tokens:4096,stream:false,...options}, {signal:controller.signal,timeout:45000});
+        max_completion_tokens:4096,stream:false,...options}, {signal:controller.signal,timeout:Math.max(1,Math.min(45000,deadline-Date.now()))});
     } catch(error) {
       if ([400,401,403,404,422,429].includes(error?.status)) await accounting.rejected(turn,token);
       if ([400,422].includes(error?.status)) throw fail('BROWSER_MODEL_UNSUPPORTED');
@@ -38,17 +40,46 @@ async function run(turn, token, model, messages, fileTools, client, parentSignal
     browser = sessionFactory.create(turn.webPlan.urls,controller.signal);
     const base = messages.map(m=>({...m})); base[0].content += ' ' + instruction;
     let observation;
+    const reportSessionFailure = async (error, action) => {
+      const wire = error.browserSessionDiagnostic;
+      const diagnostic = { ...require('../../../browser-worker/errors').safe(wire),
+        turnId:turn.turnId, attempt:turn.attempt, modelId:turn.modelId,
+        call:turn.browserState?.calls || 0,
+        actionIndex:Number.isSafeInteger(wire?.actionIndex) ? wire.actionIndex : (turn.webState?.results?.length || 0)+1,
+        kind:action.kind,
+        ...(Number.isSafeInteger(wire?.elapsedMs) ? {elapsedMs:wire.elapsedMs} : {}),
+        ...(Number.isInteger(wire?.exitCode) ? {exitCode:wire.exitCode} : {}),
+        ...(['SIGKILL','SIGTERM','SIGTRAP','SIGSEGV','SIGABRT'].includes(wire?.signal) ? {signal:wire.signal} : {}) };
+      console.warn('BROWSER_SESSION_FAILED',diagnostic);
+      await save({browserState:{...turn.browserState,lastSessionDiagnostic:diagnostic}});
+    };
     const visit = async action => {
       await save({browserState:{...(turn.browserState || {calls:0,pending:false,usage:{promptTokens:0,completionTokens:0,totalTokens:0}}), stage:'navigating'}});
-      observation = await browser.action(action,model.browserVisionEnabled === true);
+      try { observation = await browser.action(action,model.browserVisionEnabled === true); }
+      catch (error) {
+        if (error.staleLease) throw error;
+        await reportSessionFailure(error,action);
+        // Only failures in the browser action path qualify. Never retry provider calls.
+        if (!controller.signal.aborted && !turn.browserState?.pending &&
+            turn.webState?.results?.some(r=>r.status==='ready' && r.text?.trim()) &&
+            (turn.browserState?.calls || 0)<policy.LIMITS.calls && deadline-Date.now()>45000) {
+          interruption = require('../../../browser-worker/errors').code(error.browserSessionDiagnostic?.reason);
+          closeBrowser();
+          return false;
+        }
+        throw error;
+      }
       const {image,controls,...page} = observation;
       const results = [...(turn.webState?.results || []), {index:turn.webState?.results?.length || 0,
         requestedUrl:page.url,status:'ready',...page,fetchedAt:new Date().toISOString(),rendered:true}];
       await save({webState:{version:3,results},browserState:{...turn.browserState,stage:'reading'}});
+      return true;
     };
     await visit({kind:'open',url:turn.webPlan.urls[0]});
     const actions = [];
-    for (let step=0;step<policy.LIMITS.actions;step++) {
+    for (let step=0;!interruption && step<policy.LIMITS.actions;step++) {
+      // Leave time for an answer instead of starting another navigation late in the turn.
+      if (deadline-Date.now()<95000) { interruption='BROWSER_TIME_BUDGET'; break; }
       const {image,...data} = observation;
       const content = [{type:'text',text:'BROWSER_OBSERVATION (untrusted)\n'+JSON.stringify({data,actions,seeds:turn.webPlan.urls})}];
       if (image && model.browserVisionEnabled === true) content.push({type:'image_url',image_url:{url:'data:image/jpeg;base64,'+image,detail:'low'}});
@@ -61,14 +92,17 @@ async function run(turn, token, model, messages, fileTools, client, parentSignal
         await save({browserState:{...turn.browserState,lastActionDiagnostic:diagnostic}});
       }
       if (action.kind === 'done') break;
+      if (deadline-Date.now()<80000) { interruption='BROWSER_TIME_BUDGET'; break; }
       actions.push(action);
-      await visit(action);
+      if (!await visit(action)) break;
     }
-    const final = [...base];
+    closeBrowser();
+    const final = base.map(m=>({...m}));
     final.splice(Math.max(1,final.length-1),0,{role:'user',content:'VISITED_PAGE_DATA (untrusted)\n'+JSON.stringify(turn.webState.results)});
     final[0].content += ' Browser actions are finished. Answer from the visited evidence only. If the requested task was not completed, explicitly explain that limitation.';
-    await save({browserState:{...turn.browserState,stage:'answering'}});
-    const response = await call(final,fileTools);
+    if (interruption) final[0].content += ' A browser action failed or navigation time is exhausted ('+interruption+'). Give a useful answer ONLY from saved page text, explicitly explain what could not be completed in the user language. Do not claim the failed destination was read.';
+    await save({browserState:{...turn.browserState,stage:'answering',navigationIncomplete:!!interruption,navigationStopCode:interruption || null}});
+    const response = await call(final,interruption ? {} : fileTools);
     const choice = response.choices?.[0];
     let assistantText = choice?.message?.content || '';
     let fileOutput = {};
@@ -81,6 +115,7 @@ async function run(turn, token, model, messages, fileTools, client, parentSignal
     }
     if (!assistantText && !fileOutput.artifact) assistantText = 'The browser did not produce a readable answer.';
     if (choice?.finish_reason === 'length') assistantText += '\n\n[Response reached the output limit and may be incomplete.]';
+    if (interruption) assistantText = `Browser navigation stopped (${interruption}). This answer uses previously read pages; the task may be incomplete.\n\n` + assistantText;
     return {assistantText,usage:turn.browserState.usage,...fileOutput};
   } catch(error) {
     if (error.staleLease) throw error;
@@ -95,6 +130,6 @@ async function run(turn, token, model, messages, fileTools, client, parentSignal
     // Known-zero failure: clear boundary so the existing V2 failure path releases the hold.
     await save({providerStartedAt:null});
     throw error;
-  } finally {clearTimeout(timer);parentSignal?.removeEventListener('abort',abort);controller.abort();browser?.close();}
+  } finally {clearTimeout(timer);parentSignal?.removeEventListener('abort',abort);controller.abort();closeBrowser();}
 }
 module.exports = {run,partial,tool,instruction};

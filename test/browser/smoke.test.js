@@ -20,3 +20,19 @@ test('isolated Chromium renders JS, navigates, searches, captures viewport, bloc
     assert.ok(seen.every(url=>url.startsWith(origin)));
   } finally {session.close();}
 });
+test('main-document access rejection reaches host as a precise safe diagnostic', {timeout:60000},async()=>{
+  const session=create([origin+'/'],undefined,{broker:()=>async message=>{
+    if(message.url===origin+'/blocked')throw Object.assign(new Error('private URL must not escape'),{webError:'WEB_ACCESS_DENIED'});
+    return {status:200,headers:{'content-type':'text/html'},body:Buffer.from('<html><body>Saved page<a href="/blocked">Next article</a></body></html>').toString('base64')};
+  }});
+  try {
+    const obs=await session.action({kind:'open',url:origin+'/'});
+    await assert.rejects(session.action({kind:'follow',ref:obs.controls.find(c=>c.kind==='follow').ref}),error=>{
+      assert.equal(error.webError,'BROWSER_NAVIGATION_FAILED');
+      assert.equal(error.browserSessionDiagnostic.reason,'HTTP_ACCESS_DENIED');
+      assert.equal(error.browserSessionDiagnostic.stage,'navigate');
+      assert.equal(error.browserSessionDiagnostic.actionIndex,2);
+      assert.ok(!JSON.stringify(error).includes('private URL'));return true;
+    });
+  } finally {session.close();}
+});

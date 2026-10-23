@@ -4,6 +4,7 @@ const mongoose = require("mongoose");
 const CODES = {
   BROWSER_MODEL_UNSUPPORTED: ["This model rejected the browser tool request. Select a model that supports function calling.", false],
   BROWSER_DISABLED: ["Browser navigation is disabled for this model or server.", false],
+  BROWSER_NAVIGATION_FAILED: ["The browser could not open or read this page. Previously read pages may still be available.", true],
   BROWSER_UNAVAILABLE: ["The isolated browser is unavailable. Please try again or contact support.", true],
   BROWSER_BUSY: ["Browser capacity is busy. Please try again shortly.", true],
   BROWSER_TIMEOUT: ["Browser navigation reached its time limit.", true],

@@ -61,6 +61,9 @@ function broker(seeds, parentSignal, dependencies = {}) {
       return { status: 200, headers: { 'content-type': response.type,
         'content-security-policy': "form-action 'none'; object-src 'none'; frame-src 'none'; worker-src 'none'; base-uri 'self'",
         'referrer-policy': 'no-referrer' }, body: response.body.toString('base64') };
+    } catch (error) {
+      if (controller.signal.aborted) throw controller.signal.reason;
+      throw error;
     } finally { active--; clearTimeout(timer); parentSignal?.removeEventListener('abort', abort); }
   };
 }

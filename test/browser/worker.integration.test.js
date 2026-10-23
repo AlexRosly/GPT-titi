@@ -110,3 +110,39 @@ test('rejection diagnostic survives reload without raw arguments or an additiona
   assert.equal(row.usage.totalTokens,120);assert.equal(row.reservationState,'settled');
   assert.equal(await models.TokenOperation.countDocuments({'context.turnId':row.turnId,'entries.delta':{$lt:0}}),1);
 });
+test('navigation failure finalizes saved evidence, persists diagnostics and bills exactly once through recovery',opts,async t=>{
+  const f=await fixture();let actions=0,calls=0;
+  t.mock.method(sessions,'create',()=>({close(){},async action(){
+    if(++actions===1)return {...page('https://example.com/a'),text:'UNIQUE_SAVED_PAGE',controls:[{kind:'follow',ref:'b1'}]};
+    throw Object.assign(new Error('SECRET_URL'),{webError:'BROWSER_LIMIT',browserSessionDiagnostic:{reason:'RESOURCE_LIMIT',stage:'navigate',actionIndex:2}});
+  }}));
+  t.mock.method(Completions.prototype,'create',async req=>{
+    if(++calls===1)return {usage,choices:[{finish_reason:'tool_calls',message:{tool_calls:[{id:'1',type:'function',function:{name:'browse',arguments:'{"kind":"follow","ref":"b1"}'}}]}}]};
+    assert.equal(req.tools,undefined);assert.match(JSON.stringify(req.messages),/UNIQUE_SAVED_PAGE/);
+    return {usage,choices:[{finish_reason:'stop',message:{content:'Summary of saved page'}}]};
+  });
+  const row=await run(f);await worker.recoverExpired();await worker.recoverExpired();
+  assert.equal(row.status,'completed');assert.equal(row.reservationState,'settled');assert.equal(row.usage.totalTokens,240);
+  assert.equal(calls,2);assert.equal(actions,2);assert.equal(row.browserState.navigationIncomplete,true);
+  assert.equal(row.browserState.lastSessionDiagnostic.reason,'RESOURCE_LIMIT');
+  assert.ok(!JSON.stringify(row.browserState).includes('SECRET_URL'));
+  assert.equal((await models.User.findById(f.user.id)).reservedAppTokens,0);
+  assert.equal(await models.TokenOperation.countDocuments({'context.turnId':row.turnId,'entries.delta':{$lt:0}}),1);
+  const restored=await snapshot(row);assert.match(restored.assistantMessage.content,/Summary of saved page/);assert.match(restored.assistantMessage.content,/incomplete/);
+  assert.equal(restored.assistantMessage.webSources.length,1);assert.equal(restored.assistantMessage.webSources[0].text,undefined);
+});
+test('ambiguous fallback provider call is held for reconciliation without automatic replay',opts,async t=>{
+  const f=await fixture();let actions=0,calls=0;
+  t.mock.method(sessions,'create',()=>({close(){},async action(){
+    if(++actions===1)return {...page('https://example.com/a'),controls:[{kind:'follow',ref:'b1'}]};
+    throw Object.assign(new Error(),{webError:'BROWSER_TIMEOUT'});
+  }}));
+  t.mock.method(Completions.prototype,'create',async()=>{
+    if(++calls===1)return {usage,choices:[{finish_reason:'tool_calls',message:{tool_calls:[{id:'1',type:'function',function:{name:'browse',arguments:'{"kind":"follow","ref":"b1"}'}}]}}]};
+    throw new Error('provider disconnect');
+  });
+  const row=await run(f);await worker.recoverExpired();
+  assert.equal(row.status,'failed');assert.equal(row.reservationState,'held');assert.equal(row.needsReconciliation,true);
+  assert.equal(calls,2);assert.equal(actions,2);
+  assert.equal(await models.TokenOperation.countDocuments({'context.turnId':row.turnId,'entries.delta':{$lt:0}}),0);
+});

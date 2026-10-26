@@ -16,7 +16,7 @@ const validateUpload = ({ originalname, buffer }) => {
   if (ext === 'pdf' && buffer.toString('ascii', 0, 5) === '%PDF-') mimetype = 'application/pdf';
   if (['docx', 'xlsx', 'pptx', 'zip'].includes(ext) && buffer.length >= 4 && buffer.readUInt32LE(0) === 0x04034b50) {
     // Container identity is verified by the bounded Office reader before chat admission.
-    mimetype = 'application/octet-stream';
+    mimetype = ext === 'zip' ? 'application/zip' : 'application/octet-stream';
   }
   if (textExtensions.has(ext)) {
     try { new TextDecoder('utf-8', { fatal: true }).decode(buffer); } catch { throw fail('INVALID_UTF8'); }

@@ -10,6 +10,8 @@ const retryTurn = async ({ turnId, userId }) => {
   if (previous.status !== "failed" || !previous.error?.retryable || previous.needsReconciliation || previous.reservationState === "held") throw protocolError("TURN_NOT_RETRYABLE");
   const ocrModel = await ChatModels.findOne({ modelId: previous.modelId, enabled: true }).lean();
   if (!ocrModel) throw protocolError("MODEL_NOT_AVAILABLE");
+  const zip = require("../files/zipInput");
+  await zip.prepareHistory(userId, await require("../files/textContext").forTurn(previous), ocrModel);
   const ocr = require("../files/ocrInput");
   if (ocr.enabled(ocrModel)) await ocr.prepareHistory(userId, await require("../files/textContext").forTurn(previous), ocrModel);
   const session = await mongoose.startSession();

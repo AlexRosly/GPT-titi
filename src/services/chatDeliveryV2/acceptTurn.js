@@ -42,13 +42,14 @@ const acceptTurn = async ({ userId, payload }) => {
   }).select("_id").lean();
   if (!conversation) throw protocolError("CONVERSATION_NOT_FOUND");
 
-  const model = await ChatModels.findOne({ modelId, enabled: true }).select("modelId inputPerM outputPerM browserInputEnabled webInputEnabled fileOutputEnabled textInputEnabled officeInputEnabled pdfInputEnabled ocrInputEnabled limits").lean();
+  const model = await ChatModels.findOne({ modelId, enabled: true }).select("modelId inputPerM outputPerM zipInputEnabled zipOutputEnabled browserInputEnabled webInputEnabled fileOutputEnabled textInputEnabled officeInputEnabled pdfInputEnabled ocrInputEnabled limits").lean();
   if (!model) throw protocolError("MODEL_NOT_AVAILABLE");
 
   if (!require("../files/config").enabled() && !files.some(f => f?.storage === "private")) await validateFilesOwnership(userId, files);
 
   if (outputFile) {
     require("../files/artifacts").outputSpec(outputFile);
+    if (/\.zip$/i.test(outputFile.filename) && !require("../files/zipOutput").enabled(model)) throw protocolError("ZIP_OUTPUT_DISABLED");
     if (!require("../files/artifacts").outputEnabled(model)) throw protocolError("MODEL_NOT_AVAILABLE");
   }
   const requestHash = buildRequestHash({ userId, conversationId, modelId, message, files, outputFile });
@@ -61,6 +62,12 @@ const acceptTurn = async ({ userId, payload }) => {
   const webPlan = require("../web/policy").plan(message, model);
   if (webPlan && require("../browser/policy").enabled(model)) webPlan.mode = "browser";
 
+  const zip = require("../files/zipInput");
+  if (require("../files/config").enabled() || files.some(f => f?.storage === "private")) {
+    const deadline = Date.now() + 45000;
+    await zip.prepareFiles(userId, files, model, deadline);
+    await zip.prepareHistory(userId, await require("../files/textContext").prior(userId, conversationId, null), model, deadline);
+  }
   // OCR may be slow: prepare private immutable text before opening a Mongo transaction.
   const ocr = require("../files/ocrInput");
   if (ocr.enabled(model)) {

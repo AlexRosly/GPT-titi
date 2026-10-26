@@ -7,7 +7,7 @@ const outputSpec = (value) => {
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(k => k !== 'filename')) throw fail('INVALID_OUTPUT_FILE');
   const filename = safeName(value.filename);
   const ext = path.extname(filename).slice(1).toLowerCase();
-  if (!textExtensions.has(ext) && ext !== 'svg' && !office.extensions.has(ext)) throw fail('UNSUPPORTED_OUTPUT_FORMAT');
+  if (!textExtensions.has(ext) && ext !== 'svg' && ext !== 'zip' && !office.extensions.has(ext)) throw fail('UNSUPPORTED_OUTPUT_FORMAT');
   return { filename };
 };
 const escapeXml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -88,11 +88,12 @@ const svgInstructions = () => [
 ].join(' ');
 const renderOutput = async (spec, content) => {
   const checked = outputSpec(spec);
+  if (/\.zip$/i.test(checked.filename)) return require('./zipOutput').render(checked, content);
   return office.extensions.has(path.extname(checked.filename).slice(1).toLowerCase()) ? office.render(checked, content) : render(checked, content);
 };
 const toolOptions = (spec) => ({
   tools: [{ type: 'function', function: { name: 'create_file',
-    description: `Produce the requested file ${spec.filename}. Put complete UTF-8 file content in content, without Markdown fences or surrounding explanation. Keep content within ${config.artifactBytes} UTF-8 bytes. summary is a short description of at most 2000 characters, not a download link.${path.extname(spec.filename).toLowerCase() === '.svg' ? ' ' + svgInstructions() : office.extensions.has(path.extname(spec.filename).slice(1).toLowerCase()) ? ' ' + office.instructions : ''}`,
+    description: `Produce the requested file ${spec.filename}. Put complete UTF-8 file content in content, without Markdown fences or surrounding explanation. Keep content within ${config.artifactBytes} UTF-8 bytes. summary is a short description of at most 2000 characters, not a download link.${path.extname(spec.filename).toLowerCase() === '.zip' ? ' ' + require('./zipOutput').instructions + ' ' + office.instructions : path.extname(spec.filename).toLowerCase() === '.svg' ? ' ' + svgInstructions() : office.extensions.has(path.extname(spec.filename).slice(1).toLowerCase()) ? ' ' + office.instructions : ''}`,
     strict: true, parameters: { type: 'object', properties: { content: { type: 'string' }, summary: { type: 'string' } }, required: ['content', 'summary'], additionalProperties: false } } }],
   tool_choice: { type: 'function', function: { name: 'create_file' } }, parallel_tool_calls: false,
 });
@@ -100,18 +101,19 @@ const toolOptions = (spec) => ({
 const outputEnabled = (model) => config.enabled() && !!model && model.fileOutputEnabled !== false;
 const autoEnabled = (model) => outputEnabled(model) && process.env.FILE_OUTPUT_AUTO_ENABLED !== 'false';
 const fileSystemInstructions = 'You can create downloadable files using create_file. When the user requests a supported file, use that tool to produce it instead of giving instructions or code for the user to run. Follow its format rules. Never claim a file is attached without calling the tool. For ordinary questions or requested code examples, respond normally.';
-const autoToolOptions = () => {
+const autoToolOptions = (model) => {
   const options = toolOptions({ filename: 'requested file' });
   const fn = options.tools[0].function;
   fn.description = [
     'Create one downloadable file when the user asks you to create, save, export or deliver a file, including requests expressed naturally in any language.',
     'For ordinary questions, explanations, or inline code examples, answer normally without calling this tool. Mere mentions of file extensions are not a request to create a file.',
     'Choose a short descriptive filename with the requested extension. If no format was specified, choose a suitable supported format. If the request is ambiguous, ask a brief clarification.',
-    `Supported extensions ONLY: ${[...textExtensions, 'svg', ...office.extensions].join(', ')}.`,
+    `Supported extensions ONLY: ${[...textExtensions, 'svg', ...office.extensions, ...(require('./zipOutput').enabled(model) ? ['zip'] : [])].join(', ')}.`,
     'Do not claim to create PNG, audio or other unsupported formats. Explain the limitation and offer a supported alternative, without silently changing an explicitly requested format.',
-    'For a request for several files, ask which one to create first. Never invent download links.',
+    require('./zipOutput').enabled(model) ? 'For several files requested as a ZIP archive, create one ZIP containing those files. Otherwise ask whether the user wants a ZIP or one file first. Never invent download links.' : 'For a request for several files, ask which one to create first. Never invent download links.',
     `Return complete UTF-8 content without Markdown fences or surrounding explanation, at most ${config.artifactBytes} bytes. summary is a short description of at most 2000 characters.`,
     office.instructions,
+    ...(require('./zipOutput').enabled(model) ? [require('./zipOutput').instructions] : []),
     'The following rules apply ONLY when the chosen extension is SVG:', svgInstructions(),
   ].join(' ');
   fn.parameters.properties.filename = { type: 'string', description: 'Safe basename with a supported extension; no directory path.' };
@@ -119,7 +121,7 @@ const autoToolOptions = () => {
   options.tool_choice = 'auto';
   return options;
 };
-const collector = ({ optional = false } = {}) => {
+const collector = ({ optional = false, model } = {}) => {
   let args = '', name = '', invalid = false, reason, argumentChars = 0, seen = false;
   return {
     add(chunk) {
@@ -142,6 +144,7 @@ const collector = ({ optional = false } = {}) => {
         const value = JSON.parse(args);
         if (typeof value.content !== 'string' || typeof value.summary !== 'string' || value.summary.length > 2000) throw new Error();
         if (optional) outputSpec({ filename: value.filename });
+        if (/\.zip$/i.test(value.filename || "") && !require("./zipOutput").enabled(model)) throw fail("ZIP_OUTPUT_DISABLED");
         return { artifact: value, argumentChars };
       } catch (error) { return { artifactError: error.fileError || 'INVALID_FILE_OUTPUT', argumentChars }; }
     },

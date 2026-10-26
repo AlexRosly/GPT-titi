@@ -60,7 +60,7 @@ const remove = async (user, id, session) => {
   if (!session) return transaction((s) => remove(user, id, s));
   const file = await owned(user, id, { session, includeDeleted: true });
   if (file.status === 'deleted') return;
-  await File.updateOne({ _id: file._id }, { $set: { status: 'deleted', deletedAt: new Date(), generatedPreview: null, ocrCache: null, derivedBytes: 0 } }, { session });
+  await File.updateOne({ _id: file._id }, { $set: { status: 'deleted', deletedAt: new Date(), generatedPreview: null, ocrCache: null, zipCache: null, derivedBytes: 0 } }, { session });
   await Chunk.deleteMany({ file: file._id }).session(session);
   await Quota.updateOne({ _id: user }, { $inc: { bytes: -(file.size + (file.derivedBytes || 0)), count: -1 } }, { session });
 };

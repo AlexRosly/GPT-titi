@@ -36,6 +36,20 @@ router.post('/:id/prepare', express.json({ limit: '1kb' }), handle(async (req, r
   if (!model) return res.status(404).json({ error: 'MODEL_NOT_AVAILABLE' });
   const ocr = require('../services/files/ocrInput');
   res.set({ 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
+  const zip = require('../services/files/zipInput');
+  if (zip.supported(file)) {
+    try {
+      await zip.waitPrepare(req.user._id, req.params.id, model);
+      const ready = await store.owned(req.user._id, req.params.id);
+      return res.json({ success: true, processing: { status: 'ready', method: 'zip',
+        ocrPages: ready.zipCache.ocrPages, textBytes: Buffer.byteLength(ready.zipCache.text),
+        scripts: [], uncertain: ready.zipCache.uncertain, entries: ready.zipCache.entries.length } });
+    } catch (error) {
+      if (!error.fileError) throw error;
+      const detail = require('../services/chatDeliveryV2/protocol').errorFor(error.fileError);
+      return res.status(error.status || 422).json({error: detail.code, message: detail.message, retryable: detail.retryable});
+    }
+  }
   if (!ocr.eligible(file, model)) return res.json({ success: true, processing: { status: 'not_required' } });
   try {
     await ocr.prepare(req.user._id, req.params.id, model);
@@ -96,6 +110,10 @@ router.get('/:id/preview', handle(async (req, res) => {
     res.set({ 'Content-Type': file.mimetype, 'Cache-Control': 'private, no-store',
       'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "sandbox; default-src 'none'; style-src 'none'" });
     return res.send(bytes);
+  }
+  if (require('../services/files/zipInput').supported(file) && require('../services/files/zipInput').cached(file)) {
+    res.set({ 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
+    return res.json({ kind: 'archive', entries: file.zipCache.entries, truncated: false });
   }
   if (file.source === 'generated' && file.generatedPreview) {
     res.set({ 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });

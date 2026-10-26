@@ -393,7 +393,7 @@ const processTurn = async (claimed) => {
 
     const web = require("../web/context");
     const fileModel = await ChatModels.findOne({ modelId: turn.modelId, enabled: true })
-      .select("browserInputEnabled browserVisionEnabled webInputEnabled fileOutputEnabled textInputEnabled officeInputEnabled pdfInputEnabled ocrInputEnabled limits").lean();
+      .select("zipInputEnabled zipOutputEnabled browserInputEnabled browserVisionEnabled webInputEnabled fileOutputEnabled textInputEnabled officeInputEnabled pdfInputEnabled ocrInputEnabled limits").lean();
     if (turn.webPlan && !fileModel) throw require("../web/policy").fail("WEB_INPUT_DISABLED");
     const history = await require("../files/textContext").forTurn(turn);
     const textInput = require("../files/textInput");
@@ -408,7 +408,7 @@ const processTurn = async (claimed) => {
     let assistantText = turn.partialContent || "";
     let seq = turn.lastSeq || 0;
     const artifacts = require("../files/artifacts");
-    if (turn.outputFile && !artifacts.outputEnabled(fileModel)) {
+    if (turn.outputFile && (!artifacts.outputEnabled(fileModel) || (/\.zip$/i.test(turn.outputFile.filename) && !require("../files/zipOutput").enabled(fileModel)))) {
       await failTurn(turn, leaseToken, errorFor("MODEL_NOT_AVAILABLE"), {
         knownNoCharge: true,
       });
@@ -420,7 +420,7 @@ const processTurn = async (claimed) => {
     const fileTools = turn.outputFile
       ? artifacts.toolOptions(turn.outputFile)
       : automaticFiles
-        ? artifacts.autoToolOptions()
+        ? artifacts.autoToolOptions(fileModel)
         : {};
     const exact = require("../files/exactTranscription");
     const exactFiles = turn.outputFile || turn.webPlan?.mode === "browser" ? [] : await exact.candidates(turn.user, history, fileModel);
@@ -436,7 +436,7 @@ const processTurn = async (claimed) => {
       // Browser loop owns every provider boundary and accumulates actual usage.
       // Exact-transcription tools remain on their existing non-browser path.
       const browserTools = turn.outputFile ? artifacts.toolOptions(turn.outputFile)
-        : automaticFiles ? artifacts.autoToolOptions() : {};
+        : automaticFiles ? artifacts.autoToolOptions(fileModel) : {};
       const data = await require("../browser/agent").run(turn, leaseToken, fileModel,
         messages, browserTools, client, controller.signal);
       const saved = await ChatTurn.updateOne(require("../browser/accounting").guard(turn,leaseToken),
@@ -495,7 +495,7 @@ const processTurn = async (claimed) => {
 
     const fileCollector =
       turn.outputFile || automaticFiles
-        ? artifacts.collector({ optional: automaticFiles })
+        ? artifacts.collector({ optional: automaticFiles, model: fileModel })
         : null;
     let usage;
     let finishReason;
@@ -667,6 +667,7 @@ const recoverExpired = async () => {
         { new: true },
       );
       if (!current) continue;
+      const recoveryHeartbeat = setInterval(() => { heartbeat(current, leaseToken).catch(() => {}); }, HEARTBEAT_MS);
       try {
         const completion = await commitCompletion(
           current,
@@ -693,6 +694,8 @@ const recoverExpired = async () => {
           current.turnId,
           error.message,
         );
+      } finally {
+        clearInterval(recoveryHeartbeat);
       }
     } else if (turn.webPlan && turn.webPlan.mode !== "browser" && !turn.providerStartedAt) {
       // No model call was started: keep completed page reads and let the normal

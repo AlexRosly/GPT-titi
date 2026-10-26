@@ -108,7 +108,7 @@ async function run(turn, token, model, messages, fileTools, client, parentSignal
     let fileOutput = {};
     if (choice?.message?.tool_calls?.length) {
       const artifacts = require('../files/artifacts');
-      const collector = artifacts.collector({optional:!turn.outputFile});
+      const collector = artifacts.collector({optional:!turn.outputFile,model});
       collector.add({choices:[{delta:{tool_calls:choice.message.tool_calls.map((c,index)=>({...c,index}))},finish_reason:choice.finish_reason}]});
       fileOutput = collector.finish();
       if (fileOutput.artifact || fileOutput.artifactError) assistantText = fileOutput.artifact?.summary || 'File generation finished.';

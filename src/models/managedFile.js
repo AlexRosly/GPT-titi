@@ -11,6 +11,7 @@ const schema = new Schema({
   deletedAt: { type: Date, default: null },
   resultKey: String,
   derivedBytes: { type: Number, default: 0 },
+  zipCache: { type: Schema.Types.Mixed, default: null },
   ocrCache: { type: Schema.Types.Mixed, default: null },
   generatedPreview: { type: Schema.Types.Mixed, default: null },
   version: { type: Number, default: 1 },

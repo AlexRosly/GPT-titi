@@ -105,6 +105,7 @@ const ChatMessageSchema = new Schema(
     // Attachments
     // =========================================================
 
+    computation: { type: Schema.Types.Mixed, default: null },
     fileResult: { type: Schema.Types.Mixed, default: null },
     attachments: [
       {

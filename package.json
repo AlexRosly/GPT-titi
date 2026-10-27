@@ -39,7 +39,12 @@
     "test:browser:smoke": "node --test test/browser/smoke.test.js",
     "browser:build": "docker build -t gptiti-browser:23 browser-worker",
     "test:zip": "node --test test/files/zip.test.js",
-    "test:zip:integration": "node scripts/testZipIntegration.js"
+    "test:zip:integration": "node scripts/testZipIntegration.js",
+    "compute:build": "docker build -t gptiti-compute:26 computation-worker",
+    "test:compute": "node --test test/computation/policy.test.js test/computation/files.test.js test/computation/agent.test.js",
+    "test:compute:smoke": "node --test test/computation/smoke.test.js",
+    "test:compute:integration": "node scripts/testComputeIntegration.js",
+    "db:indexes:compute": "node scripts/createComputationIndexes.js"
   },
   "repository": {
     "type": "git",

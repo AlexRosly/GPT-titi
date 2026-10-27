@@ -2,6 +2,26 @@ const crypto = require("crypto");
 const mongoose = require("mongoose");
 
 const CODES = {
+  COMPUTE_DISABLED: ['Calculations are disabled for this model or server.', false],
+  COMPUTE_BUSY: ['Calculation capacity is busy. Please retry later.', false],
+  COMPUTE_UNAVAILABLE: ['The calculation environment is unavailable.', false],
+  COMPUTE_TIMEOUT: ['The calculation exceeded its time limit.', false],
+  COMPUTE_ABORTED: ['The calculation was interrupted.', false],
+  COMPUTE_RUN_LIMIT: ['The calculation reached its execution limit.', false],
+  COMPUTE_CALL_LIMIT: ['The calculation reached its model-call limit.', false],
+  COMPUTE_BUDGET_LIMIT: ['The calculation reached its additional model budget.', false],
+  COMPUTE_FILE_LIMIT: ['Calculation inputs exceed 25 MiB.', false],
+  COMPUTE_OUTPUT_LIMIT: ['Calculation outputs exceed their file, size or image limits.', false],
+  COMPUTE_OUTPUT_DISABLED: ['Generated calculation files are disabled for this model.', false],
+  COMPUTE_FILE_FORBIDDEN: ['The requested file is not available in this conversation.', false],
+  COMPUTE_CONTEXT_LIMIT: ['The calculation context is too large.', false],
+  COMPUTE_INVALID_ACTION: ['The model returned an invalid calculation request.', false],
+  COMPUTE_INVALID_RESULT: ['The calculation returned an invalid result.', false],
+  COMPUTE_EXECUTION_FAILED: ['The calculation environment stopped unexpectedly.', false],
+  COMPUTE_OUTPUT_NAME_CONFLICT: ['Use unique names for calculation output files.', false],
+  COMPUTE_CONFIGURATION_ERROR: ['Calculation limits or pricing are misconfigured.', false],
+  COMPUTE_USAGE_UNKNOWN: ['Provider usage is unknown and requires reconciliation.', false],
+
   ZIP_INPUT_DISABLED: ["Reading ZIP archives is disabled for this model or server.", false],
   ZIP_OUTPUT_DISABLED: ["Creating ZIP archives is disabled for this model or server.", false],
   ZIP_TOO_LARGE: ["ZIP input must be nonempty and no larger than 10 MiB.", false],

@@ -33,6 +33,7 @@ const ContentSchema = Schema(
 
 const ChatModelsSchema = Schema(
   {
+    computationEnabled: { type: Boolean, default: true },
     zipInputEnabled: { type: Boolean, default: true },
     zipOutputEnabled: { type: Boolean, default: true },
     browserInputEnabled: { type: Boolean, default: true },

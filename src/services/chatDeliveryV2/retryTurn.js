@@ -37,7 +37,7 @@ const retryTurn = async ({ turnId, userId }) => {
       return ChatTurn.findOneAndUpdate({ _id: turn._id, status: "failed", attempt: turn.attempt }, {
         $set: { status: "queued", lastSeq: 0, partialContent: "", error: null, processingStartedAt: null,
           leaseToken: null, leaseUntil: null, reservedAppTokens: reservedAmount, reservationState: "held",
-          webBudget: null, browserState: null,
+          webBudget: null, browserState: null, computeState: null,
           webState: turn.webPlan?.mode !== "browser" && turn.webState ? { version: 2, results: (turn.webState.results || []).filter(r => r.status === "ready") } : null,
           reservationClosedAt: null, providerStartedAt: null, providerResult: null, needsReconciliation: false,
           pricing: { inputPerM: model.inputPerM, outputPerM: model.outputPerM, tokenValueUsd: APP_TOKEN_VALUE_USD } },

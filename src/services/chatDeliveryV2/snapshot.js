@@ -13,6 +13,7 @@ const messageDto = (message) => {
     attachments: message.attachments || [],
     webSources: message.webSources || [],
     fileResult: message.fileResult || null,
+    computation: require("../computation/status").result(message.computation),
     turnId: message.turnId || null,
     createdAt: toIso(message.createdAt),
     updatedAt: toIso(message.updatedAt),
@@ -39,6 +40,7 @@ const snapshot = async (turn) => {
     attempt: turn.attempt,
     lastSeq: turn.lastSeq,
     partialContent: turn.partialContent || "",
+    computationStatus: require("../computation/status").progress(turn),
     webStatus: turn.status === "processing" && turn.webPlan ? {
       stage: turn.webPlan.mode === "browser" ? (turn.browserState?.stage || "opening_browser") : turn.providerStartedAt ? "answering" : "reading_web",
       completed: turn.webState?.results?.length || 0, total: turn.webPlan.mode === "browser" ? 5 : turn.webPlan.urls.length

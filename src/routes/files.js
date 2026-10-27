@@ -22,7 +22,7 @@ router.post('/', (req, res, next) => upload.single('file')(req, res, (err) => {
   next();
 }), handle(async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'FILE_REQUIRED' });
-  const { name, mimetype } = validateUpload(req.file);
+  const { name, mimetype } = validateUpload({ ...req.file, originalname: require('../services/files/uploadName')(req.file.originalname) });
   const file = await store.create({ user: req.user._id, name, mimetype, buffer: req.file.buffer });
   res.status(201).json({ success: true, file: store.dto(file) });
 }));

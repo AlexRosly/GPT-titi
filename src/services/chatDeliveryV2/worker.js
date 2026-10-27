@@ -1,3 +1,4 @@
+const { trackProviderStream } = require('./providerStream');
 const crypto = require("crypto");
 const OpenAI = require("openai");
 const mongoose = require("mongoose");
@@ -381,7 +382,7 @@ const processTurn = async (claimed) => {
   let heartbeatTimer;
   let providerTimer;
   let resultStored = false;
-  let providerResponded = false;
+  const providerProgress = { rejectedBeforeOutput: false };
   const controller = new AbortController();
   try {
     if (turn.reservationState !== "held") {
@@ -504,7 +505,7 @@ const processTurn = async (claimed) => {
       toolChoice: fileTools.tool_choice,
     });
     if (webBudget) providerTimer = setTimeout(() => controller.abort(new Error("Provider deadline exceeded")), 120000);
-    const stream = await client.chat.completions.create(
+    const stream = trackProviderStream(() => client.chat.completions.create(
       {
         model: turn.modelId,
         messages,
@@ -514,9 +515,8 @@ const processTurn = async (claimed) => {
         ...(webBudget ? { max_completion_tokens: webBudget.outputTokens } : {}),
       },
       { signal: controller.signal, ...(webBudget ? { timeout: 120000 } : {}) },
-    );
+    ), providerProgress);
 
-    providerResponded = true;
     const fileCollector =
       turn.outputFile || automaticFiles
         ? artifacts.collector({ optional: automaticFiles, model: fileModel })
@@ -673,7 +673,7 @@ const processTurn = async (claimed) => {
         ? errorFor("INSUFFICIENT_BALANCE")
         : error?.protocolError || (error?.fileError ? errorFor(error.fileError) : safeProviderError(error));
     await failTurn(turn, leaseToken, protocol, {
-      knownNoCharge: !providerResponded && !turn.computeState && turn.webPlan?.mode !== "browser" && [400, 401, 403, 404, 422, 429].includes(error?.status),
+      knownNoCharge: providerProgress.rejectedBeforeOutput && !turn.computeState && turn.webPlan?.mode !== "browser" && [400, 401, 403, 404, 422, 429].includes(error?.status),
     });
   } finally {
     clearInterval(heartbeatTimer);

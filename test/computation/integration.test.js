@@ -57,13 +57,37 @@ test('shared leases enforce one per user and two per host across concurrent acqu
  const second=await leases.acquire(crypto.randomUUID());await assert.rejects(leases.acquire(crypto.randomUUID()),e=>e.fileError==='COMPUTE_BUSY');
  for(const r of results)if(r.status==='fulfilled')await r.value();await second();assert.equal(await Lease.countDocuments({}),0);
 });
-test('local budget and balance rejection never cross provider boundary',opts,async()=>{
+test('local budget and balance rejection never cross provider boundary',opts,async t=>{
+ const originalCap=process.env.COMPUTE_MAX_USD;
+ t.after(()=>{if(originalCap===undefined)delete process.env.COMPUTE_MAX_USD;else process.env.COMPUTE_MAX_USD=originalCap;});
+ process.env.COMPUTE_MAX_USD='0.05';
  const f=await fixture();const state={pending:false,calls:0,usage:u,initialUsage:u,runs:0,files:[]};await models.ChatTurn.updateOne({_id:f.claim.turn._id},{$set:{computeState:state}});f.claim.turn.computeState=state;
- const long=[{role:'user',content:'expensive input '.repeat(10000)}];await assert.rejects(accounting.begin(f.claim.turn,f.claim.leaseToken,long,[]));assert.equal((await models.ChatTurn.findById(f.claim.turn._id)).computeState.pending,false);
- await models.User.updateOne({_id:f.user.id},{$set:{appTokens:1}});await assert.rejects(accounting.begin(f.claim.turn,f.claim.leaseToken,[{role:'user',content:'hi'}],[]));assert.equal((await models.ChatTurn.findById(f.claim.turn._id)).computeState.pending,false);
+ const long=[{role:'user',content:'expensive input '.repeat(10000)}];
+ assert.ok(require('../../src/services/computation/budget').estimate(long,[],f.claim.turn.pricing).usd>0.001);
+ const oldCap=process.env.COMPUTE_MAX_USD;process.env.COMPUTE_MAX_USD='0.001';
+ try { await assert.rejects(accounting.begin(f.claim.turn,f.claim.leaseToken,long,[]),e=>e.fileError==='COMPUTE_BUDGET_LIMIT'); }
+ finally { if(oldCap===undefined)delete process.env.COMPUTE_MAX_USD;else process.env.COMPUTE_MAX_USD=oldCap; }
+ assert.equal((await models.ChatTurn.findById(f.claim.turn._id)).computeState.pending,false);
+ await models.User.updateOne({_id:f.user.id},{$set:{appTokens:1}});await assert.rejects(accounting.begin(f.claim.turn,f.claim.leaseToken,[{role:'user',content:'hi'}],[]),e=>e.protocolError?.code==='INSUFFICIENT_BALANCE');assert.equal((await models.ChatTurn.findById(f.claim.turn._id)).computeState.pending,false);
 });
 test('no-charge reconciliation for uncertain call still settles earlier completed calls',opts,async()=>{
  const f=await fixture();await models.ChatTurn.updateOne({_id:f.claim.turn._id},{$set:{status:'failed',needsReconciliation:true,providerStartedAt:new Date(),computeState:{pending:true,usage:u,initialUsage:u,files:[]}}});
  const result=await require('../../src/services/chatDeliveryV2/reconcileReservation')({turnId:f.claim.turn.turnId,attempt:1,noCharge:true,reason:'Mock provider evidence: only last call was rejected'});
  assert.equal(result.charged,true);const row=await models.ChatTurn.findById(f.claim.turn._id);assert.equal(row.reservationState,'settled');assert.equal(row.needsReconciliation,false);assert.equal(await models.ChatBillingLedger.countDocuments({turnId:row.turnId}),1);
+});
+
+test('provider rejection before first chunk releases reserve; rejection after a chunk stays held',opts,async t=>{
+ for(const started of [false,true]){
+  const f=await fixture();
+  const mocked=t.mock.method(Completions.prototype,'create',()=> (async function*(){
+   if(started)yield {choices:[{delta:{role:'assistant'}}]};
+   throw Object.assign(new Error('rate limit'),{status:429});
+  })());
+  await worker.processTurn(f.claim);
+  const row=await models.ChatTurn.findById(f.claim.turn._id);
+  assert.equal(row.status,'failed');
+  assert.equal(row.reservationState,started?'held':'released');
+  assert.equal(row.needsReconciliation,started);
+  mocked.mock.restore();
+ }
 });

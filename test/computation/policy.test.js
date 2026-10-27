@@ -37,3 +37,22 @@ test('public progress/result metadata excludes code, stdout and private file pat
  assert.equal(status.progress({status:'completed',computeState:state}),null);
  assert.deepEqual(status.result({...state,status:'partial',executionMs:10,reason:'COMPUTE_TIMEOUT'}),{status:'partial',runs:2,executionMs:10,reason:'COMPUTE_TIMEOUT'});
 });
+
+test('provider boundary distinguishes HTTP rejection, lazy rejection, partial output and local failures',async()=>{
+ const {trackProviderStream}=require('../../src/services/chatDeliveryV2/providerStream');
+ const error=Object.assign(new Error('rate limited'),{status:429});
+ for(const lazy of [false,true]){
+  const state={};
+  const create=lazy?()=> (async function*(){throw error;})():async()=>{throw error;};
+  await assert.rejects(async()=>{for await(const chunk of trackProviderStream(create,state))void chunk;},e=>e===error);
+  assert.equal(state.rejectedBeforeOutput,true);
+ }
+ const partial={};
+ await assert.rejects(async()=>{for await(const chunk of trackProviderStream(()=> (async function*(){yield {role:'assistant'};throw error;})(),partial))void chunk;});
+ assert.equal(partial.rejectedBeforeOutput,false);
+ const local={};
+ await assert.rejects(async()=>{for await(const chunk of trackProviderStream(()=> (async function*(){yield {};})(),local)){void chunk;throw Object.assign(new Error('local validation'),{status:422});}});
+ assert.equal(local.rejectedBeforeOutput,false);
+ const empty={};for await(const chunk of trackProviderStream(()=> (async function*(){})(),empty))void chunk;
+ assert.equal(empty.rejectedBeforeOutput,false);
+});

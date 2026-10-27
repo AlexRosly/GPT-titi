@@ -20,10 +20,12 @@ def read_regular(path, maximum):
 def check_limits(memory_mib):
     """Refuse execution when the host kernel silently ignores Docker limits."""
     status = dict(line.split(':',1) for line in pathlib.Path('/proc/self/status').read_text().splitlines() if ':' in line)
-    if os.getuid() != 10001 or int(status.get('Seccomp','0')) != 2 or int(status.get('NoNewPrivs','0')) != 1 or int(status.get('CapEff','1').strip(),16) != 0:
-        raise ValueError('process isolation unavailable')
+    if os.getuid() != 10001: raise ValueError('UID_NOT_ISOLATED')
+    if int(status.get('Seccomp','0')) != 2: raise ValueError('SECCOMP_UNAVAILABLE')
+    if int(status.get('NoNewPrivs','0')) != 1: raise ValueError('NO_NEW_PRIVILEGES_UNAVAILABLE')
+    if int(status.get('CapEff','1').strip(),16) != 0: raise ValueError('CAPABILITIES_NOT_DROPPED')
     if any(p.name != 'lo' for p in pathlib.Path('/sys/class/net').iterdir()):
-        raise ValueError('network isolation unavailable')
+        raise ValueError('NETWORK_NOT_ISOLATED')
     cg = pathlib.Path('/sys/fs/cgroup')
     if (cg/'cgroup.controllers').exists():
         memory = int((cg/'memory.max').read_text().strip())
@@ -36,21 +38,21 @@ def check_limits(memory_mib):
         def value(controller, name):
             for path in (cg/controller/name, cg/'cpu,cpuacct'/name, cg/'cpuacct,cpu'/name, cg/name):
                 if path.exists(): return int(path.read_text().strip())
-            raise ValueError('missing cgroup limit')
+            raise ValueError('CGROUP_LIMIT_MISSING')
         memory = value('memory','memory.limit_in_bytes')
         pids = value('pids','pids.max')
         cpu = value('cpu','cpu.cfs_quota_us') / value('cpu','cpu.cfs_period_us')
         try: swap = value('memory','memory.memsw.limit_in_bytes') - memory
         except ValueError: swap = None
     if not (0 < memory <= memory_mib*1024*1024 and 0 < pids <= 64 and 0 < cpu <= 1):
-        raise ValueError('unenforced cgroup limits')
+        raise ValueError('CGROUP_LIMIT_NOT_ENFORCED')
     if swap != 0:
         # Kernels without swap accounting are acceptable only with no host swap.
         meminfo = pathlib.Path('/proc/meminfo').read_text()
         swap_total = next(int(line.split()[1]) for line in meminfo.splitlines() if line.startswith('SwapTotal:'))
-        if swap_total: raise ValueError('swap not bounded')
+        if swap_total: raise ValueError('SWAP_NOT_BOUNDED')
     if os.statvfs(ROOT).f_blocks * os.statvfs(ROOT).f_frsize > 256*1024*1024:
-        raise ValueError('temporary filesystem not bounded')
+        raise ValueError('TMPFS_NOT_BOUNDED')
 
 def main():
     # Independent watchdog also survives a disconnected/orphaned Docker client.
@@ -59,8 +61,11 @@ def main():
     if len(data) > MAX_WIRE: raise ValueError('request too large')
     req = json.loads(data)
     try: check_limits(req['memoryMiB'])
-    except Exception:
-        print(json.dumps({'ok':False,'text':'COMPUTE_KERNEL_LIMITS_UNAVAILABLE: configure Docker memory, CPU, PID and swap limits.','truncated':False,'exports':[]}),flush=True)
+    except Exception as error:
+        # Only fixed diagnostic codes leave the container; never paths or request data.
+        allowed = {'UID_NOT_ISOLATED','SECCOMP_UNAVAILABLE','NO_NEW_PRIVILEGES_UNAVAILABLE','CAPABILITIES_NOT_DROPPED','NETWORK_NOT_ISOLATED','CGROUP_LIMIT_MISSING','CGROUP_LIMIT_NOT_ENFORCED','SWAP_NOT_BOUNDED','TMPFS_NOT_BOUNDED'}
+        reason = str(error) if str(error) in allowed else ('CGROUP_FILE_MISSING' if isinstance(error, FileNotFoundError) else 'LIMIT_INSPECTION_FAILED')
+        print(json.dumps({'ok':False,'text':'COMPUTE_KERNEL_LIMITS_UNAVAILABLE: '+reason,'truncated':False,'exports':[]}),flush=True)
         return
     for sub in ('input','previous','output'): (ROOT/sub).mkdir(exist_ok=True)
     for f in req['files']:

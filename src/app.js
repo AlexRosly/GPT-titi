@@ -17,6 +17,7 @@ const uploadRoutes = require("./routes/upload");
 const modelFlowsRoutes = require("./routes/modelFlows");
 const projectRoutes = require("./routes/project");
 const debugRoutes = require("./routes/debug");
+const healthRouter = require("./routes/health");
 
 const swaggerUi = require("swagger-ui-express");
 const YAML = require("yamljs");
@@ -65,6 +66,7 @@ app.use("/uploads", express.static(path.join(__dirname, "../uploads")));
 app.use("/gpt-titi/api/model-flows", modelFlowsRoutes);
 app.use("/gpt-titi/api/project", projectRoutes);
 app.use("/gpt-titi/api/debug", debugRoutes);
+app.use("/gpt-titi/api/health", healthRouter);
 
 app.use(
   "/gpt-titi/api/gpt-titi/api/docs",

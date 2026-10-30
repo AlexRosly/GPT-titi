@@ -91,3 +91,36 @@ test('provider rejection before first chunk releases reserve; rejection after a 
   mocked.mock.restore();
  }
 });
+
+test('V2 offers consistent Python instructions and attaches XLSX plus PNG with one settlement',opts,async t=>{
+ const f=await fixture();let calls=0,runs=0;
+ const exports=[{path:'table.json',filename:'squares.xlsx'},{path:'plot.png',filename:'squares.png'}];
+ const png=require('canvas').createCanvas(2,2).toBuffer('image/png');
+ t.mock.method(sandbox,'run',async()=>{runs++;return {ok:true,text:'Calculated squares',truncated:false,exports:[
+  {filename:'squares.xlsx',data:Buffer.from(JSON.stringify({sheets:[{name:'Squares',rows:[['n','square'],[1,1],[2,4]]}]})).toString('base64')},
+  {filename:'squares.png',data:png.toString('base64')},
+ ]};});
+ t.mock.method(Completions.prototype,'create',req=>{
+  calls++;
+  if(calls===1){
+   assert.ok(req.tools.some(tool=>tool.function.name==='run_python'));
+   assert.match(req.messages[0].content,/call run_python before reporting/);
+   assert.match(req.messages[0].content,/export BOTH/);
+   const fileTool=req.tools.find(tool=>tool.function.name==='create_file');
+   assert.match(fileTool.function.description,/restriction applies only to create_file/);
+   assert.doesNotMatch(fileTool.function.description,/Do not claim to create PNG/);
+   return (async function*(){yield {choices:[{delta:{tool_calls:[{index:0,id:'multi-export',function:{name:'run_python',arguments:JSON.stringify({code:'print("Calculated squares")',fileIds:[],exports})}}]},finish_reason:'tool_calls'}],usage};})();
+  }
+  return Promise.resolve({choices:[{message:{content:'The table and plot are attached.'},finish_reason:'stop'}],usage});
+ });
+ await worker.processTurn(f.claim);await worker.recoverExpired();
+ const row=await models.ChatTurn.findById(f.claim.turn._id);
+ assert.equal(row.status,'completed');assert.equal(row.reservationState,'settled');
+ assert.equal(calls,2);assert.equal(runs,1);
+ const message=await models.ChatMessage.findById(row.assistantMessage);
+ assert.equal(message.attachments.length,2);
+ const saved=await Promise.all(message.attachments.map(ref=>store.read(f.user.id,ref.fileId)));
+ assert.deepEqual(saved.map(item=>item.file.originalName).sort(),['squares.png','squares.xlsx']);
+ for(const item of saved){assert.equal(item.file.expiresAt,null);assert.ok(item.buffer.length>0);}
+ assert.equal(await models.ChatBillingLedger.countDocuments({turnId:row.turnId}),1);
+});

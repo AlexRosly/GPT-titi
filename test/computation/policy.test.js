@@ -56,3 +56,33 @@ test('provider boundary distinguishes HTTP rejection, lazy rejection, partial ou
  const empty={};for await(const chunk of trackProviderStream(()=> (async function*(){})(),empty))void chunk;
  assert.equal(empty.rejectedBeforeOutput,false);
 });
+
+test('execution policy separates PNG/multiple exports from create_file and respects output opt-out',()=>{
+ const artifacts=require('../../src/services/files/artifacts');
+ const description=artifacts.autoToolOptions({}).tools[0].function.description;
+ assert.match(description,/restriction applies only to create_file/);
+ assert.doesNotMatch(description,/Do not claim to create PNG/);
+ const policy=p.instructions({});
+ assert.match(policy,/every language/);
+ assert.match(policy,/call run_python before reporting/);
+ assert.match(policy,/actual PNG plots and multiple exports/);
+ assert.match(policy,/export BOTH/);
+ assert.match(policy,/without execution/);
+ assert.match(policy,/Do not substitute a Python script/);
+ const disabled=p.instructions({fileOutputEnabled:false});
+ assert.match(disabled,/exports: \[\]/);assert.doesNotMatch(disabled,/export BOTH/);
+ // Prompt changes do not extend the create_file renderer's format permissions.
+ assert.throws(()=>artifacts.outputSpec({filename:'plot.png'}));
+});
+test('availability gives a bounded reason for runtime, model and request exclusions',()=>{
+ const old={...process.env};try{
+ process.env.PRIVATE_FILES_ENABLED='true';process.env.COMPUTE_V2_ENABLED='true';
+ assert.equal(p.availability({}),'AVAILABLE');
+ assert.equal(p.availability({computationEnabled:false}),'MODEL_OPT_OUT');
+ assert.equal(p.availability(null),'MODEL_NOT_FOUND');
+ assert.equal(p.availability({},{outputFile:{filename:'x.txt'}}),'EXPLICIT_FILE_MODE');
+ assert.equal(p.availability({},{webPlan:{}}),'WEB_MODE');
+ process.env.COMPUTE_V2_ENABLED='false';assert.equal(p.availability({}),'COMPUTE_DISABLED');
+ process.env.COMPUTE_V2_ENABLED='true';process.env.PRIVATE_FILES_ENABLED='false';assert.equal(p.availability({}),'PRIVATE_FILES_DISABLED');
+ }finally{process.env=old;}
+});

@@ -5,7 +5,8 @@ const action={exports:[{path:'a',filename:'result.csv'}]};
 test('host validates export names, sizes, UTF-8 and output opt-out; neutralizes CSV formulas',async()=>{
  const r={ok:true,exports:[{filename:'result.csv',data:Buffer.from('Name,Value\nA,=1+1').toString('base64')}]};
  const [out]=await files.outputs(r,action,{});assert.match(out.buffer.toString(),/'=1\+1/);
- await assert.rejects(files.outputs(r,action,{fileOutputEnabled:false}));
+ await assert.rejects(files.outputs(r,action,{fileOutputEnabled:false}),e=>e.fileError==='COMPUTE_OUTPUT_DISABLED');
+ assert.deepEqual(await files.outputs({ok:true,exports:[]},{exports:[]},{fileOutputEnabled:false}),[]);
  await assert.rejects(files.outputs({...r,exports:[{...r.exports[0],filename:'wrong.csv'}]},action,{}));
  await assert.rejects(files.outputs({...r,exports:[{filename:'result.csv',data:'!!!!'}]},action,{}));
 });

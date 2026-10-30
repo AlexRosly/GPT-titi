@@ -95,7 +95,7 @@ test('provider rejection before first chunk releases reserve; rejection after a 
 test('V2 offers consistent Python instructions and attaches XLSX plus PNG with one settlement',opts,async t=>{
  const f=await fixture();let calls=0,runs=0;
  const exports=[{path:'table.json',filename:'squares.xlsx'},{path:'plot.png',filename:'squares.png'}];
- const png=require('canvas').createCanvas(2,2).toBuffer('image/png');
+ const png=require('@napi-rs/canvas').createCanvas(2,2).toBuffer('image/png');
  t.mock.method(sandbox,'run',async()=>{runs++;return {ok:true,text:'Calculated squares',truncated:false,exports:[
   {filename:'squares.xlsx',data:Buffer.from(JSON.stringify({sheets:[{name:'Squares',rows:[['n','square'],[1,1],[2,4]]}]})).toString('base64')},
   {filename:'squares.png',data:png.toString('base64')},

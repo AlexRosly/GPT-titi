@@ -365,7 +365,7 @@ test(
 );
 
 test(
-  "model opt-out blocks explicit output and removes tools from automatic requests",
+  "file output opt-out blocks create_file while preserving optional Python calculations",
   { skip: !uri },
   async (t) => {
     const { Completions } = require("openai/resources/chat/completions");
@@ -391,8 +391,13 @@ test(
       let calls = 0;
       t.mock.method(Completions.prototype, "create", async function* (request) {
         calls++;
-        assert.equal(request.tools, undefined);
-        assert.doesNotMatch(request.messages[0].content, /create_file/);
+        const toolNames = (request.tools || []).map(tool => tool.function.name);
+        const computeEnabled = process.env.COMPUTE_V2_ENABLED === "true";
+        assert.deepEqual(toolNames, computeEnabled ? ["run_python"] : []);
+        if (computeEnabled) {
+          assert.match(request.messages[0].content, /File exports are disabled for this model/);
+          assert.match(request.messages[0].content, /exports: \[\]/);
+        }
         yield {
           choices: [{ delta: { content: "Hello" }, finish_reason: "stop" }],
         };

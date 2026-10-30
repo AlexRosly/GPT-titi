@@ -600,6 +600,7 @@ const processTurn = async (claimed) => {
     try { computeCall = computeCollector?.finish(); }
     catch (error) {
       if (error.fileError !== 'COMPUTE_INVALID_ACTION') throw error;
+      computation.diagnose(error, turn, 'initial_stream');
       // Account for a completed but malformed tool response without executing it.
       computeCall = {id:'invalid',type:'function',function:{name:'run_python',arguments:''}};
     }

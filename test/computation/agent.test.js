@@ -43,3 +43,17 @@ test('a later run replaces its own staged filename instead of attaching duplicat
  f.client.chat.completions.create=async()=>{calls++;return {choices:[calls===1?{message:{tool_calls:[{...f.call,id:'two'}]},finish_reason:'tool_calls'}:{message:{content:'Final result'},finish_reason:'stop'}],usage:{prompt_tokens:10,completion_tokens:5,total_tokens:15}};};
  const r=await f.run();assert.equal(r.computation.files.length,1);assert.equal(r.computation.runs,2);assert.equal(removed,1);assert.equal(r.usage.totalTokens,60);
 });
+
+test('absolute sandbox export path reaches runtime as basename without rewriting Python code',async t=>{
+ const f=fixture(t);const action=JSON.parse(f.call.function.arguments);
+ action.code='print("/work/output/sum")';action.exports[0].path='/work/output/sum';
+ f.call.function.arguments=JSON.stringify(action);let seen;
+ t.mock.method(runtime,'run',async request=>{seen=request;return {ok:true,text:'6',truncated:false,exports:[{filename:'sum.csv',data:Buffer.from('sum\n6').toString('base64')}]};});
+ const r=await f.run();assert.equal(r.computation.status,'completed');assert.equal(seen.exports[0].path,'sum');assert.equal(seen.code,action.code);assert.equal(f.stats().creates,1);
+});
+test('unsafe export path is diagnosed before runtime or follow-up provider call',async t=>{
+ const f=fixture(t);let diagnostic,providerCalls=0;t.mock.method(console,'warn',(...args)=>{diagnostic=args;});
+ f.client.chat.completions.create=async()=>{providerCalls++;throw Error('must not call');};
+ f.call.function.arguments=JSON.stringify({code:'PRIVATE',fileIds:[],exports:[{path:'/work/output/../secret',filename:'secret.csv'}]});
+ const r=await f.run();assert.equal(r.computation.reason,'COMPUTE_INVALID_ACTION');assert.equal(r.usage.totalTokens,30);assert.equal(f.stats().runs,0);assert.equal(f.stats().creates,0);assert.equal(providerCalls,0);assert.equal(diagnostic[1].reason,'EXPORT_PATH');
+});

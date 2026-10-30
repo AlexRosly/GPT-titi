@@ -86,3 +86,18 @@ test('availability gives a bounded reason for runtime, model and request exclusi
  process.env.COMPUTE_V2_ENABLED='true';process.env.PRIVATE_FILES_ENABLED='false';assert.equal(p.availability({}),'PRIVATE_FILES_DISABLED');
  }finally{process.env=old;}
 });
+
+test('export paths accept only a basename or exact output prefix; normalized aliases cannot duplicate',()=>{
+ const action=path=>JSON.stringify({code:'print(1)',fileIds:[],exports:[{path,filename:'plot.png'}]});
+ for(const path of ['plot.png','/work/output/plot.png'])assert.equal(p.parse(action(path)).exports[0].path,'plot.png');
+ for(const path of ['/etc/passwd','/work/output/../secret','/work/output//plot.png','/work/output/sub/plot.png','/work/output/./plot.png','/work/output/','/work/output2/plot.png','output/plot.png','C:\\plot.png','/work/output/plot.png\n','/work/output/%2e%2e','/work/output/a\u0000.png','a..png'])assert.throws(()=>p.parse(action(path)),e=>e.computeReason==='EXPORT_PATH',path);
+ assert.throws(()=>p.parse(JSON.stringify({code:'x',fileIds:[],exports:[{path:'plot.png',filename:'a.png'},{path:'/work/output/plot.png',filename:'b.png'}]})),e=>e.computeReason==='DUPLICATE_EXPORT');
+ assert.throws(()=>p.parse(JSON.stringify({code:'x',fileIds:[],exports:[{path:'a',filename:'same.png'},{path:'b',filename:'SAME.PNG'}]})),e=>e.computeReason==='DUPLICATE_EXPORT');
+});
+test('rejection diagnostics expose only correlation and fixed reason, never raw action',t=>{
+ let captured;t.mock.method(console,'warn',(...args)=>{captured=args;});
+ let error;try{p.parse(JSON.stringify({code:'PRIVATE CODE',fileIds:[],exports:[{path:'/private/SECRET',filename:'secret.png'}]}));}catch(e){error=e;}
+ p.diagnose(error,{turnId:'turn',attempt:1},'agent');
+ assert.deepEqual(captured,['COMPUTE_ACTION_REJECTED',{turnId:'turn',attempt:1,stage:'agent',reason:'EXPORT_PATH'}]);
+ assert.doesNotMatch(JSON.stringify(captured),/PRIVATE|SECRET|secret.png/);
+});

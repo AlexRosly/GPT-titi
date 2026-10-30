@@ -73,6 +73,7 @@ async function run(turn,token,model,messages,firstCall,usage,available,client,pa
    }
   }
  }catch(e){
+  policy.diagnose(e,turn,'agent');
   if(e.staleLease||!turn.computeState||turn.computeState.pending)throw e;
   return partial(turn,e.fileError||e.protocolError?.code||'PROVIDER_UNAVAILABLE');
  }finally{clearTimeout(timer);parentSignal?.removeEventListener('abort',abort);controller.abort();if(release&&!cleanupUnconfirmed)await release().catch(()=>console.warn('COMPUTE_LEASE_RELEASE_FAILED',{turnId:turn.turnId,attempt:turn.attempt}));}

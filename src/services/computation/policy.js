@@ -8,7 +8,7 @@ function limits() { return {
   runMs:number('COMPUTE_RUN_MS',60000,1000,60000), totalMs:number('COMPUTE_TOTAL_MS',180000,1000,180000),
   runs:number('COMPUTE_MAX_RUNS',5,1,5), calls:number('COMPUTE_MAX_CALLS',6,1,6),
   memoryMiB:number('COMPUTE_MEMORY_MIB',512,256,1024), slots:number('COMPUTE_SERVER_SLOTS',2,1,2),
-  usd:number('COMPUTE_MAX_USD',0.05,0.001,0.05,false), outputTokens:2048,
+  usd:number('COMPUTE_MAX_USD',0.20,0.001,0.20,false), outputTokens:2048,
   inputBytes:25*1024**2, outputBytes:25*1024**2, files:10, codeBytes:32768, textBytes:16384,
   durationMs:600000, tmpMiB:256,
 }; }

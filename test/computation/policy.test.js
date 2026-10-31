@@ -101,3 +101,16 @@ test('rejection diagnostics expose only correlation and fixed reason, never raw 
  assert.deepEqual(captured,['COMPUTE_ACTION_REJECTED',{turnId:'turn',attempt:1,stage:'agent',reason:'EXPORT_PATH'}]);
  assert.doesNotMatch(JSON.stringify(captured),/PRIVATE|SECRET|secret.png/);
 });
+
+
+test('compute budget defaults to 20 cents, honors lower overrides and refuses higher caps',()=>{
+ const old=process.env.COMPUTE_MAX_USD;
+ try {
+  delete process.env.COMPUTE_MAX_USD;
+  assert.equal(p.limits().usd,0.20);
+  const priced=estimate([{role:'user',content:'Create XLSX and PNG'}],[p.tool],{inputPerM:5,outputPerM:30,tokenValueUsd:0.00001});
+  assert.ok(priced.usd>0.05);assert.ok(priced.usd<0.20);
+  for(const value of ['0.05','0.20']){process.env.COMPUTE_MAX_USD=value;assert.equal(p.limits().usd,Number(value));}
+  for(const value of ['0.201','1','0','NaN','Infinity']){process.env.COMPUTE_MAX_USD=value;assert.throws(()=>p.limits(),e=>e.fileError==='COMPUTE_CONFIGURATION_ERROR');}
+ }finally{if(old===undefined)delete process.env.COMPUTE_MAX_USD;else process.env.COMPUTE_MAX_USD=old;}
+});

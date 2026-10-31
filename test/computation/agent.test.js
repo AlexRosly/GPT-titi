@@ -57,3 +57,14 @@ test('unsafe export path is diagnosed before runtime or follow-up provider call'
  f.call.function.arguments=JSON.stringify({code:'PRIVATE',fileIds:[],exports:[{path:'/work/output/../secret',filename:'secret.csv'}]});
  const r=await f.run();assert.equal(r.computation.reason,'COMPUTE_INVALID_ACTION');assert.equal(r.usage.totalTokens,30);assert.equal(f.stats().runs,0);assert.equal(f.stats().creates,0);assert.equal(providerCalls,0);assert.equal(diagnostic[1].reason,'EXPORT_PATH');
 });
+
+
+test('5/30 pricing runs under 20 cents and still rejects under an explicit 5-cent cap',async t=>{
+ const old=process.env.COMPUTE_MAX_USD;
+ t.after(()=>{if(old===undefined)delete process.env.COMPUTE_MAX_USD;else process.env.COMPUTE_MAX_USD=old;});
+ const f=fixture(t);f.turn.pricing={inputPerM:5,outputPerM:30,tokenValueUsd:0.00001};
+ process.env.COMPUTE_MAX_USD='0.05';
+ const blocked=await f.run();assert.equal(blocked.computation.reason,'COMPUTE_BUDGET_LIMIT');assert.equal(f.stats().runs,0);
+ process.env.COMPUTE_MAX_USD='0.20';
+ const result=await f.run();assert.equal(result.computation.status,'completed');assert.equal(f.stats().runs,1);assert.equal(result.usage.totalTokens,45);
+});

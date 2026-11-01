@@ -1,6 +1,7 @@
 const updatePinnedState = require("./updatePinnedState");
 const {
   CONVERSATION_SORT,
+  PROJECT_CONVERSATION_SORT,
   PROJECT_SORT,
   buildPinnedAtExpression,
   resolvePinnedAt,
@@ -9,6 +10,7 @@ const {
 module.exports = {
   updatePinnedState,
   CONVERSATION_SORT,
+  PROJECT_CONVERSATION_SORT,
   PROJECT_SORT,
   buildPinnedAtExpression,
   resolvePinnedAt,

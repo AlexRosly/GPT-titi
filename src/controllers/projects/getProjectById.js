@@ -1,5 +1,5 @@
 const { Project, ChatConversation } = require("../../models");
-const { CONVERSATION_SORT } = require("../../services/pinning");
+const { PROJECT_CONVERSATION_SORT } = require("../../services/pinning");
 
 const getProjectById = async (req, res) => {
   try {
@@ -20,7 +20,7 @@ const getProjectById = async (req, res) => {
       project: project._id,
       archived: false,
     })
-      .sort(CONVERSATION_SORT)
+      .sort(PROJECT_CONVERSATION_SORT)
       .lean();
 
     res.json({
@@ -29,6 +29,7 @@ const getProjectById = async (req, res) => {
       conversations: conversations.map((conversation) => ({
         ...conversation,
         pinnedAt: conversation.pinnedAt ?? null,
+        projectPinnedAt: conversation.projectPinnedAt ?? null,
       })),
     });
   } catch (err) {

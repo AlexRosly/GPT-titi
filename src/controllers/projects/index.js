@@ -6,7 +6,10 @@ const deleteProject = require("./deleteProject");
 const addConversationsToProject = require("./addConversationsToProject");
 const removeConversationFromProject = require("./removeConversationFromProject");
 
+const updateProjectConversationPin = require("./updateProjectConversationPin");
+
 module.exports = {
+  updateProjectConversationPin,
   createProject,
   getProjects,
   getProjectById,

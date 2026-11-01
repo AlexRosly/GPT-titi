@@ -18,22 +18,18 @@ const removeConversationFromProject = async (req, res) => {
     }
 
     // Проверяем, что чат действительно находится в этом проекте
-    const conversation = await ChatConversation.findOne({
+    const conversation = await ChatConversation.findOneAndUpdate({
       _id: conversationId,
       user: req.user._id,
       project: projectId,
       archived: false,
-    });
+    }, { $set: { project: null, projectPinnedAt: null } }, { new: true });
 
     if (!conversation) {
       return res.status(404).json({
         message: "Conversation not found in this project",
       });
     }
-
-    // Просто убираем связь
-    conversation.project = null;
-    await conversation.save();
 
     // Обновляем активность проекта
     project.lastActivityAt = new Date();

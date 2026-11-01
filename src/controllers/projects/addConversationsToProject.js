@@ -31,11 +31,18 @@ const addConversationsToProject = async (req, res) => {
         user: req.user._id,
         archived: false,
       },
-      {
+      [{
         $set: {
+          projectPinnedAt: {
+            $cond: [
+              { $eq: ["$project", project._id] },
+              { $ifNull: ["$projectPinnedAt", null] },
+              null,
+            ],
+          },
           project: project._id,
         },
-      },
+      }],
     );
 
     project.lastActivityAt = new Date();

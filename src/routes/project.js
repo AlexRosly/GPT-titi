@@ -10,6 +10,8 @@ router.get("/", auth, ctrl.getProjects); // Все проекты пользов
 router.get("/:id", auth, ctrl.getProjectById); // Информация о проекте GET /projects/:id
 router.post("/:projectId/conversations", auth, ctrl.addConversationsToProject);
 
+router.patch("/:projectId/conversations/:conversationId/pin", auth, ctrl.updateProjectConversationPin);
+
 router.patch("/:id", auth, ctrl.updateProject); // Переименовать Изменить цвет Изменить описание Изменить иконку PATCH /projects/:id
 
 router.delete(

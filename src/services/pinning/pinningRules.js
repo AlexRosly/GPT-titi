@@ -4,6 +4,12 @@ const CONVERSATION_SORT = Object.freeze({
   _id: -1,
 });
 
+const PROJECT_CONVERSATION_SORT = Object.freeze({
+  projectPinnedAt: -1,
+  lastMessageAt: -1,
+  _id: -1,
+});
+
 const PROJECT_SORT = Object.freeze({
   pinnedAt: -1,
   lastMessageAt: -1,
@@ -11,10 +17,10 @@ const PROJECT_SORT = Object.freeze({
   _id: -1,
 });
 
-const buildPinnedAtExpression = (pinned) =>
+const buildPinnedAtExpression = (pinned, field = "pinnedAt") =>
   pinned
     ? {
-        $ifNull: ["$pinnedAt", "$$NOW"],
+        $ifNull: [`$${field}`, "$$NOW"],
       }
     : null;
 
@@ -28,6 +34,7 @@ const resolvePinnedAt = ({ currentPinnedAt, pinned, now }) => {
 
 module.exports = {
   CONVERSATION_SORT,
+  PROJECT_CONVERSATION_SORT,
   PROJECT_SORT,
   buildPinnedAtExpression,
   resolvePinnedAt,

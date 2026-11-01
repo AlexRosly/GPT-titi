@@ -25,6 +25,7 @@ const deleteProject = async (req, res) => {
       {
         $set: {
           project: null,
+          projectPinnedAt: null,
         },
       },
     );

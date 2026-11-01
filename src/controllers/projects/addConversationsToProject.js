@@ -43,6 +43,7 @@ const addConversationsToProject = async (req, res) => {
           project: project._id,
         },
       }],
+      { updatePipeline: true },
     );
 
     project.lastActivityAt = new Date();

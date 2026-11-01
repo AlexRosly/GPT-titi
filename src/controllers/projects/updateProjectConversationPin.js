@@ -18,7 +18,7 @@ module.exports = async (req, res) => {
     const conversation = await ChatConversation.findOneAndUpdate(
       { _id: conversationId, user: req.user._id, project: projectId, archived: false },
       [{ $set: { projectPinnedAt: buildPinnedAtExpression(req.body.pinned, "projectPinnedAt") } }],
-      { new: true },
+      { new: true, updatePipeline: true, timestamps: false },
     );
     if (!conversation) return res.status(404).json({ error: "CONVERSATION_NOT_FOUND_IN_PROJECT" });
 

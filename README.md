@@ -6,21 +6,43 @@ The service for work with AI instrument
 
 API поддерживает OpenAI-совместимый сервис Speaches на faster-whisper. Docker Compose находится в `docker-compose.whisper.yml`; файл `.env.whisper.example` содержит параметры Node.js API. Модель скачивается Speaches при первом запросе к ней и кэшируется в Docker volume.
 
-Запуск на GPU (модель large-v3-turbo):
+Для разработки на общем VDS с 2 vCPU / 4 ГБ RAM используйте CPU-профиль и небольшую мультиязычную модель `base`. Добавьте значения ниже в существующий `.env` backend (файл `.env.whisper.example` сам не загружается):
+
+```env
+WHISPER_BASE_URL=http://127.0.0.1:8000/v1
+WHISPER_API_KEY=speaches-local
+WHISPER_MODEL=Systran/faster-whisper-base
+WHISPER_TIMEOUT_MS=300000
+TRANSCRIPTION_MAX_CONCURRENT=1
+```
+
+Запуск на CPU:
+
+```sh
+docker compose -f docker-compose.whisper.yml --profile cpu up -d
+docker compose -f docker-compose.whisper.yml ps
+curl http://127.0.0.1:8000/health
+```
+
+CPU-контейнер ограничен 1 vCPU и 2 ГБ RAM, использует `int8`, один вычислительный поток и один worker. Это пределы, а не предварительно выделенная память. Лимиты Docker настраиваются через `WHISPER_CPU_LIMIT` и `WHISPER_MEMORY_LIMIT`. При нехватке памяти контейнер может завершиться; скорость и доступный запас памяти нужно измерить на VDS. Начните с записей по 10–60 секунд и наблюдайте `free -h` и `docker stats`. Более лёгкая модель: `Systran/faster-whisper-tiny`. Для русского/украинского не выбирайте английские варианты `.en`.
+
+`WHISPER_MEMORY_LIMIT` задаётся в байтах: `2147483648` = 2 GiB. Для контейнера отключён swap, чтобы распознавание не вытесняло приложения в подкачку.
+
+После изменения `.env` перезапустите процесс backend (например, `pm2 restart <имя-приложения> --update-env`). Ограничение `TRANSCRIPTION_MAX_CONCURRENT` действует на один Node.js-процесс; для этого пилота используйте один PM2 instance. Пока транскрибация выполняется, следующий запрос получает `429`. Очереди задач нет. Автоматические повторы вызова провайдера отключены. Таймаут ожидания по умолчанию — 300 секунд; он не гарантирует остановку вычисления на стороне сервиса.
+
+Запуск GPU-профиля: установите NVIDIA Container Toolkit, задайте `WHISPER_MODEL=Systran/faster-whisper-large-v3-turbo` в окружении backend, затем выполните:
 
 ```sh
 docker compose -f docker-compose.whisper.yml --profile gpu up -d
 ```
 
-Запуск на CPU (модель small по умолчанию):
-
-```sh
-docker compose -f docker-compose.whisper.yml --profile cpu up -d
-```
-
-Задайте в окружении Node.js `WHISPER_BASE_URL=http://127.0.0.1:8000/v1`, `WHISPER_API_KEY=speaches-local` и `WHISPER_MODEL=Systran/faster-whisper-large-v3-turbo` (для CPU можно выбрать `Systran/faster-whisper-small`). `WHISPER_BASE_URL` переключает endpoint распознавания с OpenAI на локальный сервис; при его отсутствии остаётся OpenAI API и используется `OPENAI_API_KEY`. Порт контейнера привязан к `127.0.0.1`, поэтому доступен на том же сервере, но не открыт наружу.
+Выберите один профиль: CPU и GPU используют один порт. `WHISPER_BASE_URL` переключает endpoint распознавания с OpenAI на локальный сервис; при его отсутствии используется OpenAI API, `OPENAI_API_KEY` и модель `whisper-1` (если другая модель не задана явно). При локальном base URL модель по умолчанию — `Systran/faster-whisper-base`. Порт контейнера привязан к `127.0.0.1`, поэтому доступен на том же сервере, но не открыт наружу. Ответ `/health` проверяет сервер API, но не подтверждает, что модель уже скачана и готова.
 
 Защищённый JWT endpoint: `POST /gpt-titi/api/upload/transcriptions`, multipart/form-data, поле `file`. Дополнительно можно передать `language` (например, `ru`) и `prompt`. Ответ: `{ "text": "...", "model": "..." }`. Максимальный размер файла настраивается через `TRANSCRIPTION_MAX_FILE_SIZE` (по умолчанию 25 MiB). Файл потоково сохраняется во временную директорию сервера и удаляется после обработки, в том числе при ошибке.
+
+Перенос на отдельный сервер: поднимите там Speaches, скачайте/прогрейте модель и подключите backend по VPN/SSH-туннелю либо HTTPS с аутентификацией. Затем измените `WHISPER_BASE_URL` и при необходимости `WHISPER_API_KEY` в backend. Публичный незащищённый порт 8000 не нужен. Контракт фронта остаётся тем же. Распознанный текст возвращается фронту; запрос в чат отправляется отдельным событием `chat:send`.
+
+Локальные проверки контроллера без MongoDB и обращений к провайдеру: `node --test test/transcribeAudio.test.js`.
 
 ## Перед застосуванням
 

@@ -21,6 +21,19 @@ services:
     profiles: ["cpu"]
     init: true
     restart: unless-stopped
+    cpus: "${WHISPER_CPU_LIMIT:-1.0}"
+    mem_limit: ${WHISPER_MEMORY_LIMIT:-2147483648}
+    memswap_limit: ${WHISPER_MEMORY_LIMIT:-2147483648}
+    environment:
+      WHISPER__INFERENCE_DEVICE: cpu
+      WHISPER__COMPUTE_TYPE: int8
+      WHISPER__CPU_THREADS: "1"
+      WHISPER__NUM_WORKERS: "1"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     volumes:
       - whisper-models:/home/ubuntu/.cache/huggingface/hub
     ports:

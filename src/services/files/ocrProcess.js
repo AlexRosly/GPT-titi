@@ -20,7 +20,8 @@ const cleanupTemporary = async () => {
   }
 };
 const languages = require('./ocrLanguages').mode;
-const extract = async (buffer, kind) => {
+const extract = async (buffer, kind, { signal } = {}) => {
+  signal?.throwIfAborted();
   if (process.platform !== 'linux') throw fail('OCR_UNAVAILABLE', 503);
   if (!['pdf', 'image'].includes(kind) || !Buffer.isBuffer(buffer) || !buffer.length || buffer.length > 5 * 1024 * 1024) throw fail('OCR_FILE_TOO_LARGE', 413);
   const lang = languages();
@@ -31,6 +32,7 @@ const extract = async (buffer, kind) => {
     await cleanupTemporary();
     dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gptiti-ocr-')); // 0700, random; never served by HTTP.
     await fs.writeFile(path.join(dir, 'input'), buffer, { mode: 0o600 });
+    signal?.throwIfAborted();
     return await new Promise((resolve, reject) => {
       const child = spawn('prlimit', ['--as=2147483648', `--cpu=${limits.CPU_SECONDS}`, '--core=0', '--', process.execPath, '--max-old-space-size=192', '--disable-wasm-trap-handler', '--v8-pool-size=1', path.join(__dirname, 'ocrProcessWorker.js'), dir, kind, lang], {
         detached: true, stdio: ['ignore', 'pipe', 'ignore'],
@@ -38,6 +40,9 @@ const extract = async (buffer, kind) => {
       });
       let output = '', bytes = 0, error;
       const kill = () => { try { process.kill(-child.pid, 'SIGKILL'); } catch {} };
+      const abort = () => { error = fail('PREPARATION_INTERRUPTED', 409); kill(); };
+      signal?.addEventListener('abort', abort, { once: true });
+      if (signal?.aborted) abort();
       const timer = setTimeout(() => { error = fail('OCR_PROCESSING_TIMEOUT', 413); kill(); }, limits.JOB_MS);
       child.stdout.setEncoding('utf8');
       child.stdout.on('data', chunk => {
@@ -47,6 +52,7 @@ const extract = async (buffer, kind) => {
       });
       child.on('error', () => { error = fail('OCR_UNAVAILABLE', 503); });
       child.on('close', code => {
+        signal?.removeEventListener('abort', abort);
         clearTimeout(timer); kill(); // Also terminate surviving descendants on failure.
         if (error) return reject(error);
         if (code !== 0) return reject(fail('OCR_FAILED', 422));

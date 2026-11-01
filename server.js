@@ -45,6 +45,7 @@ logger.info({
 
 connectDB()
   .then(async () => {
+    require('./src/services/files/preparationQueue').start();
     initWsServer(server);
     await startBalanceSync(getIo());
     server.listen(PORT, () => {

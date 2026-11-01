@@ -33,6 +33,7 @@ const effective = model => ({
     zip: { enabled: require('./zipInput').enabled(model), ...require('./zipCodec').LIMITS },
     pptx: { enabled: false },
   },
+  preparation: { version: 1, async: require('./preparationQueue').enabled(), kinds: ['ocr'], pollAfterMs: 2000, maxAttempts: 3 },
   uploadDoesNotGuaranteeProcessing: true,
 });
 module.exports = { uploadLimit, effective };

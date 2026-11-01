@@ -15,7 +15,8 @@ const cached = file => [2, 3].includes(file.ocrCache?.version) && file.ocrCache?
 // Old caches remain readable for turns already admitted before deployment.
 const fresh = file => cached(file) && file.ocrCache.version === 3 && file.ocrCache.qualityRevision === 1;
 const pending = new Map();
-const prepare = async (user, id, model) => {
+const prepare = async (user, id, model, options = {}) => {
+  options.signal?.throwIfAborted();
   const file = await store.owned(user, id); // Always authorize before cache lookup, including in-flight jobs.
   if (!eligible(file, model) || fresh(file)) return;
   if (file.size > 5 * 1024 * 1024) throw fail('OCR_FILE_TOO_LARGE', 413);
@@ -23,9 +24,12 @@ const prepare = async (user, id, model) => {
   if (pending.has(key)) return pending.get(key);
   const job = (async () => {
     const { file: current, buffer } = await store.read(user, id);
-    const result = await processOcr.extract(buffer, file.mimetype === 'application/pdf' ? 'pdf' : 'image');
+    const result = await processOcr.extract(buffer, file.mimetype === 'application/pdf' ? 'pdf' : 'image', { signal: options.signal });
+    options.signal?.throwIfAborted();
     const bytes = Buffer.byteLength(result.text) + (result.detections?.length ? Buffer.byteLength(JSON.stringify(result.detections)) : 0);
     await store.transaction(async session => {
+      options.signal?.throwIfAborted();
+      if (options.beforeCommit) await options.beforeCommit(session);
       const latest = await store.owned(user, id, { session });
       if (fresh(latest)) return; // Concurrent process winner; no duplicate quota claim.
       if (latest.checksum !== current.checksum) throw fail('FILE_UNAVAILABLE', 503);
@@ -85,4 +89,4 @@ const readPart = async (user, file, { session, state = textInput.budget(), model
   state.promptBytes += Buffer.byteLength(output.text);
   return output;
 };
-module.exports = { supported, enabled, eligible, cached, prepare, prepareFiles, prepareHistory, readPart };
+module.exports = { fresh, supported, enabled, eligible, cached, prepare, prepareFiles, prepareHistory, readPart };

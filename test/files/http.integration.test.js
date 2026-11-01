@@ -139,3 +139,36 @@ test('effective limits are authenticated and reflect quota overrides and indepen
   assert.equal(limits.processing.zip.inputBytes, 10 * 1024 ** 2);
   assert.equal((await fetch(`${root}/limits?modelId=missing-model`, { headers })).status, 404);
 });
+
+test('async OCR endpoints are private, opt-in, idempotent and leave the legacy prepare protocol intact', { skip: !uri }, async t => {
+  const Job = require('../../src/models/filePreparation'); await Job.init();
+  const queue = require('../../src/services/files/preparationQueue');
+  const Models = require('../../src/models/chatModels');
+  await Models.collection.insertOne({ modelId: 'async-http-model', enabled: true });
+  const own = { authorization: `Bearer ${token}`, 'content-type': 'application/json' };
+  const other = { authorization: `Bearer ${stranger}`, 'content-type': 'application/json' };
+  const f = await store.create({ user: user._id, name: 'scan.pdf', mimetype: 'application/pdf', buffer: Buffer.from('%PDF-test') });
+  const url = `${root}/${f.id}/preparation`, body = JSON.stringify({ modelId: 'async-http-model' });
+  const previous = process.env.FILE_PREPARATION_V2_ENABLED;
+  process.env.FILE_PREPARATION_V2_ENABLED = 'false';
+  try {
+    assert.equal((await fetch(url, { method: 'POST', headers: own, body })).status, 404);
+    process.env.FILE_PREPARATION_V2_ENABLED = 'true'; process.env.OCR_ENABLED = 'true';
+    assert.equal((await fetch(url + '?modelId=async-http-model')).status, 401);
+    assert.equal((await fetch(url, { method: 'POST', headers: other, body })).status, 404);
+    assert.equal((await fetch(url, { method: 'POST', headers: own, body })).status, 202);
+    assert.equal((await fetch(url, { method: 'POST', headers: own, body })).status, 202);
+    assert.equal(await Job.countDocuments({ file: f._id }), 1);
+    t.mock.method(require('../../src/services/files/ocrProcess'), 'extract', async () => ({ text: 'test', pages: 1, detections: [{ page: 1, models: ['eng'] }], languages: 'eng' }));
+    await queue.runOnce();
+    const ready = await fetch(url + '?modelId=async-http-model', { headers: own });
+    assert.equal(ready.headers.get('cache-control'), 'private, no-store');
+    assert.equal((await ready.json()).processing.status, 'ready');
+    const legacy = await fetch(`${root}/${f.id}/prepare`, { method: 'POST', headers: own, body });
+    assert.equal(legacy.status, 200); assert.equal((await legacy.json()).processing.status, 'ready');
+  } finally {
+    if (previous === undefined) delete process.env.FILE_PREPARATION_V2_ENABLED; else process.env.FILE_PREPARATION_V2_ENABLED = previous;
+    process.env.OCR_ENABLED = 'false';
+    await store.remove(user._id, f.id);
+  }
+});

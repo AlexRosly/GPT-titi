@@ -29,6 +29,24 @@ router.post('/', require('../services/files/streamUpload').receive(async (req, r
   const file = await store.createUpload({ user: req.user._id, upload: req.file, signal: req.uploadSignal });
   res.status(201).json({ success: true, file: store.dto(file) });
 }));
+// Opt-in asynchronous protocol. Existing /prepare contract stays unchanged.
+const queue = require('../services/files/preparationQueue');
+const asyncEnabled = (req, res, next) => queue.enabled() ? next() : res.status(404).json({ error: 'PREPARATION_DISABLED' });
+router.post('/:id/preparation', asyncEnabled, express.json({ limit: '1kb' }), handle(async (req, res) => {
+  if (!req.body || Object.keys(req.body).some(k => !['modelId', 'retry'].includes(k)) ||
+      (req.body.retry !== undefined && typeof req.body.retry !== 'boolean')) return res.status(400).json({ error: 'INVALID_ENVELOPE' });
+  const processing = await queue.enqueue(req.user._id, req.params.id, req.body.modelId, req.body.retry === true);
+  res.set('Cache-Control', 'private, no-store');
+  res.status(['queued', 'running'].includes(processing.status) ? 202 : 200).json({ success: true, processing });
+}));
+router.get('/:id/preparation', asyncEnabled, handle(async (req, res) => {
+  const processing = await queue.status(req.user._id, req.params.id, req.query.modelId);
+  res.set('Cache-Control', 'private, no-store').json({ success: true, processing });
+}));
+router.delete('/:id/preparation', asyncEnabled, handle(async (req, res) => {
+  await queue.cancel(req.user._id, req.params.id);
+  res.status(204).end();
+}));
 // Frontend prepares attachments before chat:send, avoiding the short V2 ACK timeout.
 router.post('/:id/prepare', express.json({ limit: '1kb' }), handle(async (req, res) => {
   const file = await store.owned(req.user._id, req.params.id);

@@ -1,9 +1,7 @@
 const express = require('express');
-const multer = require('multer');
 const { auth } = require('../middlewares');
 const config = require('../services/files/config');
 const store = require('../services/files/store');
-const { validateUpload } = require('../services/files/validation');
 const router = express.Router();
 const handle = (fn) => async (req, res, next) => { try { await fn(req, res); } catch (err) {
   if (err.fileError) return res.status(err.status).json({ error: err.fileError });
@@ -16,14 +14,19 @@ router.use(auth, (req, res, next) => {
 });
 router.use(require('express-rate-limit').rateLimit({ windowMs: 60000, limit: 120,
   keyGenerator: req => String(req.user._id), standardHeaders: true, legacyHeaders: false }));
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: config.maxBytes(), files: 1, fields: 0 } });
-router.post('/', (req, res, next) => upload.single('file')(req, res, (err) => {
-  if (err) return res.status(400).json({ error: err.code === 'LIMIT_FILE_SIZE' ? 'FILE_TOO_LARGE' : 'INVALID_UPLOAD' });
-  next();
-}), handle(async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'FILE_REQUIRED' });
-  const { name, mimetype } = validateUpload({ ...req.file, originalname: require('../services/files/uploadName')(req.file.originalname) });
-  const file = await store.create({ user: req.user._id, name, mimetype, buffer: req.file.buffer });
+// Register before /:id: authenticated effective limits, never a model-name table.
+router.get('/limits', handle(async (req, res) => {
+  let model;
+  if (req.query.modelId !== undefined) {
+    if (typeof req.query.modelId !== 'string' || !req.query.modelId || req.query.modelId.length > 200) return res.status(400).json({ error: 'INVALID_ENVELOPE' });
+    model = await require('../models/chatModels').findOne({ modelId: req.query.modelId, enabled: true }).lean();
+    if (!model) return res.status(404).json({ error: 'MODEL_NOT_AVAILABLE' });
+  }
+  res.set({ 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
+  res.json(require('../services/files/limits').effective(model));
+}));
+router.post('/', require('../services/files/streamUpload').receive(async (req, res) => {
+  const file = await store.createUpload({ user: req.user._id, upload: req.file, signal: req.uploadSignal });
   res.status(201).json({ success: true, file: store.dto(file) });
 }));
 // Frontend prepares attachments before chat:send, avoiding the short V2 ACK timeout.

@@ -43,6 +43,36 @@ const create = async ({ user, name, mimetype, buffer, generatedPreview = null, s
   await Chunk.insertMany(chunks, { session });
   return file;
 };
+// The descriptor is private and remains open across transaction retries. Always read
+// with explicit offsets; a retried transaction must restart at byte zero.
+const createUpload = async ({ user, upload, signal }) => transaction(async session => {
+  const { name, mimetype, size, checksum, handle } = upload;
+  if (!Number.isSafeInteger(size) || size < 1 || size > require('./limits').uploadLimit(name)) throw fail('FILE_TOO_LARGE', 413);
+  signal?.throwIfAborted();
+  await Quota.updateOne({ _id: user }, { $setOnInsert: { bytes: 0, count: 0 } }, { upsert: true, session });
+  const reserved = await Quota.updateOne({ _id: user, bytes: { $lte: config.quotaBytes() - size }, count: { $lt: config.quotaCount() } },
+    { $inc: { bytes: size, count: 1 } }, { session });
+  if (!reserved.modifiedCount) throw fail('FILE_QUOTA_EXCEEDED', 413);
+  const [file] = await File.create([{ user, originalName: name, mimetype, size, checksum,
+    source: 'upload', expiresAt: new Date(Date.now() + 86400000) }], { session });
+  const hash = crypto.createHash('sha256');
+  for (let offset = 0, index = 0; offset < size; index++) {
+    signal?.throwIfAborted();
+    const data = Buffer.alloc(Math.min(CHUNK_BYTES, size - offset));
+    let filled = 0;
+    while (filled < data.length) {
+      const { bytesRead } = await handle.read(data, filled, data.length - filled, offset + filled);
+      if (!bytesRead) throw fail('FILE_UNAVAILABLE', 503);
+      filled += bytesRead;
+    }
+    hash.update(data);
+    await Chunk.create([{ file: file._id, index, data }], { session });
+    offset += data.length;
+  }
+  if (hash.digest('hex') !== checksum) throw fail('FILE_UNAVAILABLE', 503);
+  signal?.throwIfAborted();
+  return file;
+});
 const owned = async (user, id, { session, includeDeleted = false } = {}) => {
   if (!idOK(String(id))) throw fail('FILE_NOT_FOUND', 404);
   const f = await File.findOne({ _id: id, user }).session(session || null);
@@ -68,4 +98,4 @@ const cleanup = async () => {
   const files = await File.find({ status: 'ready', expiresAt: { $ne: null, $lte: new Date() } }).limit(100);
   for (const f of files) await remove(f.user, String(f._id));
 };
-module.exports = { create, owned, read, remove, cleanup, transaction, dto, idOK };
+module.exports = { createUpload, create, owned, read, remove, cleanup, transaction, dto, idOK };

@@ -79,3 +79,32 @@ integration('message references canonical metadata, retain upload and block docu
   await assert.rejects(store.transaction(s => messages.resolve(user, [{ fileId: String(doc._id) }], s)), { fileError: 'DOCUMENT_PROCESSING_NOT_ENABLED' });
   await store.remove(user, String(doc._id));
 });
+
+integration('streamed uploads persist multiple chunks; failed checksum/abort roll back quota and chunks', async () => {
+  const { spool } = require('../../src/services/files/streamUpload');
+  const { Readable } = require('node:stream');
+  const bytes = Buffer.alloc(700000, 65);
+  const upload = await spool(Readable.from([bytes]), 'stream.txt');
+  try {
+    const before = await Quota.findById(user).lean();
+    const chunkCount = await Chunk.countDocuments();
+    await assert.rejects(store.createUpload({ user, upload: { ...upload, checksum: '0'.repeat(64) } }), { fileError: 'FILE_UNAVAILABLE' });
+    assert.equal(await Chunk.countDocuments(), chunkCount);
+    assert.equal((await Quota.findById(user)).bytes, before.bytes);
+    const abort = new AbortController(); abort.abort();
+    await assert.rejects(store.createUpload({ user, upload, signal: abort.signal }), { name: 'AbortError' });
+    const f = await store.createUpload({ user, upload });
+    assert.deepEqual((await store.read(user, String(f._id))).buffer, bytes);
+    assert.equal(await Chunk.countDocuments({ file: f._id }), 3);
+    await store.remove(user, String(f._id)); await store.remove(user, String(f._id));
+    assert.equal((await Quota.findById(user)).bytes, before.bytes);
+    // A new transaction reads the same descriptor from offset zero.
+    const second = await store.createUpload({ user, upload });
+    assert.deepEqual((await store.read(user, String(second._id))).buffer, bytes);
+    await store.remove(user, String(second._id));
+    process.env.FILES_USER_BYTES = String(before.bytes + bytes.length - 1);
+    try { await assert.rejects(store.createUpload({ user, upload }), { fileError: 'FILE_QUOTA_EXCEEDED' }); }
+    finally { delete process.env.FILES_USER_BYTES; }
+    assert.equal(await Chunk.countDocuments(), chunkCount);
+  } finally { await upload.handle.close(); }
+});

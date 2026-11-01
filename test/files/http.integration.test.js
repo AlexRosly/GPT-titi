@@ -125,3 +125,17 @@ test('saved OCR is owner-only, exact, read-only and unavailable after deletion',
   assert.equal((await fetch(url, { headers: own })).status, 404);
   assert.equal((await fetch(url + '?download=1', { headers: other })).status, 404);
 });
+
+test('effective limits are authenticated and reflect quota overrides and independent processing ceilings', { skip: !uri }, async () => {
+  assert.equal((await fetch(`${root}/limits`)).status, 401);
+  const headers = { authorization: `Bearer ${token}` };
+  const response = await fetch(`${root}/limits`, { headers });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('cache-control'), 'private, no-store');
+  const limits = await response.json();
+  assert.equal(limits.version, 1);
+  assert.equal(limits.storage.maxBytes, require('../../src/services/files/config').quotaBytes());
+  assert.equal(limits.upload.types.archive.maxBytes, 50_000_000);
+  assert.equal(limits.processing.zip.inputBytes, 10 * 1024 ** 2);
+  assert.equal((await fetch(`${root}/limits?modelId=missing-model`, { headers })).status, 404);
+});

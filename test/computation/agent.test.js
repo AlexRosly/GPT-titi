@@ -60,11 +60,15 @@ test('unsafe export path is diagnosed before runtime or follow-up provider call'
 
 
 test('5/30 pricing runs under 20 cents and still rejects under an explicit 5-cent cap',async t=>{
+ const logs=[];t.mock.method(console,'warn',(...args)=>logs.push(args));
  const old=process.env.COMPUTE_MAX_USD;
  t.after(()=>{if(old===undefined)delete process.env.COMPUTE_MAX_USD;else process.env.COMPUTE_MAX_USD=old;});
  const f=fixture(t);f.turn.pricing={inputPerM:5,outputPerM:30,tokenValueUsd:0.00001};
  process.env.COMPUTE_MAX_USD='0.05';
  const blocked=await f.run();assert.equal(blocked.computation.reason,'COMPUTE_BUDGET_LIMIT');assert.equal(f.stats().runs,0);
+ const rejection=logs.find(x=>x[0]==='COMPUTE_BUDGET_REJECTED')[1];
+ assert.equal(rejection.stage,'before_python');assert.equal(rejection.limitUsd,0.05);assert.equal(rejection.spentUsd,0);assert.equal(rejection.runs,0);assert.ok(rejection.estimatedUsd>0.05);
+ logs.length=0;
  process.env.COMPUTE_MAX_USD='0.20';
- const result=await f.run();assert.equal(result.computation.status,'completed');assert.equal(f.stats().runs,1);assert.equal(result.usage.totalTokens,45);
+ const result=await f.run();assert.equal(logs.length,0);assert.equal(result.computation.status,'completed');assert.equal(f.stats().runs,1);assert.equal(result.usage.totalTokens,45);
 });

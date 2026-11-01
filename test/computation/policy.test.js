@@ -114,3 +114,17 @@ test('compute budget defaults to 20 cents, honors lower overrides and refuses hi
   for(const value of ['0.201','1','0','NaN','Infinity']){process.env.COMPUTE_MAX_USD=value;assert.throws(()=>p.limits(),e=>e.fileError==='COMPUTE_CONFIGURATION_ERROR');}
  }finally{if(old===undefined)delete process.env.COMPUTE_MAX_USD;else process.env.COMPUTE_MAX_USD=old;}
 });
+
+test('budget diagnostics expose numeric estimates only and cannot alter rejection',t=>{
+ const {diagnoseRejection}=require('../../src/services/computation/budget');
+ const logs=[];t.mock.method(console,'warn',(...args)=>logs.push(args));
+ const turn={turnId:'test-turn',attempt:1,pricing:{inputPerM:5,outputPerM:30},computeState:{calls:0,runs:0,files:['SECRET']},content:'SECRET'};
+ const budget={usd:0.22,promptTokens:32000,outputTokens:2048,content:'SECRET'};
+ for(const stage of ['before_python','before_provider'])diagnoseRejection(turn,stage,budget,0,0.2);
+ assert.equal(logs.length,2);assert.equal(logs[0][0],'COMPUTE_BUDGET_REJECTED');
+ assert.deepEqual(logs[0][1],{diagnosticVersion:1,turnId:'test-turn',attempt:1,stage:'before_python',limitUsd:0.2,spentUsd:0,estimatedUsd:0.22,projectedUsd:0.22,promptTokens:32000,outputTokens:2048,inputPerM:5,outputPerM:30,calls:0,runs:0});
+ assert.equal(logs[1][1].stage,'before_provider');assert.equal(JSON.stringify(logs).includes('SECRET'),false);
+ diagnoseRejection({...turn,turnId:'SECRET\nINJECTION'},'before_python',budget,0,0.2);assert.equal(logs[2][1].turnId,null);
+ console.warn.mock.mockImplementation(()=>{throw Error('logger unavailable');});
+ assert.doesNotThrow(()=>diagnoseRejection(turn,'before_python',budget,0,0.2));
+});

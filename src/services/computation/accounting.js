@@ -18,7 +18,11 @@ async function begin(turn, token, messages, tools) {
       if (state.calls >= limits().calls) throw fail('COMPUTE_CALL_LIMIT');
       const extraUsage={promptTokens:state.usage.promptTokens-state.initialUsage.promptTokens,completionTokens:state.usage.completionTokens-state.initialUsage.completionTokens};
       const spentUsd=(extraUsage.promptTokens*current.pricing.inputPerM+extraUsage.completionTokens*current.pricing.outputPerM)/1e6;
-      if (spentUsd + budget.usd > limits().usd) throw fail('COMPUTE_BUDGET_LIMIT');
+      const limitUsd=limits().usd;
+      if (spentUsd + budget.usd > limitUsd) {
+        require('./budget').diagnoseRejection(current,'before_provider',budget,spentUsd,limitUsd);
+        throw fail('COMPUTE_BUDGET_LIMIT');
+      }
       const target = Math.max(current.reservedAppTokens, cost(state.usage, current.pricing) + budget.amount);
       const extra = target - current.reservedAppTokens;
       const user = await User.findById(turn.user).session(session).lean();

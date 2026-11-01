@@ -11,4 +11,19 @@ function estimate(messages,tools,pricing){
  const amount=Math.ceil(usd/pricing.tokenValueUsd);if(!Number.isSafeInteger(amount))throw fail('COMPUTE_CONFIGURATION_ERROR');
  return {promptTokens,outputTokens:l.outputTokens,usd,amount};
 }
-module.exports={estimate};
+// Only fixed numeric fields and a validated correlation ID enter this diagnostic.
+// Logging must never change the budget decision, even if the logger fails.
+function diagnoseRejection(turn,stage,budget,spentUsd,limitUsd){
+ const numeric=value=>Number.isFinite(value)?value:null;
+ const id=typeof turn.turnId==='string'&&/^[a-zA-Z0-9-]{1,64}$/.test(turn.turnId)?turn.turnId:null;
+ try{console.warn('COMPUTE_BUDGET_REJECTED',{
+  diagnosticVersion:1,turnId:id,attempt:numeric(turn.attempt),
+  stage:stage==='before_python'?'before_python':'before_provider',
+  limitUsd:numeric(limitUsd),spentUsd:numeric(spentUsd),
+  estimatedUsd:numeric(budget.usd),projectedUsd:numeric(spentUsd+budget.usd),
+  promptTokens:numeric(budget.promptTokens),outputTokens:numeric(budget.outputTokens),
+  inputPerM:numeric(turn.pricing?.inputPerM),outputPerM:numeric(turn.pricing?.outputPerM),
+  calls:numeric(turn.computeState?.calls),runs:numeric(turn.computeState?.runs)
+ });}catch{/* Diagnostics are best-effort; retain the original rejection. */}
+}
+module.exports={estimate,diagnoseRejection};

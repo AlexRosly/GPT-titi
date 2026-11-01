@@ -21,7 +21,10 @@ async function run(turn,token,model,messages,firstCall,usage,available,client,pa
    // Avoid spending CPU on a loop that cannot afford even the bounded next answer.
    const preview=require('./budget').estimate(transcript,[policy.tool],turn.pricing);
    const extra=accounting.cost({promptTokens:state.usage.promptTokens-usage.promptTokens,completionTokens:state.usage.completionTokens-usage.completionTokens},turn.pricing)*turn.pricing.tokenValueUsd;
-   if(extra+preview.usd>l.usd)throw policy.fail('COMPUTE_BUDGET_LIMIT');
+   if(extra+preview.usd>l.usd){
+    require('./budget').diagnoseRejection(turn,'before_python',preview,extra,l.usd);
+    throw policy.fail('COMPUTE_BUDGET_LIMIT');
+   }
    const inputs=await fileIO.inputs(turn,action,available);
    const started=Date.now();await save({...state,runs:state.runs+1,stage:'executing'});
    let result,prepared=[];

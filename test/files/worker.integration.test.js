@@ -1491,8 +1491,8 @@ test(
   },
 );
 
-for (const oldVersion of [2, 3]) test(
-  `v${oldVersion} OCR cache upgrades quality once with an atomic quota delta and normal deletion`,
+for (const [oldVersion, oldRevision] of [[2, undefined], [3, undefined], [3, 1]]) test(
+  `v${oldVersion} revision ${oldRevision} OCR cache upgrades quality once with an atomic quota delta and normal deletion`,
   { skip: !uri },
   async (t) => {
     enableOcr(t);
@@ -1522,7 +1522,9 @@ for (const oldVersion of [2, 3]) test(
     await ocr.prepare(user._id, file.id, {});
     await File.updateOne(
       { _id: file._id },
-      { $set: { "ocrCache.version": oldVersion }, $unset: { "ocrCache.qualityRevision": 1 } },
+      oldRevision === undefined
+        ? { $set: { "ocrCache.version": oldVersion }, $unset: { "ocrCache.qualityRevision": 1 } }
+        : { $set: { "ocrCache.version": oldVersion, "ocrCache.qualityRevision": oldRevision } },
     );
     const old = await File.findById(file._id).lean(),
       oldQuota = (await Quota.findById(user._id)).bytes;
@@ -1533,7 +1535,7 @@ for (const oldVersion of [2, 3]) test(
     const current = await File.findById(file._id).lean();
     assert.equal(calls, 2);
     assert.equal(current.ocrCache.version, 3);
-    assert.equal(current.ocrCache.qualityRevision, 1);
+    assert.equal(current.ocrCache.qualityRevision, 2);
     assert.match(current.ocrCache.text, /15\.40\.2026/);
     assert.equal(
       (await Quota.findById(user._id)).bytes - oldQuota,
@@ -1553,7 +1555,7 @@ test('exact transcription uses cached bytes, multilingual intent tool, recovery 
   const exact = require('../../src/services/files/exactTranscription');
   const input = await store.create({ user: user._id, name: 'scan.png', mimetype: 'image/png', buffer: require('./fixtures/ocr').makeImage() });
   const text = '[PDF PAGE 1 OF 1 — OCR]\n4 462,64\n123\n3 501,601\n```\n<script>x</script>\nשלום';
-  await File.updateOne({ _id: input._id }, { $set: { ocrCache: { version: 3, qualityRevision: 1, checksum: input.checksum, text, pages: 1, detections: [] } } });
+  await File.updateOne({ _id: input._id }, { $set: { ocrCache: { version: 3, qualityRevision: 2, checksum: input.checksum, text, pages: 1, detections: [] } } });
   let calls = 0;
   t.mock.method(Completions.prototype, 'create', async function* (request) {
     calls++;

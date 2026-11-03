@@ -10,8 +10,10 @@ const readable = value => /[^\s\uFFFD]/u.test(value);
 const languagePolicy = require('./ocrLanguages');
 const limits = require('./ocrLimits');
 const qualityPolicy = require('./ocrQuality');
+const identifierPolicy = require('./ocrIdentifiers');
 const startedAt = Date.now();
 let retries = 0;
+let identifierMs = 0;
 let pagesRemaining = 0;
 let available;
 const detections = [];
@@ -24,6 +26,7 @@ async function recognize(buffer, page) {
   }
   const input = path.join(dir, 'page.png');
   const osdInput = path.join(dir, 'script.png');
+  const identifierInput = path.join(dir, 'identifiers.png');
   fs.writeFileSync(input, buffer, { mode: 0o600 });
   try {
     let detection = { script: null, confidence: null };
@@ -45,7 +48,7 @@ async function recognize(buffer, page) {
     }
     const selection = languagePolicy.select(languages, available, detection);
     let scriptUncertain = selection.uncertain;
-    const run = (models, psm, timeout = limits.RECOGNITION_MS) => qualityPolicy.parseTsv(execFileSync('tesseract', [input, 'stdout', '-l', models.join('+'), '--oem', '1', '--psm', String(psm), '-c', 'tessedit_create_tsv=1'], {
+    const run = (models, psm, timeout = limits.RECOGNITION_MS, sourcePath = input) => qualityPolicy.parseTsv(execFileSync('tesseract', [sourcePath, 'stdout', '-l', models.join('+'), '--oem', '1', '--psm', String(psm), '-c', 'tessedit_create_tsv=1'], {
       encoding: 'utf8', timeout, killSignal: 'SIGKILL', maxBuffer: 2 * 1024 * 1024,
       stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, OMP_THREAD_LIMIT: '1' },
     }));
@@ -79,19 +82,50 @@ async function recognize(buffer, page) {
         selection.qualityRetryIncomplete = true;
       }
     }
+    let identifierNotes = '';
+    const suspect = languages === 'auto' ? identifierPolicy.candidates(recognized.words) : [];
+    if (suspect.length) {
+      selection.identifierUncertain = true;
+      const timeout = identifierPolicy.budget(Date.now() - startedAt, pagesRemaining, identifierMs);
+      selection.identifierCheckIncomplete = suspect.length > identifierPolicy.MAX_WORDS || !timeout;
+      if (timeout) {
+        const started = Date.now();
+        try {
+          const source = await loadImage(buffer);
+          const selected = suspect.slice(0, identifierPolicy.MAX_WORDS);
+          const sheet = createCanvas(2048, selected.length * identifierPolicy.ROW_HEIGHT);
+          const ctx = sheet.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, sheet.width, sheet.height);
+          selected.forEach((word, index) => {
+            const x = Math.max(0, word.left - 8), y = Math.max(0, word.top - 8);
+            const width = Math.min(source.width - x, word.width + 16), height = Math.min(source.height - y, word.height + 16);
+            const scale = Math.min(2, 96 / height, 2000 / width);
+            ctx.drawImage(source, x, y, width, height, 16, index * identifierPolicy.ROW_HEIGHT + 16, width * scale, height * scale);
+          });
+          fs.writeFileSync(identifierInput, sheet.toBuffer('image/png'), { mode: 0o600 });
+          const latin = languagePolicy.resolveScript('Latin', available);
+          const values = identifierPolicy.alternatives(selected, run([latin], 6, timeout, identifierInput));
+          identifierNotes = identifierPolicy.note(values);
+          selection.identifierAlternatives = values.length;
+        } catch {
+          // Optional verification must not discard a successful primary extraction.
+          selection.identifierCheckIncomplete = true;
+        } finally { identifierMs += Date.now() - started; }
+      }
+    }
+    if (selection.identifierCheckIncomplete) identifierNotes += '\n[OCR IDENTIFIER CHECK INCOMPLETE: The bounded verification could not check every ambiguous code. Verify identifiers against the original.]';
     selection.scriptUncertain = scriptUncertain;
-    selection.qualityUncertain = recognized.uncertain || Boolean(selection.qualityRetryIncomplete);
+    selection.qualityUncertain = recognized.uncertain || Boolean(selection.qualityRetryIncomplete) || Boolean(selection.identifierUncertain);
     selection.uncertain = scriptUncertain || selection.qualityUncertain;
     selection.textConfidence = Math.round(recognized.confidence);
     selection.lowConfidenceFraction = Number(recognized.lowFraction.toFixed(3));
     detections.push({ page, ...selection });
-    return { text: recognized.text, selection };
+    return { text: recognized.text + identifierNotes, selection };
   } catch (error) {
     if (error.fileError) throw error;
     if (error.code === 'ENOBUFS') throw fail('OCR_TEXT_TOO_LARGE');
     if (error.code === 'ETIMEDOUT') throw fail('OCR_PROCESSING_TIMEOUT');
     throw fail('OCR_FAILED');
-  } finally { fs.rmSync(input, { force: true }); fs.rmSync(osdInput, { force: true }); }
+  } finally { fs.rmSync(input, { force: true }); fs.rmSync(osdInput, { force: true }); fs.rmSync(identifierInput, { force: true }); }
 }
 (async () => {
   let task;

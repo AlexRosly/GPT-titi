@@ -6,7 +6,7 @@ const router = require('../../src/routes/files');
 const handler = router.stack.find(s => s.route?.path === '/:id/ocr').route.stack[0].handle;
 test('saved OCR GET preserves bytes, checks ownership first and never prepares OCR', async t => {
   const text = '[PDF PAGE 1 OF 1 — OCR]\n123 501,601\n<script>x</script>\nשלום';
-  const file = { originalName: 'scan.pdf', mimetype: 'application/pdf', checksum: 'abc', ocrCache: { version: 3, qualityRevision: 1, checksum: 'abc', text, pages: 1, detections: [{ uncertain: true }] } };
+  const file = { originalName: 'scan.pdf', mimetype: 'application/pdf', checksum: 'abc', ocrCache: { version: 3, qualityRevision: 2, checksum: 'abc', text, pages: 1, detections: [{ uncertain: true }] } };
   t.mock.method(store, 'owned', async (user) => { if (user !== 'owner') throw { fileError: 'FILE_NOT_FOUND', status: 404 }; return file; });
   t.mock.method(ocr, 'prepare', async () => { throw Error('must not process'); });
   async function request(user = 'owner', download = false) {

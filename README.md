@@ -4,7 +4,7 @@ The service for work with AI instrument
 
 ## Локальная транскрибация аудио
 
-API поддерживает OpenAI-совместимый сервис Speaches на faster-whisper. Docker Compose находится в `docker-compose.whisper.yml`; файл `.env.whisper.example` содержит параметры Node.js API. Модель скачивается Speaches при первом запросе к ней и кэшируется в Docker volume.
+API поддерживает OpenAI-совместимый сервис Speaches на faster-whisper. Docker Compose находится в `docker-compose.whisper.yml`; файл `.env.whisper.example` содержит параметры Node.js API. Перед транскрибацией установите модель через API Speaches; она сохраняется в Docker volume.
 
 Для разработки на общем VDS с 2 vCPU / 4 ГБ RAM используйте CPU-профиль и небольшую мультиязычную модель `base`. Добавьте значения ниже в существующий `.env` backend (файл `.env.whisper.example` сам не загружается):
 
@@ -23,6 +23,15 @@ docker compose -f docker-compose.whisper.yml --profile cpu up -d
 docker compose -f docker-compose.whisper.yml ps
 curl http://127.0.0.1:8000/health
 ```
+
+После запуска установите модель (дождитесь завершения скачивания), затем проверьте список установленных моделей:
+
+```sh
+curl -i -X POST "http://127.0.0.1:8000/v1/models/Systran/faster-whisper-base"
+curl -sS "http://127.0.0.1:8000/v1/models"
+```
+
+Для GPU/другой модели используйте в URL тот же ID, который указан в `WHISPER_MODEL`. Повторная установка уже скачанной модели безопасна. Проверка `/health` сама модель не устанавливает; отсутствие модели может приводить к `404` при транскрибации.
 
 CPU-контейнер ограничен 1 vCPU и 2 ГБ RAM, использует `int8`, один вычислительный поток и один worker. Это пределы, а не предварительно выделенная память. Лимиты Docker настраиваются через `WHISPER_CPU_LIMIT` и `WHISPER_MEMORY_LIMIT`. При нехватке памяти контейнер может завершиться; скорость и доступный запас памяти нужно измерить на VDS. Начните с записей по 10–60 секунд и наблюдайте `free -h` и `docker stats`. Более лёгкая модель: `Systran/faster-whisper-tiny`. Для русского/украинского не выбирайте английские варианты `.en`.
 

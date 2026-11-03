@@ -13,7 +13,7 @@ process.env.PRIVATE_FILES_ENABLED = 'true';
 process.env.OCR_ENABLED = 'true';
 process.env.OCR_LANGUAGES = 'eng';
 const cache = (content = 'Private OCR 731') => ({ _id: '0123456789abcdef01234567', originalName: 'scan.png', mimetype: 'image/png', size: 100,
-  checksum: 'hash', ocrCache: { version: 3, qualityRevision: 1, checksum: 'hash', text: content, pages: 1, languages: 'eng' } });
+  checksum: 'hash', ocrCache: { version: 3, qualityRevision: 2, checksum: 'hash', text: content, pages: 1, languages: 'eng' } });
 test('failed quality upgrade preserves the previous readable OCR and releases the pending job', async t => {
   const file = cache('old text 15.40.2026'); delete file.ocrCache.qualityRevision;
   const original = JSON.stringify(file);
@@ -154,8 +154,8 @@ test('preparation deadline prevents unbounded historical OCR work', async t => {
   await assert.rejects(ocr.prepareHistory('owner', [{ role: 'user', attachments: [{ storage: 'private', fileId: '0123456789abcdef01234567' }] }], {}, Date.now() - 1), { fileError: 'OCR_NOT_READY' });
 });
 
-for (const oldVersion of [2, 3]) test(`v${oldVersion} cache remains readable and upgrades quality once with only the byte delta`, async t => {
-  const file = cache('old recognized text'); file.ocrCache.version = oldVersion; delete file.ocrCache.qualityRevision; file.derivedBytes = 200;
+for (const [oldVersion, oldRevision] of [[2, undefined], [3, undefined], [3, 1]]) test(`v${oldVersion} revision ${oldRevision} cache remains readable and upgrades quality once with only the byte delta`, async t => {
+  const file = cache('old recognized text'); file.ocrCache.version = oldVersion; file.ocrCache.qualityRevision = oldRevision; file.derivedBytes = 200;
   const File = require('../../src/models/managedFile'), Quota = require('../../src/models/fileQuota');
   let runs = 0, claims = 0;
   t.mock.method(store, 'owned', async () => file);
@@ -169,6 +169,6 @@ for (const oldVersion of [2, 3]) test(`v${oldVersion} cache remains readable and
   });
   t.mock.method(File, 'updateOne', async (query, update) => { Object.assign(file, update.$set); return { modifiedCount: 1 }; });
   await ocr.prepare('owner', String(file._id), {}); await ocr.prepare('owner', String(file._id), {});
-  assert.equal(file.ocrCache.version, 3); assert.equal(file.ocrCache.qualityRevision, 1); assert.equal(runs, 1); assert.equal(claims, 1);
+  assert.equal(file.ocrCache.version, 3); assert.equal(file.ocrCache.qualityRevision, 2); assert.equal(runs, 1); assert.equal(claims, 1);
   assert.equal(file.derivedBytes, Buffer.byteLength('new recognized text'));
 });

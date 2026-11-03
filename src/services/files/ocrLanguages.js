@@ -27,10 +27,10 @@ const select = (setting, available, detection) => {
   const known = detection.script && (aliases[detection.script] || (SCRIPTS.includes(detection.script) ? [detection.script] : null));
   // Short/noisy samples can defeat OSD. A bounded fallback covers common scripts,
   // with an explicit warning; it is not advertised as universal language detection.
-  // Avoid a separate Latin recognizer competing with Cyrillic lookalikes.
+  // Cyrillic pages can contain Latin codes and whole Latin paragraphs.
   // Pure Han uses Chinese models without the Japanese model competing for
   // shared glyphs; Japanese/Kana pages retain their own model.
-  const chosen = known ? (['Cyrillic', 'Han', 'Japanese', 'Korean', 'Hangul'].includes(detection.script) ? known : [...known, 'Latin']) : ['Latin', 'Cyrillic', 'Arabic', 'HanS'];
+  const chosen = known ? (['Han', 'Japanese', 'Korean', 'Hangul'].includes(detection.script) ? known : [...known, 'Latin']) : ['Latin', 'Cyrillic', 'Arabic', 'HanS'];
   const models = [...new Set(chosen)].map(name => resolveScript(name, available));
   if (!available.has('osd') || models.some(name => !name)) throw fail('OCR_UNAVAILABLE', 503);
   return { models, script: known ? detection.script : null, confidence: detection.confidence,

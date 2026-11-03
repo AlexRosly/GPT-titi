@@ -17,7 +17,7 @@ test('DTO exposes polling state without private text, lease or worker internals'
   assert.deepEqual(queue.dto({...file(),mimetype:'text/plain'}),{status:'not_required'});
 });
 test('completed cache wins over stale job state and never reveals recognized text in status', () => {
-  const f = {...file(),ocrCache:{version:3,qualityRevision:1,checksum:'checksum',text:'private text',pages:1,detections:[{script:'Latin',uncertain:true}]}};
+  const f = {...file(),ocrCache:{version:3,qualityRevision:2,checksum:'checksum',text:'private text',pages:1,detections:[{script:'Latin',uncertain:true}]}};
   assert.deepEqual(queue.dto(f,{status:'running',attempts:1}),{status:'ready',method:'local_ocr',ocrPages:1,textBytes:12,scripts:['Latin'],uncertain:true});
 });
 test('foreign file and model opt-out are rejected before any enqueue', async t => {

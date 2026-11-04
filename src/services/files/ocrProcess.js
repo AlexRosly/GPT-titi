@@ -20,10 +20,11 @@ const cleanupTemporary = async () => {
   }
 };
 const languages = require('./ocrLanguages').mode;
-const extract = async (buffer, kind, { signal } = {}) => {
+const extract = async (buffer, kind, { signal, page } = {}) => {
   signal?.throwIfAborted();
   if (process.platform !== 'linux') throw fail('OCR_UNAVAILABLE', 503);
-  if (!['pdf', 'image'].includes(kind) || !Buffer.isBuffer(buffer) || !buffer.length || buffer.length > 5 * 1024 * 1024) throw fail('OCR_FILE_TOO_LARGE', 413);
+  if (!['pdf', 'image'].includes(kind) || !Buffer.isBuffer(buffer) || !buffer.length || buffer.length > (page !== undefined ? 25000000 : 5 * 1024 * 1024)) throw fail('OCR_FILE_TOO_LARGE', 413);
+  if (page !== undefined && (kind !== 'pdf' || !(page === 'inspect' || Number.isInteger(page) && page >= 1 && page <= 100))) throw fail('INVALID_PDF_DOCUMENT');
   const lang = languages();
   if (active >= 2) throw fail('OCR_PROCESSING_BUSY', 503);
   active++;
@@ -34,7 +35,7 @@ const extract = async (buffer, kind, { signal } = {}) => {
     await fs.writeFile(path.join(dir, 'input'), buffer, { mode: 0o600 });
     signal?.throwIfAborted();
     return await new Promise((resolve, reject) => {
-      const child = spawn('prlimit', ['--as=2147483648', `--cpu=${limits.CPU_SECONDS}`, '--core=0', '--', process.execPath, '--max-old-space-size=192', '--disable-wasm-trap-handler', '--v8-pool-size=1', path.join(__dirname, 'ocrProcessWorker.js'), dir, kind, lang], {
+      const child = spawn('prlimit', ['--as=2147483648', `--cpu=${limits.CPU_SECONDS}`, '--core=0', '--', process.execPath, '--max-old-space-size=192', '--disable-wasm-trap-handler', '--v8-pool-size=1', path.join(__dirname, 'ocrProcessWorker.js'), dir, kind, lang, ...(page === undefined ? [] : [String(page)])], {
         detached: true, stdio: ['ignore', 'pipe', 'ignore'],
         env: { PATH: process.env.PATH, HOME: dir, TMPDIR: dir, OMP_THREAD_LIMIT: '1', MALLOC_ARENA_MAX: '2', RAYON_NUM_THREADS: '1', UV_THREADPOOL_SIZE: '1', ...(process.env.OCR_TESSDATA_DIR ? { TESSDATA_PREFIX: process.env.OCR_TESSDATA_DIR } : {}) },
       });
@@ -60,8 +61,12 @@ const extract = async (buffer, kind, { signal } = {}) => {
           const result = JSON.parse(output);
           const allowed = new Set(['OCR_UNAVAILABLE', 'OCR_NO_TEXT', 'OCR_PAGE_LIMIT', 'OCR_IMAGE_LIMIT', 'OCR_TEXT_TOO_LARGE', 'OCR_PROCESSING_TIMEOUT', 'OCR_INVALID_IMAGE', 'INVALID_PDF_DOCUMENT', 'PDF_PASSWORD_PROTECTED', 'PDF_PAGE_LIMIT']);
           if (result.error) return reject(fail(allowed.has(result.error) ? result.error : 'OCR_FAILED', 422));
+          if (page === 'inspect') {
+            if (!Number.isInteger(result.totalPages) || result.totalPages < 1 || result.totalPages > 100 || !Array.isArray(result.manifest) || result.manifest.length !== result.totalPages || result.manifest.some((p,i) => p.page !== i+1 || typeof p.ocr !== 'boolean') || result.manifest.filter(p => p.ocr).length > 30) throw new Error();
+            return resolve(result);
+          }
           if (typeof result.text !== 'string' || Buffer.byteLength(result.text) > 65536 || !Number.isInteger(result.pages) || result.pages < 0 || result.pages > 10) throw new Error();
-          if (!Array.isArray(result.detections) || result.detections.length !== result.pages || result.detections.some(d => !Number.isInteger(d.page) || d.page < 1 || d.page > 50 || !Array.isArray(d.models) || d.models.length > 4)) throw new Error();
+          if (!Array.isArray(result.detections) || result.detections.length !== result.pages || result.detections.some(d => !Number.isInteger(d.page) || d.page < 1 || d.page > (page === undefined ? 50 : 100) || !Array.isArray(d.models) || d.models.length > 4)) throw new Error();
           resolve({ text: result.text, pages: result.pages, languages: lang, detections: result.detections });
         } catch { reject(fail('OCR_FAILED', 422)); }
       });

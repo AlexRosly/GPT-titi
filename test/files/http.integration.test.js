@@ -159,7 +159,7 @@ test('async OCR endpoints are private, opt-in, idempotent and leave the legacy p
     assert.equal((await fetch(url, { method: 'POST', headers: own, body })).status, 202);
     assert.equal((await fetch(url, { method: 'POST', headers: own, body })).status, 202);
     assert.equal(await Job.countDocuments({ file: f._id }), 1);
-    t.mock.method(require('../../src/services/files/ocrProcess'), 'extract', async () => ({ text: 'test', pages: 1, detections: [{ page: 1, models: ['eng'] }], languages: 'eng' }));
+    t.mock.method(require('../../src/services/files/ocrProcess'), 'extract', async (b,k,o) => o?.page==='inspect'?{totalPages:1,manifest:[{page:1,ocr:true}]}:({ text: '[PDF PAGE 1 OF 1 — OCR]\ntest', pages: 1, detections: [{ page: 1, models: ['eng'] }], languages: 'eng' }));
     await queue.runOnce();
     const ready = await fetch(url + '?modelId=async-http-model', { headers: own });
     assert.equal(ready.headers.get('cache-control'), 'private, no-store');

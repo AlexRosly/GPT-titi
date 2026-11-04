@@ -12,6 +12,7 @@ const schema = new Schema({
   resultKey: String,
   derivedBytes: { type: Number, default: 0 },
   zipCache: { type: Schema.Types.Mixed, default: null },
+  ocrProgress: { type: Schema.Types.Mixed, default: null },
   ocrCache: { type: Schema.Types.Mixed, default: null },
   generatedPreview: { type: Schema.Types.Mixed, default: null },
   version: { type: Number, default: 1 },

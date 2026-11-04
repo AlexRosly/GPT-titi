@@ -3,7 +3,8 @@ const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
 const { fail } = require('./validation');
 const imageSize = require('./ocrImageSize');
-const [dir, kind, languages] = process.argv.slice(2);
+const [dir, kind, languages, pageMode] = process.argv.slice(2);
+const paged = kind === 'pdf' && Boolean(pageMode);
 const { createCanvas, loadImage } = require('@napi-rs/canvas');
 const clean = value => value.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '').trim();
 const readable = value => /[^\s\uFFFD]/u.test(value);
@@ -166,10 +167,12 @@ async function recognize(buffer, page) {
         cMapUrl: assets + 'cmaps/', cMapPacked: true, standardFontDataUrl: assets + 'standard_fonts/', wasmUrl: assets + 'wasm/', verbosity: 0 });
       const doc = await task.promise;
       if (await doc.getPermissions() !== null) throw fail('PDF_PASSWORD_PROTECTED');
-      if (doc.numPages > 50) throw fail('PDF_PAGE_LIMIT');
+      if (doc.numPages > (paged ? 100 : 50)) throw fail('PDF_PAGE_LIMIT');
+      const manifest = [];
       append('[PDF page numbers are physical positions, not printed labels. Text-layer pages are not OCRed; images on those pages may remain unread. Annotations are excluded; visible text in scanned forms may be recognized.]\n');
       for (let n = 1; n <= doc.numPages; n++) {
-        pagesRemaining = doc.numPages - n;
+        if (paged && pageMode !== 'inspect' && n !== Number(pageMode)) continue;
+        pagesRemaining = paged ? 0 : doc.numPages - n;
         const page = await doc.getPage(n);
         const reader = page.streamTextContent({ includeMarkedContent: false }).getReader();
         let text = '';
@@ -182,6 +185,7 @@ async function recognize(buffer, page) {
             }
           }
         } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+        if (pageMode === 'inspect') { manifest.push({ page: n, ocr: !readable(text) }); page.cleanup(); continue; }
         if (readable(text)) { anyText = true; append(`\n[PDF PAGE ${n} OF ${doc.numPages} — TEXT LAYER]\n${text}\n`); }
         else {
           if (pages >= 10) throw fail('OCR_PAGE_LIMIT');
@@ -208,7 +212,11 @@ async function recognize(buffer, page) {
         }
         page.cleanup();
       }
-      if (!anyText) throw fail('OCR_NO_TEXT');
+      if (pageMode === 'inspect') {
+        if (manifest.filter(p => p.ocr).length > 30) throw fail('OCR_PAGE_LIMIT');
+        process.stdout.write(JSON.stringify({ manifest, totalPages: doc.numPages })); return;
+      }
+      if (!anyText && !paged) throw fail('OCR_NO_TEXT');
     }
     process.stdout.write(JSON.stringify({ text: output, pages, detections }));
   } catch (error) {

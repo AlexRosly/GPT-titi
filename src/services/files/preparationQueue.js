@@ -1,3 +1,4 @@
+const slots = require('./ocrSlots');
 const crypto = require('node:crypto');
 const Job = require('../../models/filePreparation');
 const Models = require('../../models/chatModels');
@@ -25,6 +26,9 @@ const dto = (file, job) => {
     uncertain: (file.ocrCache.detections || []).some(d => d.uncertain === true) };
   if (!job) return { status: 'not_started' };
   const out = { status: job.status === 'ready' ? 'not_started' : job.status, method: 'local_ocr', attempts: job.attempts };
+  if (file.ocrProgress?.checksum === file.checksum) {
+    out.progress = { completedPages: file.ocrProgress.completed.length, totalPages: file.ocrProgress.totalPages, ocrPages: file.ocrProgress.manifest.filter(p=>p.ocr).length, failedPage: file.ocrProgress.failedPage };
+  }
   if (['queued', 'running'].includes(out.status)) out.pollAfterMs = 2000;
   if (out.status === 'failed') { out.error = job.errorCode || 'OCR_FAILED'; out.retryable = job.attempts < MAX_ATTEMPTS && retryable(out.error); }
   if (out.status === 'cancelled') out.retryable = job.attempts < MAX_ATTEMPTS;
@@ -37,7 +41,7 @@ const status = async (user, id, modelId) => {
 const enqueue = async (user, id, modelId, retry = false) => {
   const { file } = await authorize(user, id, modelId);
   if (!ocr.supported(file) || ocr.fresh(file)) return dto(file);
-  if (file.size > 5 * 1024 ** 2) throw fail('OCR_FILE_TOO_LARGE', 413);
+  if (file.size > (file.mimetype === 'application/pdf' ? 25000000 : 5 * 1024 ** 2)) throw fail('OCR_FILE_TOO_LARGE', 413);
   let job;
   try {
     job = await Job.findOneAndUpdate({ user, file: file._id }, { $setOnInsert: {
@@ -81,10 +85,18 @@ const runOnce = async () => {
     { $set: { status: 'running', leaseToken: token, leaseUntil: new Date(Date.now() + LEASE_MS) }, $inc: { attempts: 1 }, $unset: { errorCode: 1 } },
     { sort: { createdAt: 1 }, returnDocument: 'after' }).lean();
   if (!job) return false;
+  let resourceKeys;
+  try { await slots.init(); resourceKeys = await slots.acquire(job.user,token); }
+  catch(error) {
+    await Job.updateOne({_id:job._id,status:'running',leaseToken:token},{$set:{status:'queued'},$inc:{attempts:-1},$unset:{leaseToken:1,leaseUntil:1}});
+    if(error.fileError !== 'OCR_PROCESSING_BUSY') throw error;
+    return false;
+  }
   const controller = new AbortController();
   const fence = { _id: job._id, status: 'running', leaseToken: token };
   let checking = false;
   const verify = async (session) => {
+    await slots.verify(resourceKeys,token,session);
     if (!enabled()) throw fail('OCR_INPUT_DISABLED', 415);
     const { file, model } = await authorize(job.user, String(job.file), job.modelId);
     if (file.checksum !== job.checksum) throw fail('FILE_UNAVAILABLE', 503);
@@ -100,14 +112,14 @@ const runOnce = async () => {
   timer.unref();
   try {
     const model = await verify();
-    await ocr.prepare(job.user, String(job.file), model, { signal: controller.signal, beforeCommit: verify });
+    await ocr.prepare(job.user, String(job.file), model, { signal: controller.signal, beforeCommit: verify, paged: true });
     controller.signal.throwIfAborted();
     await verify();
     await Job.updateOne(fence, { $set: { status: 'ready' }, $unset: { leaseToken: 1, leaseUntil: 1, errorCode: 1 } });
   } catch (error) {
     const code = controller.signal.aborted ? 'PREPARATION_INTERRUPTED' : errors.has(error.fileError) ? error.fileError : 'OCR_FAILED';
     await Job.updateOne(fence, { $set: { status: 'failed', errorCode: code }, $unset: { leaseToken: 1, leaseUntil: 1 } });
-  } finally { clearInterval(timer); controller.abort(); }
+  } finally { clearInterval(timer); controller.abort(); await slots.release(resourceKeys,token); }
   return true;
 };
 let running = false, timer;

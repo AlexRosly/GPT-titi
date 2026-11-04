@@ -11,7 +11,7 @@ const enabled = model => config.enabled() && process.env.OCR_ENABLED !== 'false'
 const eligible = (file, model) => supported(file) && enabled(model) &&
   (file.mimetype !== 'application/pdf' || (process.env.PDF_INPUT_ENABLED !== 'false' && model?.pdfInputEnabled !== false));
 const cached = file => [2, 3].includes(file.ocrCache?.version) && file.ocrCache?.checksum === file.checksum &&
-  typeof file.ocrCache.text === 'string' && Buffer.byteLength(file.ocrCache.text) <= 65536;
+  typeof file.ocrCache.text === 'string' && Buffer.byteLength(file.ocrCache.text) <= (file.ocrCache.pagedRevision === 1 ? 1024 * 1024 : 65536);
 // Old caches remain readable for turns already admitted before deployment.
 const fresh = file => cached(file) && file.ocrCache.version === 3 && file.ocrCache.qualityRevision === 3;
 const pending = new Map();
@@ -19,6 +19,8 @@ const prepare = async (user, id, model, options = {}) => {
   options.signal?.throwIfAborted();
   const file = await store.owned(user, id); // Always authorize before cache lookup, including in-flight jobs.
   if (!eligible(file, model) || fresh(file)) return;
+  if (file.mimetype === 'application/pdf' && options.paged) return require('./ocrPaged').prepare(user,id,options);
+  if (file.ocrProgress || require('./preparationQueue').enabled() && file.size > 5 * 1024 * 1024 && file.mimetype === 'application/pdf') throw fail('OCR_NOT_READY',409);
   if (file.size > 5 * 1024 * 1024) throw fail('OCR_FILE_TOO_LARGE', 413);
   const key = `${user}:${id}:${file.checksum}`;
   if (pending.has(key)) return pending.get(key);
@@ -31,6 +33,7 @@ const prepare = async (user, id, model, options = {}) => {
       options.signal?.throwIfAborted();
       if (options.beforeCommit) await options.beforeCommit(session);
       const latest = await store.owned(user, id, { session });
+      if (latest.ocrProgress) throw fail('OCR_NOT_READY',409);
       if (fresh(latest)) return; // Concurrent process winner; no duplicate quota claim.
       if (latest.checksum !== current.checksum) throw fail('FILE_UNAVAILABLE', 503);
       const delta = bytes - (latest.derivedBytes || 0);

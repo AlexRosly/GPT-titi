@@ -6,6 +6,8 @@ const processOcr = require('../../src/services/files/ocrProcess');
 const store = require('../../src/services/files/store');
 const Job = require('../../src/models/filePreparation');
 const Models = require('../../src/models/chatModels');
+const slots=require('../../src/services/files/ocrSlots');
+test.beforeEach(t=>{ t.mock.method(slots,'init',async()=>{}); t.mock.method(slots,'acquire',async()=>['user:owner','slot:0']); t.mock.method(slots,'verify',async()=>{}); t.mock.method(slots,'release',async()=>{}); });
 const file = () => ({ _id: '0123456789abcdef01234567', user: 'owner', originalName: 'scan.pdf', mimetype: 'application/pdf', size: 100, checksum: 'checksum' });
 process.env.PRIVATE_FILES_ENABLED = 'true'; process.env.FILE_PREPARATION_V2_ENABLED = 'true'; process.env.OCR_ENABLED = 'true';
 test('DTO exposes polling state without private text, lease or worker internals', () => {

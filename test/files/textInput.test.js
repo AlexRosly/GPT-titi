@@ -89,3 +89,15 @@ test('attachment reserve includes the full provider instructions and wrapper all
   assert.equal(textInput.reserveAmount(bytes, inputPerM, tokenValueUsd), expected);
   assert.equal(textInput.reserveAmount(0, inputPerM, tokenValueUsd), 0);
 });
+
+
+test('OCR alternatives remain verbatim source data and the shared policy requires disclosure', () => {
+  const raw = '[PDF PAGE 1 OF 8 — OCR]\nКонтрольний код: САМъСЕГ-01\n[OCR IDENTIFIER ALTERNATIVES]\n{"original":"САМъСЕГ-01","latin":"CANCEL-01"}';
+  const wrapped = textInput.part({ originalName: 'scan.pdf' }, raw).text;
+  const decoded = JSON.parse(wrapped.split('\n')[1]);
+  assert.equal(decoded.content, raw);
+  assert.match(textInput.instructions, /show the primary reading and its supplied alternative together/);
+  assert.match(textInput.instructions, /physical page/);
+  assert.match(textInput.instructions, /do not silently choose one/);
+  assert.match(textInput.instructions, /language of your answer/);
+});

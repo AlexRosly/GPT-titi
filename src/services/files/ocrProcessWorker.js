@@ -103,7 +103,9 @@ async function recognize(buffer, page) {
           });
           fs.writeFileSync(identifierInput, sheet.toBuffer('image/png'), { mode: 0o600 });
           const latin = languagePolicy.resolveScript('Latin', available);
-          const values = identifierPolicy.alternatives(selected, run([latin], 6, timeout, identifierInput));
+          const rejected = {};
+          const values = identifierPolicy.alternatives(selected, run([latin], 6, timeout, identifierInput), rejected);
+          selection.identifierRejections = rejected;
           identifierNotes = identifierPolicy.note(values);
           selection.identifierAlternatives = values.length;
         } catch {

@@ -67,3 +67,25 @@ test('real raw OCR of mixed Ukrainian/English/Polish PNG and four-page scan reta
   }
   assert.ok(pdf.detections.every(d => d.models.includes('script/Latin') || d.models.includes('Latin')));
 });
+
+
+test('CANCEL segmentation tolerates one extra/missing letter without changing primary or numeric suffix', () => {
+  for (const suffix of ['01', '02', '04', '06']) {
+    const originals = [{ text: 'САМъСЕГ-' + suffix }];
+    const saved = JSON.stringify(originals);
+    const word = { text: 'CANCEL-' + suffix, top: 16, height: 40, confidence: 95 };
+    assert.equal(identifiers.candidates(originals).length, 1);
+    assert.deepEqual(identifiers.alternatives(originals, { words: [word] }), [{ original: originals[0].text, latin: word.text }]);
+    assert.equal(JSON.stringify(originals), saved);
+    for (const rejected of [{ ...word, text: 'CANCEL-99' }, { ...word, confidence: 79 }, { ...word, text: 'CAN-' + suffix }]) {
+      assert.deepEqual(identifiers.alternatives(originals, { words: [rejected] }), []);
+    }
+    const reasons = {};
+    assert.deepEqual(identifiers.alternatives(originals, { words: [word, { ...word, text: 'EXTRA' }] }, reasons), []);
+    assert.deepEqual(reasons, { wordCount: 1 });
+    identifiers.alternatives(originals, { words: [{ ...word, text: 'CANCEL-99' }] }, reasons);
+    assert.equal(reasons.numericSuffix, 1);
+  }
+  const short = [{ text: 'САМСГ-01' }];
+  assert.equal(identifiers.alternatives(short, { words: [{ text: 'CANCEL-01', top: 16, height: 40, confidence: 95 }] }).length, 1);
+});

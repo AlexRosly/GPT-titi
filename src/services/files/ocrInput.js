@@ -5,6 +5,7 @@ const config = require('./config');
 const textInput = require('./textInput');
 const processOcr = require('./ocrProcess');
 const { fail } = require('./validation');
+const regions = require('./ocrRegions');
 const images = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const supported = f => images.has(f.mimetype) || (f.mimetype === 'application/pdf' && /\.pdf$/i.test(f.originalName));
 const enabled = model => config.enabled() && process.env.OCR_ENABLED !== 'false' && model?.ocrInputEnabled !== false;
@@ -13,7 +14,7 @@ const eligible = (file, model) => supported(file) && enabled(model) &&
 const cached = file => [2, 3].includes(file.ocrCache?.version) && file.ocrCache?.checksum === file.checksum &&
   typeof file.ocrCache.text === 'string' && Buffer.byteLength(file.ocrCache.text) <= (file.ocrCache.pagedRevision === 1 ? 1024 * 1024 : 65536);
 // Old caches remain readable for turns already admitted before deployment.
-const fresh = file => cached(file) && file.ocrCache.version === 3 && file.ocrCache.qualityRevision === 3;
+const fresh = file => cached(file) && file.ocrCache.version === 3 && file.ocrCache.qualityRevision === 3 && (!regions.enabled() || file.ocrCache.regionProfile === regions.profile() && file.ocrCache.languages === processOcr.languages());
 const pending = new Map();
 const prepare = async (user, id, model, options = {}) => {
   options.signal?.throwIfAborted();
@@ -40,7 +41,7 @@ const prepare = async (user, id, model, options = {}) => {
       const claim = await Quota.updateOne({ _id: user, bytes: { $lte: config.quotaBytes() - delta } }, { $inc: { bytes: delta } }, { session });
       if (!claim.matchedCount) throw fail('FILE_QUOTA_EXCEEDED', 413);
       await File.updateOne({ _id: latest._id, user, status: 'ready', checksum: current.checksum }, { $set: {
-        derivedBytes: bytes, ocrCache: { version: 3, qualityRevision: 3, checksum: current.checksum, text: result.text, pages: result.pages, languages: result.languages, detections: result.detections || [] },
+        derivedBytes: bytes, ocrCache: { version: 3, qualityRevision: 3, regionProfile: regions.profile(), checksum: current.checksum, text: result.text, pages: result.pages, languages: result.languages, detections: result.detections || [] },
       } }, { session });
     });
   })();

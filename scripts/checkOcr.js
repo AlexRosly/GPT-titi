@@ -14,5 +14,6 @@ try {
   if (missing.length) throw new Error('Install missing Tesseract language/script models: ' + missing.join(', '));
   execFileSync('prlimit', ['--as=1073741824', '--cpu=12', '--', 'pdftoppm', '-v'], { stdio: 'pipe', timeout: 5000 });
   execFileSync('prlimit', ['--as=2147483648', '--core=0', '--', process.execPath, '--max-old-space-size=192', '--disable-wasm-trap-handler', '--v8-pool-size=1', '-e', "require('@napi-rs/canvas'); import('pdfjs-dist/legacy/build/pdf.mjs').catch(()=>process.exit(1))"], { stdio: 'pipe', timeout: 10000, env });
+  console.log('OCR regions: ' + require('../src/services/files/ocrRegions').profile());
   console.log('OCR dependencies OK; mode: ' + languages() + (languages() === 'auto' ? '; ' + policy.SCRIPTS.length + ' script models + OSD available' : ''));
 } catch (error) { console.error('OCR dependency check failed: ' + error.message); process.exitCode = 1; }

@@ -17,9 +17,10 @@ function parseTsv(tsv) {
     const word = fields[11].replace(/[\x00-\x1f\x7f]/g, '').trim();
     if (!word) continue;
     const key = fields.slice(1, 5).join(':');
-    if (current?.key !== key) { current = { key, paragraph: fields.slice(1, 4).join(':'), words: [], left, right: left + width, top, bottom: top + height }; lines.push(current); }
+    if (current?.key !== key) { current = { key, paragraph: fields.slice(1, 4).join(':'), words: [], left, right: left + width, top, bottom: top + height, weight: 0, confidenceSum: 0 }; lines.push(current); }
     current.top = Math.min(current.top, top); current.bottom = Math.max(current.bottom, top + height);
     words.push({ text: word, left, top, width, height, confidence });
+    current.weight += word.length; current.confidenceSum += Math.max(0, confidence) * word.length;
     current.words.push(word); current.left = Math.min(current.left, left); current.right = Math.max(current.right, left + width);
     minX = Math.min(minX, left); maxX = Math.max(maxX, left + width);
     weight += word.length; confidenceSum += Math.max(0, confidence) * word.length;
@@ -39,7 +40,7 @@ function parseTsv(tsv) {
     // Only diagnose; never reorder words geometrically (would break RTL/columns).
     if (b.bottom < a.top || (a.key !== b.key && overlap > Math.min(a.bottom-a.top, b.bottom-b.top) * 0.5 && (a.right <= b.left || b.right <= a.left))) fragmentation++;
   }
-  return { text, words, characters: weight, confidence, lowFraction,
+  return { text, words, lines: lines.map(line => ({ ...line, confidence: line.weight ? line.confidenceSum / line.weight : 0 })), characters: weight, confidence, lowFraction,
     singleColumn, fragmentation,
     uncertain: weight > 0 && (confidence < 85 || lowFraction > 0.12 || uncertainNumber) };
 }

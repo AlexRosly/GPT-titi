@@ -12,9 +12,11 @@ const languagePolicy = require('./ocrLanguages');
 const limits = require('./ocrLimits');
 const qualityPolicy = require('./ocrQuality');
 const identifierPolicy = require('./ocrIdentifiers');
+const regionPolicy = require('./ocrRegions');
 const startedAt = Date.now();
 let retries = 0;
 let identifierMs = 0;
+let regionMs = 0;
 let pagesRemaining = 0;
 let available;
 const detections = [];
@@ -28,6 +30,7 @@ async function recognize(buffer, page) {
   const input = path.join(dir, 'page.png');
   const osdInput = path.join(dir, 'script.png');
   const identifierInput = path.join(dir, 'identifiers.png');
+  const regionInput = path.join(dir, 'region.png');
   fs.writeFileSync(input, buffer, { mode: 0o600 });
   try {
     let detection = { script: null, confidence: null };
@@ -116,28 +119,80 @@ async function recognize(buffer, page) {
       }
     }
     if (selection.identifierCheckIncomplete) identifierNotes += '\n[OCR IDENTIFIER CHECK INCOMPLETE: The bounded verification could not check every ambiguous code. Verify identifiers against the original.]';
+    let regionNotes = '';
+    if (languages === 'auto' && regionPolicy.enabled()) {
+      const lines = regionPolicy.candidates(recognized.lines);
+      const values = [];
+      const diagnostics = { profile: 'regions-1', eligible: lines.length, checked: 0, alternatives: 0, incomplete: lines.length > regionPolicy.MAX_REGIONS, reasons: {}, detections: [] };
+      const reason = code => { diagnostics.reasons[code] = (diagnostics.reasons[code] || 0) + 1; diagnostics.incomplete = true; };
+      const source = await loadImage(buffer);
+      for (const line of lines.slice(0, regionPolicy.MAX_REGIONS)) {
+        const remaining = () => regionPolicy.budget(Date.now()-startedAt, regionMs, pagesRemaining);
+        if (!remaining()) { reason('budget'); break; }
+        const started = Date.now();
+        try {
+          const x = Math.max(0, line.left-8), y = Math.max(0, line.top-8);
+          const w = Math.min(source.width-x, line.right-line.left+16), h = Math.min(source.height-y, line.bottom-line.top+16);
+          if (w <= 0 || h <= 0) { reason('geometry'); continue; }
+          const scale = Math.min(2, 96/h, 3000/w);
+          const crop = createCanvas(Math.ceil(w*scale)+32, Math.ceil(h*scale)+32);
+          const ctx = crop.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0,0,crop.width,crop.height);
+          ctx.drawImage(source,x,y,w,h,16,16,w*scale,h*scale);
+          fs.writeFileSync(regionInput,crop.toBuffer('image/png'),{mode:0o600});
+          const osd = spawnSync('tesseract',[regionInput,'stdout','-l','osd','--psm','0','-c','min_characters_to_try=10'],{
+            encoding:'utf8',timeout:Math.max(1,Math.min(1000,regionPolicy.budget(Date.now()-startedAt,regionMs+Date.now()-started,pagesRemaining))),killSignal:'SIGKILL',maxBuffer:65536,stdio:['ignore','pipe','pipe'] });
+          diagnostics.checked++;
+          if (osd.error || osd.status !== 0) { reason('detection'); continue; }
+          const detected = languagePolicy.parseOsd(osd.stdout);
+          diagnostics.detections.push({ line: line.line, script: detected.script, confidence: detected.confidence });
+          if (!detected.script || detected.confidence === null || detected.confidence <= 0) { reason('uncertainScript'); continue; }
+          const chosen = regionPolicy.selection(detected,available,selection.models);
+          if (!chosen) continue;
+          // Account for the current detection before starting optional recognition.
+          const left = regionPolicy.budget(Date.now()-startedAt,regionMs+Date.now()-started,pagesRemaining);
+          if (!left) { reason('budget'); break; }
+          const result = run(chosen.models,7,Math.min(2000,left),regionInput);
+          const value = regionPolicy.alternative(line,result,chosen);
+          if (!value) { reason('unconfirmedAlternative'); continue; }
+          if (Buffer.byteLength(regionPolicy.note([...values,value],true)) > regionPolicy.MAX_NOTES_BYTES ||
+              Buffer.byteLength(recognized.text+identifierNotes+regionPolicy.note([...values,value],true)) > 60000) { reason('outputLimit'); break; }
+          values.push(value);
+        } catch { reason('verificationFailed'); }
+        finally { regionMs += Date.now()-started; }
+      }
+      diagnostics.alternatives = values.length;
+      diagnostics.elapsedMs = regionMs;
+      selection.regions = diagnostics;
+      regionNotes = regionPolicy.note(values,diagnostics.incomplete);
+    }
     selection.scriptUncertain = scriptUncertain;
-    selection.qualityUncertain = recognized.uncertain || Boolean(selection.qualityRetryIncomplete) || Boolean(selection.identifierUncertain);
+    selection.qualityUncertain = recognized.uncertain || Boolean(selection.regions?.alternatives || selection.regions?.incomplete) || Boolean(selection.qualityRetryIncomplete) || Boolean(selection.identifierUncertain);
     selection.uncertain = scriptUncertain || selection.qualityUncertain;
     selection.textConfidence = Math.round(recognized.confidence);
     selection.lowConfidenceFraction = Number(recognized.lowFraction.toFixed(3));
     detections.push({ page, ...selection });
-    return { text: recognized.text + identifierNotes, selection };
+    return { text: recognized.text + identifierNotes + regionNotes, selection };
   } catch (error) {
     if (error.fileError) throw error;
     if (error.code === 'ENOBUFS') throw fail('OCR_TEXT_TOO_LARGE');
     if (error.code === 'ETIMEDOUT') throw fail('OCR_PROCESSING_TIMEOUT');
     throw fail('OCR_FAILED');
-  } finally { fs.rmSync(input, { force: true }); fs.rmSync(osdInput, { force: true }); fs.rmSync(identifierInput, { force: true }); }
+  } finally { fs.rmSync(input, { force: true }); fs.rmSync(osdInput, { force: true }); fs.rmSync(identifierInput, { force: true }); fs.rmSync(regionInput, { force: true }); }
 }
 (async () => {
   let task;
   try {
     const data = fs.readFileSync(path.join(dir, 'input'));
     let output = '', pages = 0, anyText = false;
+    let outputParts = [];
     const append = text => {
-      if (Buffer.byteLength(output) + Buffer.byteLength(text) > 65536) throw fail('OCR_TEXT_TOO_LARGE');
-      output += text;
+      const fitted = regionPolicy.fit([...outputParts, text], 65536);
+      outputParts = fitted.parts;
+      output = outputParts.join('');
+      if (Buffer.byteLength(output) > 65536) throw fail('OCR_TEXT_TOO_LARGE');
+      if (fitted.omitted) for (const detection of detections) {
+        if (detection.regions) { detection.regions.outputOmitted = true; detection.regions.incomplete = true; }
+      }
     };
     const ocr = async (buffer, page) => {
       if (++pages > 10) throw fail('OCR_PAGE_LIMIT');

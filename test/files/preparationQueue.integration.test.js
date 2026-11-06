@@ -118,3 +118,33 @@ integration('cancel after page one retains private progress and retry does not r
  await queue.enqueue(user,String(file._id),'queue-test-model',true);await queue.runOnce();
  assert.equal((await queue.status(user,String(file._id),'queue-test-model')).status,'ready');
 });
+
+integration('regional profile upgrades an old cache once and preserves raw alternatives and quota on reread',async t=>{
+ const prior=process.env.OCR_REGIONS_ENABLED;
+ try {
+ delete process.env.OCR_REGIONS_ENABLED;
+ let calls=0;
+ t.mock.method(processOcr,'extract',async(b,k,o)=>{calls++;const r=result(o);if(o.page!=='inspect'&&process.env.OCR_REGIONS_ENABLED==='true')r.text+='\n[OCR REGION ALTERNATIVES — unverified]\n{"line":1,"original":"source","alternative":"Ελληνικά"}';return r;});
+ await queue.enqueue(user,String(file._id),'queue-test-model');await queue.runOnce();assert.equal(calls,2);
+ process.env.OCR_REGIONS_ENABLED='true';assert.equal((await queue.status(user,String(file._id),'queue-test-model')).status,'not_started');
+ await queue.enqueue(user,String(file._id),'queue-test-model');await queue.runOnce();assert.equal(calls,4);
+ const saved=await File.findById(file._id).lean();assert.equal(saved.ocrCache.regionProfile,'regions-1');assert.match(saved.ocrCache.text,/Ελληνικά/);
+ const quota=(await Quota.findById(user)).bytes;
+ assert.equal((await queue.enqueue(user,String(file._id),'queue-test-model')).status,'ready');await queue.runOnce();assert.equal(calls,4);
+ assert.equal((await File.findById(file._id)).ocrCache.text,saved.ocrCache.text);assert.equal((await Quota.findById(user)).bytes,quota);
+ }finally{if(prior===undefined)delete process.env.OCR_REGIONS_ENABLED;else process.env.OCR_REGIONS_ENABLED=prior;}
+});
+integration('regional page checkpoints survive interruption without rerunning completed pages',async t=>{
+ const prior=process.env.OCR_REGIONS_ENABLED;
+ try {
+ process.env.OCR_REGIONS_ENABLED='true';let interrupt=true;const calls=[];
+ t.mock.method(processOcr,'extract',async(b,k,o)=>{calls.push(o.page);if(o.page==='inspect')return {totalPages:2,manifest:[1,2].map(page=>({page,ocr:true}))};
+ if(o.page===2&&interrupt)throw Object.assign(new Error(),{fileError:'PREPARATION_INTERRUPTED'});
+ return {text:`[PDF PAGE ${o.page} OF 2 — OCR]\nprimary ${o.page}\n[OCR REGION ALTERNATIVES — unverified]\nalternative ${o.page}`,pages:1,detections:[{page:o.page,models:['script/Latin'],regions:{alternatives:1}}]};});
+ await queue.enqueue(user,String(file._id),'queue-test-model');await queue.runOnce();
+ const partial=await File.findById(file._id).lean();assert.equal(partial.ocrProgress.regionProfile,'regions-1');assert.equal(partial.ocrProgress.completed.length,1);
+ interrupt=false;await queue.enqueue(user,String(file._id),'queue-test-model',true);await queue.runOnce();
+ assert.deepEqual(calls,['inspect',1,2,2]);const final=await File.findById(file._id).lean();assert.equal(final.ocrCache.regionProfile,'regions-1');assert.equal(final.ocrProgress,null);
+ assert.ok(final.ocrCache.text.indexOf('alternative 1')<final.ocrCache.text.indexOf('alternative 2'));
+ }finally{if(prior===undefined)delete process.env.OCR_REGIONS_ENABLED;else process.env.OCR_REGIONS_ENABLED=prior;}
+});

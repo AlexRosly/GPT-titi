@@ -37,7 +37,7 @@ const extract = async (buffer, kind, { signal, page } = {}) => {
     return await new Promise((resolve, reject) => {
       const child = spawn('prlimit', ['--as=2147483648', `--cpu=${limits.CPU_SECONDS}`, '--core=0', '--', process.execPath, '--max-old-space-size=192', '--disable-wasm-trap-handler', '--v8-pool-size=1', path.join(__dirname, 'ocrProcessWorker.js'), dir, kind, lang, ...(page === undefined ? [] : [String(page)])], {
         detached: true, stdio: ['ignore', 'pipe', 'ignore'],
-        env: { PATH: process.env.PATH, HOME: dir, TMPDIR: dir, OMP_THREAD_LIMIT: '1', MALLOC_ARENA_MAX: '2', RAYON_NUM_THREADS: '1', UV_THREADPOOL_SIZE: '1', ...(process.env.OCR_TESSDATA_DIR ? { TESSDATA_PREFIX: process.env.OCR_TESSDATA_DIR } : {}) },
+        env: { OCR_REGIONS_ENABLED: require('./ocrRegions').enabled() ? 'true' : 'false', PATH: process.env.PATH, HOME: dir, TMPDIR: dir, OMP_THREAD_LIMIT: '1', MALLOC_ARENA_MAX: '2', RAYON_NUM_THREADS: '1', UV_THREADPOOL_SIZE: '1', ...(process.env.OCR_TESSDATA_DIR ? { TESSDATA_PREFIX: process.env.OCR_TESSDATA_DIR } : {}) },
       });
       let output = '', bytes = 0, error;
       const kill = () => { try { process.kill(-child.pid, 'SIGKILL'); } catch {} };

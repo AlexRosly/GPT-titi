@@ -7,7 +7,8 @@ const engine = require('./ocrProcess');
 const { fail } = require('./validation');
 const MAX_TEXT = 1024 * 1024;
 const revision = 1;
-const valid = (progress, file, languages) => progress?.revision === revision && progress.checksum === file.checksum && progress.languages === languages;
+const regions = require('./ocrRegions');
+const valid = (progress, file, languages) => progress?.revision === revision && progress.checksum === file.checksum && progress.languages === languages && (progress.regionProfile || 'primary-3') === regions.profile();
 const size = value => value ? Buffer.byteLength(JSON.stringify(value)) : 0;
 const prepare = async (user, id, options) => {
   if (!options.beforeCommit) throw fail('OCR_NOT_READY',409);
@@ -28,7 +29,7 @@ const prepare = async (user, id, options) => {
   });
   if (!progress) {
     const manifest = await engine.extract(buffer,'pdf',{signal:options.signal,page:'inspect'});
-    progress = {revision,checksum:file.checksum,languages,totalPages:manifest.totalPages,manifest:manifest.manifest,completed:[],attempts:{},failedPage:null};
+    progress = {revision,regionProfile:regions.profile(),checksum:file.checksum,languages,totalPages:manifest.totalPages,manifest:manifest.manifest,completed:[],attempts:{},failedPage:null};
     await save(progress);
   }
   for (const item of progress.manifest) {
@@ -61,7 +62,7 @@ const prepare = async (user, id, options) => {
   const ordered=progress.completed.slice().sort((a,b)=>a.page-b.page);
   if(ordered.length!==progress.totalPages) throw fail('OCR_NOT_READY',409);
   if (ordered.every(p=>p.text.includes('[NO TEXT RECOGNIZED:'))) throw fail('OCR_NO_TEXT',422);
-  const final={version:3,qualityRevision:3,checksum:file.checksum,languages,text:(progress.header || '')+ordered.map(p=>p.text).join('\n'),pages:ordered.reduce((n,p)=>n+p.ocrPages,0),detections:ordered.flatMap(p=>p.detections),totalPages:progress.totalPages,pagedRevision:revision};
+  const final={version:3,qualityRevision:3,regionProfile:progress.regionProfile,checksum:file.checksum,languages,text:(progress.header || '')+ordered.map(p=>p.text).join('\n'),pages:ordered.reduce((n,p)=>n+p.ocrPages,0),detections:ordered.flatMap(p=>p.detections),totalPages:progress.totalPages,pagedRevision:revision};
   if(Buffer.byteLength(final.text)>MAX_TEXT) throw fail('OCR_TEXT_TOO_LARGE',413);
   await save(null,final);
 };

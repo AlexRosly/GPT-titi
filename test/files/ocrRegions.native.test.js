@@ -38,9 +38,9 @@ test('real scanned PDF preserves page coordinates and exact primary text',async(
  if(process.env.OCR_TEST_ARTIFACT_DIR)fs.writeFileSync(path.join(process.env.OCR_TEST_ARTIFACT_DIR,'mixed-2-pages.pdf'),bytes);
  for(const page of [1,2]){const r=await compare('pdf-page-'+page,bytes,'pdf',{page});assert.match(r.text,new RegExp(`PDF PAGE ${page} OF 2`));assert.equal(r.detections[0].page,page);assert.ok(r.detections[0].regions.checked>0);}
 });
-test('pure Latin and manual language settings do not acquire regional alternatives',async()=>{
+test('Latin fragmentation may receive only labelled layout alternatives; manual mode remains unchanged',async()=>{
  const old=process.env.OCR_REGIONS_ENABLED,lang=process.env.OCR_LANGUAGES;
- try{process.env.OCR_REGIONS_ENABLED='true';process.env.OCR_LANGUAGES='auto';const b=fs.readFileSync(path.join(root,'international/latin.png'));const r=await extract(b,'image');assert.equal(values(r.text).length,0);
+ try{process.env.OCR_REGIONS_ENABLED='true';process.env.OCR_LANGUAGES='auto';const b=fs.readFileSync(path.join(root,'international/latin.png'));const r=await extract(b,'image');assert.ok(values(r.text).every(v=>v.script==='Latin'&&v.sourceLines.length>1));
  process.env.OCR_LANGUAGES='eng';const manual=await extract(b,'image');assert.equal(manual.detections[0].regions,undefined);
  }finally{if(old===undefined)delete process.env.OCR_REGIONS_ENABLED;else process.env.OCR_REGIONS_ENABLED=old;if(lang===undefined)delete process.env.OCR_LANGUAGES;else process.env.OCR_LANGUAGES=lang;}
 });
@@ -55,5 +55,27 @@ test('failed optional region processes retain the successful primary extraction 
  fs.writeFileSync(path.join(dir,'tesseract'),wrapper,{mode:0o700});process.env.PATH=dir+path.delimiter+oldPath;
  const r=await compare('optional-failure',fs.readFileSync(path.join(root,'regions/west-asian.png')));
  assert.equal(values(r.text).length,0);assert.equal(r.detections[0].regions.incomplete,true);assert.ok(r.detections[0].regions.reasons.detection>0);assert.match(r.text,/OCR REGION CHECK INCOMPLETE/);
+ }finally{process.env.PATH=oldPath;fs.rmSync(dir,{recursive:true,force:true});}
+});
+test('real OCR recovers truncated Japanese/Korean edges and fragmented English rows without editing primary TSV text',async()=>{
+ const os=require('node:os'),cp=require('node:child_process');
+ const actual=cp.execFileSync('which',['tesseract'],{encoding:'utf8'}).trim();
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'ocr-bounds-test-')),oldPath=process.env.PATH;
+ try{
+ const wrapper='#!'+process.execPath+'\n'+
+ 'const r=require("node:child_process").spawnSync('+JSON.stringify(actual)+',process.argv.slice(2),{encoding:"utf8"});\n'+
+ 'let out=r.stdout||"";if(process.argv[2].endsWith("/page.png")&&out.startsWith("level\\t")){out=out.split("\\n").filter(row=>{const f=row.split("\\t");if(f[0]!=="5")return true;const x=Number(f[6]),y=Number(f[7]);return !(y>850&&y<950&&x>1100)&&!(y>1000&&y<1100&&x<400)});const first=out.filter(row=>{const f=row.split("\\t");return f[0]==="5"&&Number(f[7])<500&&f[11]==="English:"});const rest=out.filter(row=>!first.includes(row));out=[rest[0],...first,...rest.slice(1)].join("\\n");}\n'+
+ 'process.stdout.write(out);process.stderr.write(r.stderr||"");process.exit(r.status??1);\n';
+ fs.writeFileSync(path.join(dir,'tesseract'),wrapper,{mode:0o700});process.env.PATH=dir+path.delimiter+oldPath;
+ const r=await compare('truncated-primary',fs.readFileSync(path.join(root,'regions/east-asian.png')));
+ const japanese=values(r.text).find(v=>v.script==='Japanese'),korean=values(r.text).find(v=>v.script==='Korean');
+ assert.ok(japanese);assert.ok(korean);
+ const english=values(r.text).filter(v=>v.script==='Latin'&&v.sourceLines.length>1);assert.equal(english.length,6);
+ assert.ok(english.every(v=>v.alternative==='English: Document recognition keeps page order and numbers.'));
+ assert.match(japanese.alternative.replace(/\s/g,''),/確認してください。$/);
+ assert.match(korean.alternative.replace(/\s/g,''),/^이문서는한국어/);
+ assert.equal(japanese.boundsStatus,'pixel-region');assert.equal(korean.boundsStatus,'pixel-region');
+ assert.equal(japanese.recognitionIncomplete,false);assert.equal(korean.recognitionIncomplete,false);
+ assert.ok(japanese.box[0]+japanese.box[2]>1400);assert.ok(korean.box[0]<100);
  }finally{process.env.PATH=oldPath;fs.rmSync(dir,{recursive:true,force:true});}
 });

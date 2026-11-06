@@ -13,6 +13,7 @@ const limits = require('./ocrLimits');
 const qualityPolicy = require('./ocrQuality');
 const identifierPolicy = require('./ocrIdentifiers');
 const regionPolicy = require('./ocrRegions');
+const regionBounds = require('./ocrRegionBounds');
 const startedAt = Date.now();
 let retries = 0;
 let identifierMs = 0;
@@ -121,11 +122,22 @@ async function recognize(buffer, page) {
     if (selection.identifierCheckIncomplete) identifierNotes += '\n[OCR IDENTIFIER CHECK INCOMPLETE: The bounded verification could not check every ambiguous code. Verify identifiers against the original.]';
     let regionNotes = '';
     if (languages === 'auto' && regionPolicy.enabled()) {
-      const lines = regionPolicy.candidates(recognized.lines);
-      const values = [];
-      const diagnostics = { profile: 'regions-1', eligible: lines.length, checked: 0, alternatives: 0, incomplete: lines.length > regionPolicy.MAX_REGIONS, reasons: {}, detections: [] };
-      const reason = code => { diagnostics.reasons[code] = (diagnostics.reasons[code] || 0) + 1; diagnostics.incomplete = true; };
+      const boundsStarted = Date.now();
       const source = await loadImage(buffer);
+      const scale = Math.min(1,1800/Math.max(source.width,source.height));
+      const raster = createCanvas(Math.max(1,Math.round(source.width*scale)),Math.max(1,Math.round(source.height*scale)));
+      const rasterCtx = raster.getContext('2d'); rasterCtx.fillStyle='#fff';rasterCtx.fillRect(0,0,raster.width,raster.height);
+      rasterCtx.drawImage(source,0,0,raster.width,raster.height);
+      let geometry;
+      try {
+        const pixels=regionBounds.detect(rasterCtx.getImageData(0,0,raster.width,raster.height),source.width,source.height);
+        geometry={...regionBounds.match(recognized.lines,pixels.regions),truncated:pixels.truncated};
+      } catch { geometry={candidates:[],unmatched:recognized.lines.length,truncated:true}; }
+      regionMs += Date.now()-boundsStarted;
+      const lines = geometry.candidates;
+      const values = [];
+      const diagnostics = { profile: 'regions-2', eligible: lines.length, checked: 0, alternatives: 0, incomplete: lines.length > regionPolicy.MAX_REGIONS || geometry.unmatched>0 || geometry.truncated, unmatchedLines:geometry.unmatched, boundsTruncated:geometry.truncated, reasons: {}, detections: [] };
+      const reason = code => { diagnostics.reasons[code] = (diagnostics.reasons[code] || 0) + 1; diagnostics.incomplete = true; };
       for (const line of lines.slice(0, regionPolicy.MAX_REGIONS)) {
         const remaining = () => regionPolicy.budget(Date.now()-startedAt, regionMs, pagesRemaining);
         if (!remaining()) { reason('budget'); break; }
@@ -146,7 +158,12 @@ async function recognize(buffer, page) {
           const detected = languagePolicy.parseOsd(osd.stdout);
           diagnostics.detections.push({ line: line.line, script: detected.script, confidence: detected.confidence });
           if (!detected.script || detected.confidence === null || detected.confidence <= 0) { reason('uncertainScript'); continue; }
-          const chosen = regionPolicy.selection(detected,available,selection.models);
+          let chosen = regionPolicy.selection(detected,available,selection.models);
+          // A geometrically joined row can also need same-script layout verification.
+          if (!chosen && line.sourceLines.length>1) {
+            const same=languagePolicy.select('auto',available,detected);
+            if(same.script && same.models.every(model=>selection.models.includes(model)))chosen={...same,detectionUncertain:false};
+          }
           if (!chosen) continue;
           // Account for the current detection before starting optional recognition.
           const left = regionPolicy.budget(Date.now()-startedAt,regionMs+Date.now()-started,pagesRemaining);
@@ -154,6 +171,9 @@ async function recognize(buffer, page) {
           const result = run(chosen.models,7,Math.min(2000,left),regionInput);
           const value = regionPolicy.alternative(line,result,chosen);
           if (!value) { reason('unconfirmedAlternative'); continue; }
+          value.edgeCoverage=regionBounds.edgeCoverage(line,result,{x,scale});
+          value.recognitionIncomplete=!value.edgeCoverage.left || !value.edgeCoverage.right;
+          if(value.recognitionIncomplete)reason('edgeCoverage');
           if (Buffer.byteLength(regionPolicy.note([...values,value],true)) > regionPolicy.MAX_NOTES_BYTES ||
               Buffer.byteLength(recognized.text+identifierNotes+regionPolicy.note([...values,value],true)) > 60000) { reason('outputLimit'); break; }
           values.push(value);

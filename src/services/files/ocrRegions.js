@@ -3,7 +3,7 @@
 const { JOB_MS } = require('./ocrLimits');
 const language = require('./ocrLanguages');
 const enabled = () => process.env.OCR_REGIONS_ENABLED === 'true';
-const profile = () => enabled() ? 'regions-1' : 'primary-3';
+const profile = () => enabled() ? 'regions-2' : 'primary-3';
 const MAX_REGIONS = 12;
 const MAX_NOTES_BYTES = 8192;
 function candidates(lines = []) {
@@ -39,12 +39,13 @@ function alternative(line, result, chosen) {
   // Numeric disagreement is disclosed, never silently reconciled or guessed.
   const numbers = s => s.match(/\p{N}+(?:[.,:/-]\p{N}+)*/gu) || [];
   return { line: line.line, box: [line.left, line.top, line.right-line.left, line.bottom-line.top],
+    ...(line.sourceLines ? {sourceLines:line.sourceLines,boundsStatus:line.boundsStatus} : {}),
     original: line.text, alternative: text, script: chosen.script, models: chosen.models,
     scriptDetectionUncertain: Boolean(chosen.detectionUncertain),
     numericAgreement: JSON.stringify(numbers(line.text)) === JSON.stringify(numbers(text)) };
 }
 function note(values, incomplete) {
-  let text = values.length ? '\n[OCR REGION ALTERNATIVES — unverified independent recognition of image regions; primary text above is unchanged. Line numbers follow primary OCR order, boxes use rendered-page pixels. Check the original; numericAgreement=false means numbers differ.]\n' + values.slice().sort((a,b)=>a.line-b.line).map(v=>JSON.stringify(v)).join('\n') : '';
+  let text = values.length ? '\n[OCR REGION ALTERNATIVES — unverified independent recognition of image regions; primary text above is unchanged. sourceLines identify primary OCR fragments; boxes use rendered-page pixels. A pixel-region and edgeCoverage are geometric checks, not proof of complete recognition; recognitionIncomplete=true means a crop edge may remain unread. Check the original; numericAgreement=false means numbers differ.]\n' + values.slice().sort((a,b)=>a.line-b.line).map(v=>JSON.stringify(v)).join('\n') : '';
   if (incomplete) text += '\n[OCR REGION CHECK INCOMPLETE: Limited sampling, uncertain script detection or time limits left regions unchecked. Short or omitted text and other scripts may still be misread.]';
   return text;
 }

@@ -607,6 +607,12 @@ if (!TEST_MONGO_URI) {
     assert.equal(persistedTurn.turnId, result.turn.turnId);
     assert.equal(persistedTurn.requestHash, result.turn.requestHash);
 
+    const updatedConversation = await ChatConversation.findById(conversation._id).lean();
+    assert.deepEqual(updatedConversation.lastRequestAt, persistedTurn.createdAt);
+    assert.deepEqual(updatedConversation.pinnedAt, conversation.pinnedAt);
+    assert.deepEqual(updatedConversation.projectPinnedAt, conversation.projectPinnedAt);
+    assert.deepEqual(updatedConversation.lastMessageAt, conversation.lastMessageAt);
+
     const messages = await countTurnMessages(result.turn.turnId);
 
     assert.deepEqual(messages, {

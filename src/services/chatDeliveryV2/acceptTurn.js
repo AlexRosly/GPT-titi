@@ -138,6 +138,12 @@ const acceptTurn = async ({ userId, payload }) => {
         }],
         { session },
       );
+      const activity = await ChatConversation.updateOne(
+        { _id: conversationId, user: userId, archived: false },
+        { $max: { lastRequestAt: createdTurn.createdAt } },
+        { session, timestamps: false },
+      );
+      if (!activity.matchedCount) throw protocolError("CONVERSATION_NOT_FOUND");
       return { turn: createdTurn.toObject(), disposition: "accepted" };
     });
   } catch (error) {

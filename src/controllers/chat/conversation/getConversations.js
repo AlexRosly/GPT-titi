@@ -9,7 +9,7 @@ const getConversation = async (req, res) => {
       archived: false,
     })
       .sort(CONVERSATION_SORT)
-      .select("_id title lastMessageAt createdAt project pinnedAt")
+      .select("_id title lastMessageAt lastRequestAt createdAt project pinnedAt")
       .populate({
         path: "project",
         select: "_id title color icon pinnedAt",

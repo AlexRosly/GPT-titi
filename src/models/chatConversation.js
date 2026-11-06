@@ -39,6 +39,9 @@ const ChatConversationSchema = Schema(
     // Independent of the global pin; cleared when project membership changes.
     projectPinnedAt: { type: Date, default: null },
 
+    // Timestamp of the last accepted user turn, independent of reply completion.
+    lastRequestAt: Date,
+
     lastMessageAt: {
       type: Date,
       default: Date.now,

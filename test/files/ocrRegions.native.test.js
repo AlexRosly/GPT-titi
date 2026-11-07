@@ -122,6 +122,25 @@ test('worker exposes a labelled PSM 13 fallback after low-confidence Han; primar
  const failed=await compare('psm13-failure',fs.readFileSync(path.join(root,'regions/east-asian.png')));
  assert.equal(values(failed.text).some(v=>v.script==='Han'),false);
  assert.ok(failed.detections[0].regions.reasons.verificationFailed>=1);
+ const retained=values(failed.text).find(v=>v.script==='Japanese');assert.ok(retained);assert.equal(retained.crossCheck.status,'failed');
+ assert.ok(failed.detections[0].regions.reasons.crossCheck_failed>=1);
  assert.match(failed.text,/OCR REGION CHECK INCOMPLETE/);
  }finally{process.env.PATH=oldPath;fs.rmSync(dir,{recursive:true,force:true});}
+});
+
+test('original international PDF exposes confident Han disagreement and keeps primary and both readings',async()=>{
+ const b=fs.readFileSync(path.join(root,'regions/high-confidence-conflict.pdf'));
+ const r=await compare('high-confidence-conflict',b,'pdf',{page:2});
+ const han=values(r.text).find(v=>v.script==='Han');assert.ok(han);
+ assert.equal(han.crossCheck.status,'conflict');
+ assert.deepEqual(han.crossCheck.readings.map(v=>v.psm),[7,13]);
+ assert.equal(han.crossCheck.readings[0].text,han.alternative);
+ assert.equal(han.crossCheck.readings[0].text.replace(/\s/g,''),'这是中文测试文件，请阅读订单内容和发票写码731。');
+ assert.equal(han.crossCheck.readings[1].text.replace(/\s/g,''),'这是中文测试文件，请阅读订单内容和发票号码731。');
+ assert.ok(han.crossCheck.readings.every(v=>v.confidence>=85&&v.edgeCoverage.left&&v.edgeCoverage.right));
+ assert.equal(r.detections[0].regions.profile,'regions-4');
+ assert.ok(r.detections[0].regions.crossCheckConflicts>=1);
+ assert.ok(r.detections[0].regions.layoutRetries<=2);
+ assert.match(r.text,/report both, never choose by confidence/);
+ assert.match(r.text,/OCR REGION CHECK INCOMPLETE/);
 });

@@ -137,7 +137,7 @@ async function recognize(buffer, page) {
       regionMs += Date.now()-boundsStarted;
       const lines = geometry.candidates;
       const values = [];
-      const diagnostics = { profile: regionPolicy.profile(), layoutRetries: 0, layoutRecovered: 0, eligible: lines.length, checked: 0, alternatives: 0, incomplete: lines.length > regionPolicy.MAX_REGIONS || geometry.unmatched>0 || geometry.truncated, unmatchedLines:geometry.unmatched, boundsTruncated:geometry.truncated, reasons: {}, detections: [] };
+      const diagnostics = { profile: regionPolicy.profile(), layoutRetries: 0, layoutRecovered: 0, crossChecks: 0, crossCheckConflicts: 0, eligible: lines.length, checked: 0, alternatives: 0, incomplete: lines.length > regionPolicy.MAX_REGIONS || geometry.unmatched>0 || geometry.truncated, unmatchedLines:geometry.unmatched, boundsTruncated:geometry.truncated, reasons: {}, detections: [] };
       const reason = code => { diagnostics.reasons[code] = (diagnostics.reasons[code] || 0) + 1; diagnostics.incomplete = true; };
       for (const line of lines.slice(0, regionPolicy.MAX_REGIONS)) {
         const remaining = () => regionPolicy.budget(Date.now()-startedAt, regionMs, pagesRemaining);
@@ -176,6 +176,9 @@ async function recognize(buffer, page) {
             run: (psm,timeout) => { diagnostics.layoutRetries++; return run(chosen.models,psm,timeout,regionInput); },
           });
           if (verified.retry === 'accepted') diagnostics.layoutRecovered++;
+          if (verified.comparisonAttempted) diagnostics.crossChecks++;
+          if (verified.crossCheck === 'conflict') diagnostics.crossCheckConflicts++;
+          if (verified.crossCheck && verified.crossCheck !== 'agreement') reason('crossCheck_' + verified.crossCheck);
           if (verified.retry === 'budget') reason('layoutRetryBudget');
           if (verified.retry === 'limit') reason('layoutRetryLimit');
           const { result, value } = verified;
@@ -183,6 +186,15 @@ async function recognize(buffer, page) {
           value.edgeCoverage=regionBounds.edgeCoverage(line,result,{x,scale});
           value.recognitionIncomplete=!value.edgeCoverage.left || !value.edgeCoverage.right;
           if(value.recognitionIncomplete)reason('edgeCoverage');
+          if (value.crossCheck?.readings) {
+            value.crossCheck.readings[0].edgeCoverage = value.edgeCoverage;
+            value.crossCheck.readings[0].recognitionIncomplete = value.recognitionIncomplete;
+            const second = value.crossCheck.readings[1];
+            second.edgeCoverage = regionBounds.edgeCoverage(line,verified.comparisonResult,{x,scale});
+            second.recognitionIncomplete = !second.edgeCoverage.left || !second.edgeCoverage.right;
+            if (second.recognitionIncomplete) reason('crossCheckEdgeCoverage');
+            if (regionPolicy.limitComparison(values,value,recognized.text+identifierNotes)) reason('crossCheckOutputLimit');
+          }
           if (Buffer.byteLength(regionPolicy.note([...values,value],true)) > regionPolicy.MAX_NOTES_BYTES ||
               Buffer.byteLength(recognized.text+identifierNotes+regionPolicy.note([...values,value],true)) > 60000) { reason('outputLimit'); break; }
           values.push(value);

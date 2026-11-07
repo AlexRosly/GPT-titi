@@ -3,7 +3,7 @@
 const { JOB_MS } = require('./ocrLimits');
 const language = require('./ocrLanguages');
 const enabled = () => process.env.OCR_REGIONS_ENABLED === 'true';
-const profile = () => enabled() ? 'regions-3' : 'primary-3';
+const profile = () => enabled() ? 'regions-4' : 'primary-3';
 const MAX_REGIONS = 12;
 const MAX_NOTES_BYTES = 8192;
 const MAX_LAYOUT_RETRIES = 2; // Shared across pages in one worker job.
@@ -31,9 +31,9 @@ function scriptAgreement(script, text) {
   const letters = [...text].filter(c=>/\p{L}/u.test(c));
   return letters.length >= 4 && letters.filter(c=>pattern.test(c)).length / letters.length >= 0.5;
 }
-function alternative(line, result, chosen) {
+function alternative(line, result, chosen, allowUnchanged = false) {
   const text = result.text.trim();
-  if (!text || text === line.text || !Number.isFinite(result.confidence) || result.confidence < 70 || text.length > 2000 || /[\r\n]/.test(text)) return null;
+  if (!text || (!allowUnchanged && text === line.text) || !Number.isFinite(result.confidence) || result.confidence < 70 || text.length > 2000 || /[\r\n]/.test(text)) return null;
   // Weak OSD is only a candidate. Require stronger independent recognition
   // and agreement with the candidate script before exposing an alternative.
   if (chosen.detectionUncertain && (!Number.isFinite(line.confidence) || result.confidence < 85 || result.confidence < line.confidence + 5 || !scriptAgreement(chosen.script, text))) return null;
@@ -45,11 +45,37 @@ function alternative(line, result, chosen) {
     scriptDetectionUncertain: Boolean(chosen.detectionUncertain),
     numericAgreement: JSON.stringify(numbers(line.text)) === JSON.stringify(numbers(text)) };
 }
-// Retry only a plausible single-line reading rejected for confidence. PSM 13
-// changes segmentation, never the raster, models, thresholds or primary text.
+// Cross-check accepted weak-OSD readings; retry low-confidence rejected ones.
+// Both paths share the existing two-attempt job cap and time budget.
+// PSM 13 changes segmentation, never raster, models or primary text.
+function crossCheck(line, first, chosen, { state, remaining, run }) {
+  const finish = (status, extra = {}) => {
+    first.value.crossCheck = { status, ...extra };
+    return { ...first, crossCheck: status };
+  };
+  if (state.attempts >= MAX_LAYOUT_RETRIES) return finish('limit');
+  const left = remaining();
+  if (!Number.isFinite(left) || left < 500) return finish('budget');
+  state.attempts++;
+  let result;
+  try { result = run(13, Math.min(2000, left)); }
+  catch { return { ...finish('failed'), comparisonAttempted: true }; }
+  // Equality with primary text is allowed in a comparison: it is evidence,
+  // not a reason to discard the second reading. The usual quality gates apply.
+  const second = scriptAgreement(chosen.script, result.text) ? alternative(line, result, chosen, true) : null;
+  if (!second) return { ...finish('rejected'), comparisonAttempted: true };
+  const status = first.value.alternative === second.alternative ? 'agreement' : 'conflict';
+  const value = finish(status, { readings: [
+    { psm: 7, text: first.value.alternative, confidence: first.result.confidence, numericAgreement: first.value.numericAgreement },
+    { psm: 13, text: second.alternative, confidence: result.confidence, numericAgreement: second.numericAgreement },
+  ] });
+  // Keep PSM 7 in the original alternative field, regardless of which score
+  // is larger. Both exact readings remain unverified, even when they agree.
+  return { ...value, comparisonAttempted: true, comparisonResult: result };
+}
 function verify(line, result, chosen, { state, remaining, run }) {
   const first = { result, value: alternative(line, result, chosen), psm: 7 };
-  if (first.value) return first;
+  if (first.value) return chosen.detectionUncertain ? crossCheck(line, first, chosen, { state, remaining, run }) : first;
   const text = result.text.trim();
   const required = chosen.detectionUncertain ? Math.max(85, line.confidence + 5) : 70;
   if (!text || text === line.text || text.length > 2000 || /[\r\n]/.test(text) ||
@@ -66,9 +92,18 @@ function verify(line, result, chosen, { state, remaining, run }) {
   return { result: retried, value, psm: 13, retry: value ? 'accepted' : 'rejected' };
 }
 function note(values, incomplete) {
-  let text = values.length ? '\n[OCR REGION ALTERNATIVES — unverified independent recognition of image regions; primary text above is unchanged. sourceLines identify primary OCR fragments; boxes use rendered-page pixels. A pixel-region and edgeCoverage are geometric checks, not proof of complete recognition; recognitionIncomplete=true means a crop edge may remain unread. Check the original; numericAgreement=false means numbers differ.]\n' + values.slice().sort((a,b)=>a.line-b.line).map(v=>JSON.stringify(v)).join('\n') : '';
+  let text = values.length ? '\n[OCR REGION ALTERNATIVES — unverified independent recognition of image regions; primary text above is unchanged. sourceLines identify primary OCR fragments; boxes use rendered-page pixels. A pixel-region and edgeCoverage are geometric checks, not proof of complete recognition; recognitionIncomplete=true means a crop edge may remain unread. Check the original; numericAgreement=false means numbers differ. crossCheck.status=conflict means PSM readings disagree: report both, never choose by confidence or silently replace text. agreement does not prove correctness; budget/limit/failed/rejected/omitted means the cross-check is incomplete.]\n' + values.slice().sort((a,b)=>a.line-b.line).map(v=>JSON.stringify(v)).join('\n') : '';
   if (incomplete) text += '\n[OCR REGION CHECK INCOMPLETE: Limited sampling, uncertain script detection or time limits left regions unchecked. Short or omitted text and other scripts may still be misread.]';
   return text;
+}
+// Drop only optional comparison details when output is tight; retain the
+// accepted region reading and explicitly disclose the omitted cross-check.
+function limitComparison(values, value, primary) {
+  if (!value.crossCheck?.readings) return false;
+  const notes = note([...values,value],true);
+  if (Buffer.byteLength(notes) <= MAX_NOTES_BYTES && Buffer.byteLength(primary+notes) <= 60000) return false;
+  value.crossCheck = { status: 'omitted', reason: 'output_limit' };
+  return true;
 }
 // Each part is one page or a document header. Optional notes must never turn
 // an otherwise fitting primary document into OCR_TEXT_TOO_LARGE.
@@ -81,4 +116,4 @@ function fit(parts, limit) {
   });
   return { parts: primary, omitted: primary.some((part,i)=>part!==parts[i]) };
 }
-module.exports = { fit, enabled, profile, MAX_REGIONS, MAX_NOTES_BYTES, MAX_LAYOUT_RETRIES, candidates, budget, selection, alternative, verify, note };
+module.exports = { fit, enabled, profile, MAX_REGIONS, MAX_NOTES_BYTES, MAX_LAYOUT_RETRIES, candidates, budget, selection, alternative, verify, note, limitComparison };

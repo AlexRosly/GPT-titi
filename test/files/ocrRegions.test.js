@@ -8,7 +8,7 @@ const line = (text, confidence=90) => ({words:[text],confidence,left:10,top:20,r
 test('regions use all installed script families with confidence gates and explicit opt-in',()=>{
  const old=process.env.OCR_REGIONS_ENABLED;
  try { delete process.env.OCR_REGIONS_ENABLED; assert.equal(regions.enabled(),false);
- process.env.OCR_REGIONS_ENABLED='true';assert.equal(regions.profile(),'regions-3');
+ process.env.OCR_REGIONS_ENABLED='true';assert.equal(regions.profile(),'regions-4');
  for(const script of language.SCRIPTS.filter(s=>s!=='Latin'))assert.ok(regions.selection({script,confidence:10},available,['script/Latin']));
  assert.equal(regions.selection({script:'Latin',confidence:10},available,['script/Latin']),null);
  for(const confidence of [null,0,NaN])assert.equal(regions.selection({script:'Arabic',confidence},available,[]),null);
@@ -57,7 +57,8 @@ test('cache upgrade and checkpoints are keyed by regional profile; old results r
  process.env.OCR_REGIONS_ENABLED='true';assert.equal(ocr.cached(f),true);assert.equal(ocr.fresh(f),false);assert.equal(paged.valid(p,f,'auto'),false);
  p.regionProfile='regions-1';f.ocrCache.regionProfile='regions-1';assert.equal(ocr.fresh(f),false);assert.equal(paged.valid(p,f,'auto'),false);
  p.regionProfile='regions-2';f.ocrCache.regionProfile='regions-2';assert.equal(ocr.cached(f),true);assert.equal(ocr.fresh(f),false);assert.equal(paged.valid(p,f,'auto'),false);
- p.regionProfile='regions-3';f.ocrCache.regionProfile='regions-3';assert.equal(ocr.fresh(f),true);assert.equal(paged.valid(p,f,'auto'),true);
+ p.regionProfile='regions-3';f.ocrCache.regionProfile='regions-3';assert.equal(ocr.cached(f),true);assert.equal(ocr.fresh(f),false);assert.equal(paged.valid(p,f,'auto'),false);
+ p.regionProfile='regions-4';f.ocrCache.regionProfile='regions-4';assert.equal(ocr.fresh(f),true);assert.equal(paged.valid(p,f,'auto'),true);
  f.ocrCache.languages='different-model';assert.equal(ocr.fresh(f),false);
  }finally{if(old===undefined)delete process.env.OCR_REGIONS_ENABLED;else process.env.OCR_REGIONS_ENABLED=old;}
 });
@@ -101,7 +102,7 @@ test('layout retry is script-independent and cannot bypass script, structure, co
  for(const left of [0,499,NaN]){
   const state={attempts:0};assert.equal(regions.verify(source,first,chosen,{state,remaining:()=>left,run:noRun}).retry,'budget');assert.equal(state.attempts,0);
  }
- const valid=regions.verify(source,{...first,confidence:90},chosen,{state:{attempts:0},remaining:noRun,run:noRun});assert.equal(valid.psm,7);
+ const valid=regions.verify(source,{...first,confidence:90},{...chosen,detectionUncertain:false},{state:{attempts:0},remaining:noRun,run:noRun});assert.equal(valid.psm,7);
  for(const result of [{text:'Latin nonsense',confidence:99},{...first,confidence:84.99},{...first,text:'Ελληνικά\nδεύτερη',confidence:99}])assert.equal(regions.verify(source,first,chosen,{state:{attempts:0},remaining:()=>8000,run:()=>result}).value,null);
  const mismatch=regions.verify(source,first,chosen,{state:{attempts:0},remaining:()=>8000,run:(psm,ms)=>{assert.equal(ms,2000);return {text:'Ελληνικά 137,60',confidence:95}}});
  assert.equal(mismatch.value.numericAgreement,false);assert.equal(mismatch.value.alternative,'Ελληνικά 137,60');
@@ -110,4 +111,56 @@ test('layout retry is script-independent and cannot bypass script, structure, co
  assert.equal(regions.verify(source,{...first,confidence:69},strong,{state:{attempts:0},remaining:()=>8000,run:()=>({text:'Latin nonsense',confidence:99})}).value,null);
  // A high primary confidence still requires the same five-point gain.
  assert.equal(regions.verify({...source,confidence:90},first,chosen,{state:{attempts:0},remaining:()=>8000,run:()=>({...first,confidence:94})}).value,null);
+});
+
+test('accepted weak-OSD reading is cross-checked; conflicting exact strings are never ranked or replaced',()=>{
+ const source={...line('primary 731',10),line:14,text:'primary 731'};
+ const chosen={script:'Han',models:['HanS','HanT'],detectionUncertain:true};
+ const first={text:'这是中文发票写码731。',confidence:90.08};
+ for(const confidence of [85,92.24]){
+  const snapshot=JSON.stringify({source,chosen,first}),calls=[],state={attempts:0};
+  const out=regions.verify(source,first,chosen,{state,remaining:()=>7000,run:(psm,ms)=>{calls.push([psm,ms]);return {text:'这是中文发票号码731。',confidence}}});
+  assert.deepEqual(calls,[[13,2000]]);assert.equal(state.attempts,1);
+  assert.equal(out.crossCheck,'conflict');assert.equal(out.value.alternative,first.text);assert.equal(out.result,first);
+  assert.deepEqual(out.value.crossCheck.readings.map(v=>[v.psm,v.text]),[[7,first.text],[13,'这是中文发票号码731。']]);
+  assert.equal(JSON.stringify({source,chosen,first}),snapshot);assert.equal(out.value.original,source.text);
+ }
+ const equal=regions.verify(source,first,chosen,{state:{attempts:0},remaining:()=>800,run:()=>({...first})});
+ assert.equal(equal.crossCheck,'agreement');assert.equal(equal.value.crossCheck.readings.length,2);
+ // A whitespace, punctuation, numeric or script difference is never normalized away.
+ for(const text of ['这是中文发票写码 731。','这是中文发票写码732。','这是中文发票写码731!']){
+  const out=regions.verify(source,first,chosen,{state:{attempts:0},remaining:()=>800,run:()=>({text,confidence:95})});
+  assert.equal(out.crossCheck,'conflict');assert.equal(out.value.crossCheck.readings[1].text,text);
+  if(text.includes('732'))assert.equal(out.value.crossCheck.readings[1].numericAgreement,false);
+ }
+});
+test('cross-check failure, low quality or budget exhaustion preserves an accepted reading and shares retry cap',()=>{
+ const source={...line('source 137,50',20),line:1,text:'source 137,50'},chosen={script:'Greek',models:['Greek'],detectionUncertain:true};
+ const first={text:'Ελληνικά 137,50',confidence:90},noRun=()=>assert.fail('unexpected process');
+ for(const [state,left,status] of [[{attempts:2},8000,'limit'],[{attempts:0},499,'budget'],[{attempts:0},NaN,'budget']]){
+  const out=regions.verify(source,first,chosen,{state,remaining:()=>left,run:noRun});assert.equal(out.crossCheck,status);assert.equal(out.value.alternative,first.text);
+ }
+ for(const second of [{text:'Latin nonsense',confidence:99},{text:'Ελληνικά 137,50',confidence:84.99},{text:'Ελληνικά\nδεύτερο',confidence:99}]){
+  const out=regions.verify(source,first,chosen,{state:{attempts:0},remaining:()=>8000,run:()=>second});assert.equal(out.crossCheck,'rejected');assert.equal(out.value.alternative,first.text);assert.equal(out.value.crossCheck.readings,undefined);
+ }
+ const state={attempts:0};
+ const failed=regions.verify(source,first,chosen,{state,remaining:()=>8000,run:()=>{throw Error('ETIMEDOUT')}});
+ assert.equal(failed.crossCheck,'failed');assert.equal(failed.comparisonAttempted,true);assert.equal(failed.value.alternative,first.text);assert.equal(state.attempts,1);
+ regions.verify(source,{...first,confidence:80},chosen,{state,remaining:()=>8000,run:()=>first});
+ assert.equal(state.attempts,2);assert.equal(regions.verify(source,first,chosen,{state,remaining:()=>8000,run:noRun}).crossCheck,'limit');
+ // A separately recognized reading equal to the primary is still evidence.
+ const samePrimary={...source,text:'Ελληνικά αρχικό 137,50'};
+ const out=regions.verify(samePrimary,first,chosen,{state:{attempts:0},remaining:()=>8000,run:()=>({text:samePrimary.text,confidence:95})});
+ assert.equal(out.crossCheck,'conflict');assert.equal(out.value.crossCheck.readings[1].text,samePrimary.text);
+});
+test('oversized comparison details are explicitly omitted before dropping an accepted alternative',()=>{
+ const value={line:1,original:'primary 731',alternative:'accepted 731',crossCheck:{status:'conflict',readings:[{psm:7,text:'accepted 731'},{psm:13,text:'文'.repeat(1900)}]}};
+ assert.equal(regions.limitComparison([],value,''),false);
+ assert.equal(regions.limitComparison([],value,'x'.repeat(55000)),true);
+ assert.deepEqual(value.crossCheck,{status:'omitted',reason:'output_limit'});
+ assert.equal(value.alternative,'accepted 731');assert.equal(value.original,'primary 731');
+ assert.ok(Buffer.byteLength('x'.repeat(55000)+regions.note([value],true))<60000);
+ const oversized={...value,crossCheck:{status:'conflict',readings:[{text:'文'.repeat(1900)},{text:'字'.repeat(1900)}]}};
+ assert.equal(regions.limitComparison([],oversized,''),true);
+ assert.ok(Buffer.byteLength(regions.note([oversized],true))<=regions.MAX_NOTES_BYTES);
 });

@@ -79,3 +79,49 @@ test('real OCR recovers truncated Japanese/Korean edges and fragmented English r
  assert.ok(japanese.box[0]+japanese.box[2]>1400);assert.ok(korean.box[0]<100);
  }finally{process.env.PATH=oldPath;fs.rmSync(dir,{recursive:true,force:true});}
 });
+
+test('original server Han pixels pass PSM 13 without changing models or lowering confidence',()=>{
+ const cp=require('node:child_process'),crypto=require('node:crypto');
+ const regions=require('../../src/services/files/ocrRegions'),quality=require('../../src/services/files/ocrQuality'),language=require('../../src/services/files/ocrLanguages');
+ const input=path.join(root,'regions/han-server-original.png');
+ assert.equal(crypto.createHash('sha256').update(fs.readFileSync(input)).digest('hex'),'d822722a688bca6a5712362e69883562606100902f844dd99cc05d1751bd12cc');
+ const env={...process.env,OMP_THREAD_LIMIT:'1',...(process.env.OCR_TESSDATA_DIR?{TESSDATA_PREFIX:process.env.OCR_TESSDATA_DIR}:{})};
+ const available=language.listModels(cp.execFileSync('tesseract',['--list-langs'],{env,encoding:'utf8',timeout:5000}));
+ const chosen=regions.selection({script:'Han',confidence:1.24},available,['Latin']);
+ const run=(psm,timeout)=>quality.parseTsv(cp.execFileSync('tesseract',[input,'stdout','-l',chosen.models.join('+'),'--oem','1','--psm',String(psm),'-c','tessedit_create_tsv=1'],{env,encoding:'utf8',timeout,maxBuffer:2*1024*1024,stdio:['ignore','pipe','ignore']}));
+ const source={text:'KEPPNIR, AHRJ AAAMRR S731.',confidence:15.869565217391305,line:8,left:0,top:0,right:1705,bottom:128};
+ const first=run(7,2000),started=Date.now();
+ const verified=regions.verify(source,first,chosen,{state:{attempts:0},remaining:()=>regions.budget(Date.now()-started,Date.now()-started),run});
+ assert.ok(verified.value,'same-pixel region must produce a confirmed alternative');
+ assert.equal(verified.value.alternative.replace(/\s/g,''),'这是中文测试文件，请阅读订单内容和发票号码731。');
+ assert.ok(verified.result.confidence>=85);assert.equal(verified.value.original,source.text);
+ // Engines may already pass PSM 7; force only its score to exercise the real
+ // PSM 13 subprocess on every supported environment, with unchanged pixels.
+ const forced=regions.verify(source,{...first,confidence:79.56},chosen,{state:{attempts:0},remaining:()=>8000,run});
+ assert.equal(forced.retry,'accepted');assert.equal(forced.value.psm,13);
+ assert.equal(forced.value.alternative.replace(/\s/g,''),'这是中文测试文件，请阅读订单内容和发票号码731。');
+});
+
+test('worker exposes a labelled PSM 13 fallback after low-confidence Han; primary stays identical',async()=>{
+ const os=require('node:os'),cp=require('node:child_process');
+ const actual=cp.execFileSync('which',['tesseract'],{encoding:'utf8'}).trim();
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'ocr-layout-test-')),oldPath=process.env.PATH;
+ try{
+ const wrapper='#!'+process.execPath+'\n'+
+ 'const args=process.argv.slice(2);const r=require("node:child_process").spawnSync('+JSON.stringify(actual)+',args,{encoding:"utf8"});\n'+
+ 'let out=r.stdout||"";if(args[0].endsWith("/region.png")&&args[args.indexOf("--psm")+1]==="7"&&out.includes("中")&&out.includes("文")){out=out.split("\\n").map(row=>{const f=row.split("\\t");if(f[0]==="5")f[10]="79.56";return f.join("\\t")}).join("\\n");}\n'+
+ 'process.stdout.write(out);process.stderr.write(r.stderr||"");process.exit(r.status??1);\n';
+ fs.writeFileSync(path.join(dir,'tesseract'),wrapper,{mode:0o700});process.env.PATH=dir+path.delimiter+oldPath;
+ const r=await compare('psm13-fallback',fs.readFileSync(path.join(root,'regions/east-asian.png')));
+ const han=values(r.text).find(v=>v.script==='Han');assert.ok(han);assert.equal(han.psm,13);assert.equal(han.layoutFallback,true);
+ assert.equal(han.alternative.replace(/\s/g,''),'这是中文测试文件，请阅读订单内容和发票号码731。');
+ assert.ok(r.detections[0].regions.layoutRetries<=2);assert.ok(r.detections[0].regions.layoutRecovered>=1);
+ // Optional retry failure must leave the primary successful and expose the
+ // incomplete check, not fail the document or invent a Han alternative.
+ fs.writeFileSync(path.join(dir,'tesseract'),wrapper.replace('const args=process.argv.slice(2);','const args=process.argv.slice(2);if(args[0].endsWith("/region.png")&&args[args.indexOf("--psm")+1]==="13")process.exit(1);'),{mode:0o700});
+ const failed=await compare('psm13-failure',fs.readFileSync(path.join(root,'regions/east-asian.png')));
+ assert.equal(values(failed.text).some(v=>v.script==='Han'),false);
+ assert.ok(failed.detections[0].regions.reasons.verificationFailed>=1);
+ assert.match(failed.text,/OCR REGION CHECK INCOMPLETE/);
+ }finally{process.env.PATH=oldPath;fs.rmSync(dir,{recursive:true,force:true});}
+});

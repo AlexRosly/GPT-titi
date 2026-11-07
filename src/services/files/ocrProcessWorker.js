@@ -18,6 +18,7 @@ const startedAt = Date.now();
 let retries = 0;
 let identifierMs = 0;
 let regionMs = 0;
+const regionLayoutState = { attempts: 0 };
 let pagesRemaining = 0;
 let available;
 const detections = [];
@@ -136,7 +137,7 @@ async function recognize(buffer, page) {
       regionMs += Date.now()-boundsStarted;
       const lines = geometry.candidates;
       const values = [];
-      const diagnostics = { profile: 'regions-2', eligible: lines.length, checked: 0, alternatives: 0, incomplete: lines.length > regionPolicy.MAX_REGIONS || geometry.unmatched>0 || geometry.truncated, unmatchedLines:geometry.unmatched, boundsTruncated:geometry.truncated, reasons: {}, detections: [] };
+      const diagnostics = { profile: regionPolicy.profile(), layoutRetries: 0, layoutRecovered: 0, eligible: lines.length, checked: 0, alternatives: 0, incomplete: lines.length > regionPolicy.MAX_REGIONS || geometry.unmatched>0 || geometry.truncated, unmatchedLines:geometry.unmatched, boundsTruncated:geometry.truncated, reasons: {}, detections: [] };
       const reason = code => { diagnostics.reasons[code] = (diagnostics.reasons[code] || 0) + 1; diagnostics.incomplete = true; };
       for (const line of lines.slice(0, regionPolicy.MAX_REGIONS)) {
         const remaining = () => regionPolicy.budget(Date.now()-startedAt, regionMs, pagesRemaining);
@@ -168,8 +169,16 @@ async function recognize(buffer, page) {
           // Account for the current detection before starting optional recognition.
           const left = regionPolicy.budget(Date.now()-startedAt,regionMs+Date.now()-started,pagesRemaining);
           if (!left) { reason('budget'); break; }
-          const result = run(chosen.models,7,Math.min(2000,left),regionInput);
-          const value = regionPolicy.alternative(line,result,chosen);
+          const first = run(chosen.models,7,Math.min(2000,left),regionInput);
+          const verified = regionPolicy.verify(line,first,chosen,{
+            state: regionLayoutState,
+            remaining: () => regionPolicy.budget(Date.now()-startedAt,regionMs+Date.now()-started,pagesRemaining),
+            run: (psm,timeout) => { diagnostics.layoutRetries++; return run(chosen.models,psm,timeout,regionInput); },
+          });
+          if (verified.retry === 'accepted') diagnostics.layoutRecovered++;
+          if (verified.retry === 'budget') reason('layoutRetryBudget');
+          if (verified.retry === 'limit') reason('layoutRetryLimit');
+          const { result, value } = verified;
           if (!value) { reason('unconfirmedAlternative'); continue; }
           value.edgeCoverage=regionBounds.edgeCoverage(line,result,{x,scale});
           value.recognitionIncomplete=!value.edgeCoverage.left || !value.edgeCoverage.right;

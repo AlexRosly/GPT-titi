@@ -3,9 +3,10 @@
 const { JOB_MS } = require('./ocrLimits');
 const language = require('./ocrLanguages');
 const enabled = () => process.env.OCR_REGIONS_ENABLED === 'true';
-const profile = () => enabled() ? 'regions-2' : 'primary-3';
+const profile = () => enabled() ? 'regions-3' : 'primary-3';
 const MAX_REGIONS = 12;
 const MAX_NOTES_BYTES = 8192;
+const MAX_LAYOUT_RETRIES = 2; // Shared across pages in one worker job.
 function candidates(lines = []) {
   return lines.map((line, index) => ({ ...line, line: index + 1, text: line.words.join(' ') }))
     .filter(line => [...line.text].filter(c => /\p{L}/u.test(c)).length >= 10 && line.right > line.left && line.bottom > line.top)
@@ -32,10 +33,10 @@ function scriptAgreement(script, text) {
 }
 function alternative(line, result, chosen) {
   const text = result.text.trim();
-  if (!text || text === line.text || result.confidence < 70 || text.length > 2000 || text.includes('\n')) return null;
+  if (!text || text === line.text || !Number.isFinite(result.confidence) || result.confidence < 70 || text.length > 2000 || /[\r\n]/.test(text)) return null;
   // Weak OSD is only a candidate. Require stronger independent recognition
   // and agreement with the candidate script before exposing an alternative.
-  if (chosen.detectionUncertain && (result.confidence < 85 || result.confidence < line.confidence + 5 || !scriptAgreement(chosen.script, text))) return null;
+  if (chosen.detectionUncertain && (!Number.isFinite(line.confidence) || result.confidence < 85 || result.confidence < line.confidence + 5 || !scriptAgreement(chosen.script, text))) return null;
   // Numeric disagreement is disclosed, never silently reconciled or guessed.
   const numbers = s => s.match(/\p{N}+(?:[.,:/-]\p{N}+)*/gu) || [];
   return { line: line.line, box: [line.left, line.top, line.right-line.left, line.bottom-line.top],
@@ -43,6 +44,26 @@ function alternative(line, result, chosen) {
     original: line.text, alternative: text, script: chosen.script, models: chosen.models,
     scriptDetectionUncertain: Boolean(chosen.detectionUncertain),
     numericAgreement: JSON.stringify(numbers(line.text)) === JSON.stringify(numbers(text)) };
+}
+// Retry only a plausible single-line reading rejected for confidence. PSM 13
+// changes segmentation, never the raster, models, thresholds or primary text.
+function verify(line, result, chosen, { state, remaining, run }) {
+  const first = { result, value: alternative(line, result, chosen), psm: 7 };
+  if (first.value) return first;
+  const text = result.text.trim();
+  const required = chosen.detectionUncertain ? Math.max(85, line.confidence + 5) : 70;
+  if (!text || text === line.text || text.length > 2000 || /[\r\n]/.test(text) ||
+      !Number.isFinite(result.confidence) || !Number.isFinite(required) ||
+      result.confidence >= required || !scriptAgreement(chosen.script, text)) return first;
+  if (state.attempts >= MAX_LAYOUT_RETRIES) return { ...first, retry: 'limit' };
+  // Re-evaluate after PSM 7, not with its stale starting budget.
+  const left = remaining();
+  if (!Number.isFinite(left) || left < 500) return { ...first, retry: 'budget' };
+  state.attempts++;
+  const retried = run(13, Math.min(2000, left));
+  const value = scriptAgreement(chosen.script, retried.text) ? alternative(line, retried, chosen) : null;
+  if (value) { value.psm = 13; value.layoutFallback = true; }
+  return { result: retried, value, psm: 13, retry: value ? 'accepted' : 'rejected' };
 }
 function note(values, incomplete) {
   let text = values.length ? '\n[OCR REGION ALTERNATIVES — unverified independent recognition of image regions; primary text above is unchanged. sourceLines identify primary OCR fragments; boxes use rendered-page pixels. A pixel-region and edgeCoverage are geometric checks, not proof of complete recognition; recognitionIncomplete=true means a crop edge may remain unread. Check the original; numericAgreement=false means numbers differ.]\n' + values.slice().sort((a,b)=>a.line-b.line).map(v=>JSON.stringify(v)).join('\n') : '';
@@ -60,4 +81,4 @@ function fit(parts, limit) {
   });
   return { parts: primary, omitted: primary.some((part,i)=>part!==parts[i]) };
 }
-module.exports = { fit, enabled, profile, MAX_REGIONS, MAX_NOTES_BYTES, candidates, budget, selection, alternative, note };
+module.exports = { fit, enabled, profile, MAX_REGIONS, MAX_NOTES_BYTES, MAX_LAYOUT_RETRIES, candidates, budget, selection, alternative, verify, note };

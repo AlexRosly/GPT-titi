@@ -20,7 +20,7 @@ const uploadLimit = name => {
 };
 const effective = model => ({
   version: 1, profile: 'stage-a-storage', units: { MB: 1000000, GB: 1000000000 },
-  storage: { maxBytes: config.quotaBytes(), maxCount: config.quotaCount(), unattachedTtlSeconds: 86400 },
+  storage: { maxBytes: config.quotaBytes(), maxCount: config.quotaCount(), unattachedTtlSeconds: null, retention: 'until_user_deletes', libraryVersion: 1 },
   upload: { maxBytes: config.uploadMaxBytes(), types: Object.fromEntries(Object.entries(categories).map(([k,v]) =>
     [k, { extensions: v.extensions, maxBytes: Math.min(v.bytes, config.uploadMaxBytes()) }])) },
   message: { maxAttachments: config.maxAttachments, maxBytes: config.maxBytes(),

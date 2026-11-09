@@ -39,7 +39,7 @@ test('unconfirmed container cleanup retains its distributed lease until expiry',
  const f=fixture(t);t.mock.method(runtime,'run',async()=>{throw Object.assign(Error('cleanup'),{fileError:'COMPUTE_CLEANUP_PENDING',cleanupUnconfirmed:true});});const r=await f.run();assert.equal(r.computation.reason,'COMPUTE_CLEANUP_PENDING');assert.equal(f.stats().release,0);
 });
 test('a later run replaces its own staged filename instead of attaching duplicate versions',async t=>{
- const f=fixture(t);let removed=0,calls=0;t.mock.method(store,'remove',async()=>{removed++;});
+ const f=fixture(t);let removed=0,calls=0;t.mock.method(store,'removeTemporary',async()=>{removed++;});
  f.client.chat.completions.create=async()=>{calls++;return {choices:[calls===1?{message:{tool_calls:[{...f.call,id:'two'}]},finish_reason:'tool_calls'}:{message:{content:'Final result'},finish_reason:'stop'}],usage:{prompt_tokens:10,completion_tokens:5,total_tokens:15}};};
  const r=await f.run();assert.equal(r.computation.files.length,1);assert.equal(r.computation.runs,2);assert.equal(removed,1);assert.equal(r.usage.totalTokens,60);
 });

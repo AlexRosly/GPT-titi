@@ -8,6 +8,7 @@ const handle = (fn) => async (req, res, next) => { try { await fn(req, res); } c
   next(err);
 } };
 router.use(auth, (req, res, next) => {
+  res.set({ 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
   if (!config.enabled()) return res.status(404).json({ error: 'FILES_DISABLED' });
   if (req.user.status !== 'active') return res.status(403).json({ error: 'ACCOUNT_INACTIVE' });
   next();
@@ -85,7 +86,7 @@ router.post('/:id/prepare', express.json({ limit: '1kb' }), handle(async (req, r
 router.get('/', handle(async (req, res) => {
   const File = require('../models/managedFile');
   const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
-  const filter = { user: req.user._id, status: 'ready' };
+  const filter = { user: req.user._id, status: 'ready', retention: { $ne: 'temporary' }, expiresAt: null };
   if (req.query.before) {
     if (!store.idOK(req.query.before)) return res.status(400).json({ error: 'INVALID_CURSOR' });
     filter._id = { $lt: req.query.before };

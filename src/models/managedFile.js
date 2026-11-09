@@ -7,6 +7,7 @@ const schema = new Schema({
   checksum: { type: String, required: true },
   source: { type: String, enum: ['upload', 'generated'], required: true },
   status: { type: String, enum: ['ready', 'deleted'], default: 'ready' },
+  retention: { type: String, enum: ['library', 'temporary'] },
   expiresAt: { type: Date, default: null },
   deletedAt: { type: Date, default: null },
   resultKey: String,

@@ -44,12 +44,11 @@ async function run(turn,token,model,messages,firstCall,usage,available,client,pa
     const previous=current.computeState.files||[];
     const refs=previous.filter(f=>!replacements.has(f.name.normalize('NFC').toLowerCase()));
     if(refs.length+prepared.length>l.files||refs.reduce((n,f)=>n+f.size,0)+prepared.reduce((n,f)=>n+f.buffer.length,0)>l.outputBytes)throw policy.fail('COMPUTE_OUTPUT_LIMIT');
-    for(const old of previous)if(replacements.has(old.name.normalize('NFC').toLowerCase()))await store.remove(turn.user,old.fileId,session);
+    for(const old of previous)if(replacements.has(old.name.normalize('NFC').toLowerCase()))await store.removeTemporary(turn.user,old.fileId,session);
     for(let i=0;i<prepared.length;i++){
      const f=prepared[i];
-     const stored=await store.create({...f,user:turn.user,source:'generated',resultKey:`${turn.turnId}:${turn.attempt}:compute:${next.runs}:${i}`,session});
+     const stored=await store.create({...f,user:turn.user,source:'generated',retention:'temporary',resultKey:`${turn.turnId}:${turn.attempt}:compute:${next.runs}:${i}`,session});
      // Staged results expire unless finalization attaches them. This also covers crashes.
-     await require('../../models/managedFile').updateOne({_id:stored._id},{$set:{expiresAt:new Date(Date.now()+3600000)}},{session});
      refs.push({fileId:String(stored._id),name:stored.originalName,size:stored.size});
     }
     next.files=refs;

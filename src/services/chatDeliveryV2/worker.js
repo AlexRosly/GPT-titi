@@ -270,9 +270,10 @@ const commitCompletion = async (turn, leaseToken, assistantText, usage) => {
         for (const ref of current.providerResult.computation.files || []) {
           const file = await require('../files/store').owned(turn.user, ref.fileId, {session, includeDeleted:true});
           if (!file.resultKey?.startsWith(`${turn.turnId}:${turn.attempt}:compute:`)) throw new Error('Invalid computation result reference');
-          if (file.status === 'ready') {
-            await require('../../models/managedFile').updateOne({_id:file._id,user:turn.user,status:'ready'},{$set:{expiresAt:null}},{session});
+          if (file.status === 'ready' && (!file.expiresAt || file.expiresAt > new Date())) {
+            await require('../../models/managedFile').updateOne({_id:file._id,user:turn.user,status:'ready'},{$set:{expiresAt:null,retention:'library'}},{session});
             file.expiresAt = null;
+            file.retention = 'library';
           }
           attachments.push({...require('../files/store').dto(file),storage:'private'});
         }

@@ -46,7 +46,9 @@
     "test:compute:smoke": "node --test test/computation/smoke.test.js",
     "test:compute:integration": "node scripts/testComputeIntegration.js",
     "db:indexes:compute": "node scripts/createComputationIndexes.js",
-    "test:ocr:regions": "node --test test/files/ocrRegionBounds.test.js test/files/ocrRegions.test.js test/files/ocrRegions.native.test.js"
+    "test:ocr:regions": "node --test test/files/ocrRegionBounds.test.js test/files/ocrRegions.test.js test/files/ocrRegions.native.test.js",
+    "test:files:library": "node --test test/files/library.test.js",
+    "db:migrate:file-library": "node scripts/migrateFileLibrary.js"
   },
   "repository": {
     "type": "git",

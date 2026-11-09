@@ -15,10 +15,7 @@ const clearConversationMessages = async (req, res) => {
   }
 
   await require("../../../services/files/store").transaction(async (session) => {
-    const messages = await ChatMessage.find({ conversation: id, user: userId, deleted: null }).session(session);
-    const fileIds = messages.flatMap(m => m.attachments.filter(f => f.storage === "private").map(f => f.fileId));
     await ChatMessage.updateMany({ conversation: id, user: userId }, { $set: { deleted: new Date() } }, { session });
-    await require("../../../services/files/messages").removeUnreferenced(userId, fileIds, session);
   });
 
   await ChatConversation.findByIdAndUpdate(id, {

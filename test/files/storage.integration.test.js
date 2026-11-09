@@ -50,8 +50,8 @@ integration('transaction rollback leaves no file or quota; replay returns same f
   assert.equal(String(first._id), String(second._id));
   await store.remove(user, String(first._id));
 });
-integration('expiry deletes unattached bytes and refunds quota', async () => {
-  const f = await store.create({ user, name: 'exp.txt', mimetype: 'text/plain', buffer: Buffer.from('expired') });
+integration('expiry deletes temporary computation bytes and refunds quota', async () => {
+  const f = await store.create({ user, name: 'exp.txt', mimetype: 'text/plain', buffer: Buffer.from('expired'), source: 'generated', retention: 'temporary' });
   await File.updateOne({ _id: f._id }, { expiresAt: new Date(0) });
   await store.cleanup();
   assert.equal((await File.findById(f._id)).status, 'deleted');

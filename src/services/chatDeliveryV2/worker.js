@@ -24,6 +24,8 @@ const HEARTBEAT_MS = Math.max(1_000, Math.floor(LEASE_MS / 3));
 const BATCH_MS = Number(process.env.CHAT_V2_BATCH_MS || 80);
 
 let ioRef = null;
+const activeControllers = new Map();
+const abortTurn = turnId => activeControllers.get(turnId)?.abort(Object.assign(new Error('User cancelled'), { protocolError: errorFor('USER_CANCELLED') }));
 
 const setIo = (io) => {
   ioRef = io;
@@ -34,6 +36,7 @@ const emit = (userId, event, envelope) =>
 
 const safeProviderError = (error) => {
   const status = error?.status;
+  if (status === 404 || status === 403) return errorFor('MODEL_NOT_AVAILABLE');
   const code =
     status === 429 || status >= 500 ? "PROVIDER_UNAVAILABLE" : "INTERNAL_ERROR";
   return errorFor(code);
@@ -87,6 +90,7 @@ const heartbeat = async (turn, leaseToken) => {
       status: "processing",
       leaseToken,
       leaseUntil: { $gt: new Date() },
+      cancelRequestedAt: null,
     },
     { $set: { leaseUntil: new Date(Date.now() + LEASE_MS) } },
   );
@@ -102,6 +106,7 @@ const updatePartial = async (turn, leaseToken, partialContent, seq) => {
       status: "processing",
       leaseToken,
       leaseUntil: { $gt: new Date() },
+      cancelRequestedAt: null,
       lastSeq: seq - 1,
     },
     { $set: { partialContent, lastSeq: seq } },
@@ -187,6 +192,7 @@ const commitCompletion = async (turn, leaseToken, assistantText, usage) => {
     status: "processing",
     leaseToken,
     leaseUntil: { $gt: new Date() },
+    cancelRequestedAt: null,
   }).lean();
   if (!savedTurn) throw Object.assign(new Error(), { staleLease: true });
   let preparedFile, renderError;
@@ -224,6 +230,7 @@ const commitCompletion = async (turn, leaseToken, assistantText, usage) => {
         status: "processing",
         leaseToken,
         leaseUntil: { $gt: new Date() },
+        cancelRequestedAt: null,
       }).session(session);
       if (!current) throw Object.assign(new Error(), { staleLease: true });
 
@@ -347,6 +354,7 @@ const commitCompletion = async (turn, leaseToken, assistantText, usage) => {
             billingAppliedAt: completedAt,
             needsReconciliation: false,
             providerResult: null,
+            responseState: null,
             status: "completed",
             completedAt,
             leaseToken: null,
@@ -385,6 +393,7 @@ const processTurn = async (claimed) => {
   let resultStored = false;
   const providerProgress = { rejectedBeforeOutput: false };
   const controller = new AbortController();
+  activeControllers.set(turn.turnId, controller);
   try {
     if (turn.reservationState !== "held") {
       await failTurn(
@@ -408,8 +417,24 @@ const processTurn = async (claimed) => {
 
     const web = require("../web/context");
     const fileModel = await ChatModels.findOne({ modelId: turn.modelId, enabled: true })
-      .select("computationEnabled zipInputEnabled zipOutputEnabled browserInputEnabled browserVisionEnabled webInputEnabled fileOutputEnabled textInputEnabled officeInputEnabled pdfInputEnabled ocrInputEnabled limits").lean();
-    if (turn.webPlan && !fileModel) throw require("../web/policy").fail("WEB_INPUT_DISABLED");
+      .select("apiMode reasoningEffort computationEnabled zipInputEnabled zipOutputEnabled browserInputEnabled browserVisionEnabled webInputEnabled fileOutputEnabled textInputEnabled officeInputEnabled pdfInputEnabled ocrInputEnabled limits").lean();
+    if (!fileModel) {
+      await failTurn(turn, leaseToken, errorFor('MODEL_NOT_AVAILABLE'), { knownNoCharge: true });
+      return;
+    }
+    const providerConfig = require('./responsesProvider').configuration({ modelId: turn.modelId, ...(turn.providerConfig || fileModel) });
+    const responseModel = { ...fileModel, ...providerConfig, modelId: turn.modelId };
+    const providerGuard = () => ({ _id: turn._id, attempt: turn.attempt, status: 'processing', leaseToken,
+      leaseUntil: { $gt: new Date() }, reservationState: 'held', cancelRequestedAt: null });
+    const saveResponse = async values => {
+      const updated = await ChatTurn.updateOne(providerGuard(), { $set: values });
+      if (!updated.matchedCount) throw Object.assign(new Error('Stale lease'), { staleLease: true });
+      Object.assign(turn, values);
+    };
+    const onResponseId = async id => {
+      const updated = await ChatTurn.updateOne(providerGuard(), { $addToSet: { providerResponseIds: id } });
+      if (!updated.matchedCount) throw Object.assign(new Error('Stale lease'), { staleLease: true });
+    };
     const history = await require("../files/textContext").forTurn(turn);
     const textInput = require("../files/textInput");
     const textBudget = textInput.budget();
@@ -463,8 +488,10 @@ const processTurn = async (claimed) => {
       // Exact-transcription tools remain on their existing non-browser path.
       const browserTools = turn.outputFile ? artifacts.toolOptions(turn.outputFile)
         : automaticFiles ? artifacts.autoToolOptions(fileModel) : {};
+      const browserClient = providerConfig.apiMode === 'responses'
+        ? new (require('./responsesProvider').ResponsesSession)(client, responseModel, { onResponseId }).asChatClient() : client;
       const data = await require("../browser/agent").run(turn, leaseToken, fileModel,
-        messages, browserTools, client, controller.signal);
+        messages, browserTools, browserClient, controller.signal);
       const saved = await ChatTurn.updateOne(require("../browser/accounting").guard(turn,leaseToken),
         { $set: { providerResult: data } });
       if (!saved.matchedCount) return;
@@ -492,10 +519,47 @@ const processTurn = async (claimed) => {
         status: "processing",
         leaseUntil: { $gt: new Date() },
         reservationState: "held",
+        cancelRequestedAt: null,
       },
       { $set: { providerStartedAt: new Date() } },
     );
-    if (!started.matchedCount) return;
+    if (!started.matchedCount) {
+      controller.signal.throwIfAborted();
+      return;
+    }
+    if (providerConfig.apiMode === 'responses') {
+      let pendingText = '', lastFlush = Date.now();
+      const flush = async () => {
+        if (!pendingText) return;
+        const chunk = pendingText;
+        assistantText += chunk;
+        pendingText = '';
+        seq += 1;
+        if (!await updatePartial(turn, leaseToken, assistantText, seq)) {
+          controller.abort();
+          throw Object.assign(new Error('Stale lease'), { staleLease: true });
+        }
+        emit(turn.user, 'chat:stream', { protocolVersion: 2, event: 'chat:stream', type: 'delta',
+          turnId: turn.turnId, clientMessageId: turn.clientMessageId, conversationId: turn.conversation.toString(),
+          attempt: turn.attempt, payload: { seq, chunk } });
+        lastFlush = Date.now();
+      };
+      const data = await require('./responsesTurn').run({ turn, token: leaseToken, model: responseModel,
+        messages, fileTools, computeFiles, exactFiles, client, signal: controller.signal, providerProgress,
+        save: saveResponse, onResponseId, maxOutputTokens: webBudget?.outputTokens,
+        onText: async delta => {
+          pendingText += delta;
+          if (pendingText.length >= 256 || Date.now() - lastFlush >= BATCH_MS) await flush();
+        } });
+      await flush();
+      await saveResponse({ providerResult: data });
+      resultStored = true;
+      const completion = await commitCompletion(turn, leaseToken, data.assistantText, data.usage);
+      emit(turn.user, 'chat:end', { protocolVersion: 2, event: 'chat:end', type: 'completed',
+        turnId: turn.turnId, clientMessageId: turn.clientMessageId, conversationId: turn.conversation.toString(),
+        attempt: turn.attempt, payload: { assistantMessage: messageDto(completion.assistant), billing: completion.billing } });
+      return;
+    }
     console.info("FILE_TOOL_DIAGNOSTIC", {
       modelId: turn.modelId,
       turnId: turn.turnId,
@@ -650,6 +714,7 @@ const processTurn = async (claimed) => {
         leaseToken,
         status: "processing",
         leaseUntil: { $gt: new Date() },
+        cancelRequestedAt: null,
       },
       { $set: { providerResult: { assistantText, usage, ...fileOutput } } },
     );
@@ -675,7 +740,8 @@ const processTurn = async (claimed) => {
       },
     });
   } catch (error) {
-    if (error?.staleLease || resultStored) return;
+    if (resultStored || error?.staleLease && controller.signal.reason?.protocolError?.code !== 'USER_CANCELLED') return;
+    if (controller.signal.reason?.protocolError?.code === 'USER_CANCELLED') error = controller.signal.reason;
     const protocol =
       error?.code === "INSUFFICIENT_BALANCE"
         ? errorFor("INSUFFICIENT_BALANCE")
@@ -687,6 +753,7 @@ const processTurn = async (claimed) => {
     clearInterval(heartbeatTimer);
     clearTimeout(providerTimer);
     controller.abort();
+    if (activeControllers.get(turn.turnId) === controller) activeControllers.delete(turn.turnId);
   }
 };
 
@@ -696,6 +763,20 @@ const recoverExpired = async () => {
     leaseUntil: { $lte: new Date() },
   });
   for (const turn of expired) {
+    if (turn.cancelRequestedAt && !turn.providerResult) {
+      await failTurn(turn, turn.leaseToken, errorFor('USER_CANCELLED'), { expiredOnly: true });
+      continue;
+    }
+    if (!turn.providerResult && turn.responseState && !turn.responseState.pending) {
+      const state = turn.responseState;
+      const data = { ...state.partialData, assistantText: (state.partialData?.assistantText || '') + '\n\n[Generation interrupted; only completed work is available.]',
+        usage: state.usage, ...(turn.computeState ? { computation: { status: 'partial', reason: 'PROCESS_INTERRUPTED',
+          files: turn.computeState.files, runs: turn.computeState.runs, executionMs: turn.computeState.executionMs } } : {}) };
+      const saved = await ChatTurn.updateOne({ _id: turn._id, status: 'processing', attempt: turn.attempt,
+        leaseToken: turn.leaseToken, leaseUntil: { $lte: new Date() }, providerResult: null }, { $set: { providerResult: data } });
+      if (!saved.matchedCount) continue;
+      turn.providerResult = data;
+    }
     if (!turn.providerResult && turn.computeState && !turn.computeState.pending) {
       const data = require('../computation/agent').partial(turn, 'PROCESS_INTERRUPTED');
       const saved = await ChatTurn.updateOne({_id:turn._id,status:'processing',attempt:turn.attempt,leaseToken:turn.leaseToken,leaseUntil:{$lte:new Date()},providerResult:null},{$set:{providerResult:data}});
@@ -785,6 +866,7 @@ const startWorker = async () => {
 };
 
 module.exports = {
+  abortTurn,
   setIo,
   wake,
   failTurn,

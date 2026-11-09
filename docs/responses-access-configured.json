@@ -1,0 +1,98 @@
+{
+  "label": "configured",
+  "checkedAt": "2026-11-09T18:19:00.402Z",
+  "results": [
+    {
+      "modelId": "gpt-6-luna",
+      "label": "configured",
+      "live": true,
+      "available": true,
+      "responseIds": [
+        "resp_0d11c6aca7de6f77016af20e85683887d2bd6950c058781701",
+        "resp_0d11c6aca7de6f77016af20e88889c87d2b05d1f2429a57202"
+      ],
+      "usage": [
+        {
+          "prompt_tokens": 152,
+          "completion_tokens": 18,
+          "total_tokens": 170
+        },
+        {
+          "prompt_tokens": 72,
+          "completion_tokens": 16,
+          "total_tokens": 88
+        }
+      ],
+      "toolRoundTrip": true
+    },
+    {
+      "modelId": "gpt-6.1-terra",
+      "label": "configured",
+      "live": true,
+      "available": true,
+      "responseIds": [
+        "resp_0807d0c5213032cd016af20e8aa8c487d2acc6adc29b4ac422",
+        "resp_0807d0c5213032cd016af20e8c0d1087d294e0677a44bd51f1"
+      ],
+      "usage": [
+        {
+          "prompt_tokens": 152,
+          "completion_tokens": 18,
+          "total_tokens": 170
+        },
+        {
+          "prompt_tokens": 72,
+          "completion_tokens": 12,
+          "total_tokens": 84
+        }
+      ],
+      "toolRoundTrip": true
+    },
+    {
+      "modelId": "gpt-6.1-sol",
+      "label": "configured",
+      "live": true,
+      "available": true,
+      "responseIds": [
+        "resp_0be46fcca955bb4e016af20e8dbd9087d2b96a900ae17eff16",
+        "resp_0be46fcca955bb4e016af20e8f217087d2920830292ec059b9"
+      ],
+      "usage": [
+        {
+          "prompt_tokens": 152,
+          "completion_tokens": 18,
+          "total_tokens": 170
+        },
+        {
+          "prompt_tokens": 72,
+          "completion_tokens": 16,
+          "total_tokens": 88
+        }
+      ],
+      "toolRoundTrip": true
+    },
+    {
+      "modelId": "gpt-6-astra",
+      "label": "configured",
+      "live": true,
+      "available": true,
+      "responseIds": [
+        "resp_011066f34cff0999016af20e918ff487d29c524fb2a80aafe3",
+        "resp_011066f34cff0999016af20e93079087d28b6b8ad1df12ba3a"
+      ],
+      "usage": [
+        {
+          "prompt_tokens": 162,
+          "completion_tokens": 18,
+          "total_tokens": 180
+        },
+        {
+          "prompt_tokens": 72,
+          "completion_tokens": 16,
+          "total_tokens": 88
+        }
+      ],
+      "toolRoundTrip": true
+    }
+  ]
+}

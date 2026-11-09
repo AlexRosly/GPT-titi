@@ -2,6 +2,11 @@ const crypto = require("crypto");
 const mongoose = require("mongoose");
 
 const CODES = {
+  USER_CANCELLED: ["Generation cancelled by the user.", false],
+  PROVIDER_INVALID_RESPONSE: ["AI service returned an invalid response.", false],
+  PROVIDER_STREAM_INTERRUPTED: ["AI response was interrupted before completion.", false],
+  PROVIDER_RESPONSE_INCOMPLETE: ["AI response did not complete.", false],
+  PROVIDER_USAGE_UNKNOWN: ["AI usage could not be confirmed; reconciliation is required.", false],
   COMPUTE_DISABLED: ['Calculations are disabled for this model or server.', false],
   COMPUTE_BUSY: ['Calculation capacity is busy. Please retry later.', false],
   COMPUTE_UNAVAILABLE: ['The calculation environment is unavailable.', false],

@@ -5,7 +5,7 @@ const { estimate } = require('./budget');
 const {limits,fail}=require('./policy');
 const { protocolError, NEGATIVE_LIMIT, availableExpression } = require('../chatDeliveryV2/reservations');
 const guard = (turn, token) => ({ _id: turn._id, user: turn.user, attempt: turn.attempt,
-  status: 'processing', leaseToken: token, leaseUntil: { $gt: new Date() }, reservationState: 'held' });
+  status: 'processing', leaseToken: token, leaseUntil: { $gt: new Date() }, reservationState: 'held', cancelRequestedAt: null });
 const cost = (usage, pricing) => Math.ceil((usage.promptTokens * pricing.inputPerM + usage.completionTokens * pricing.outputPerM) / 1e6 / pricing.tokenValueUsd);
 async function begin(turn, token, messages, tools) {
   const budget = estimate(messages, tools, turn.pricing);

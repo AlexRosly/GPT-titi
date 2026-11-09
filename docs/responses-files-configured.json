@@ -1,0 +1,214 @@
+{
+  "label": "configured",
+  "checkedAt": "2026-11-09T18:28:57.607Z",
+  "results": [
+    {
+      "modelId": "gpt-6-luna",
+      "label": "configured",
+      "live": true,
+      "available": true,
+      "files": [
+        {
+          "filename": "probe.docx",
+          "bytes": 8575,
+          "mimetype": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          "contextPreserved": true,
+          "responseIds": [
+            "resp_01323341df68f013016af210c83a4c87d294c6b0e41ffd8083",
+            "resp_01323341df68f013016af210ca227c87d2a5b86ea4a8ec4cb7"
+          ],
+          "usage": [
+            {
+              "prompt_tokens": 674,
+              "completion_tokens": 72,
+              "total_tokens": 746
+            },
+            {
+              "prompt_tokens": 238,
+              "completion_tokens": 14,
+              "total_tokens": 252
+            }
+          ]
+        },
+        {
+          "filename": "probe.xlsx",
+          "bytes": 6793,
+          "mimetype": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          "contextPreserved": true,
+          "responseIds": [
+            "resp_02fa0e1a97b20361016af210cb0de887d2bc3e200c6c577a13",
+            "resp_02fa0e1a97b20361016af210cdf77c87d292a31eeab78f7bbb"
+          ],
+          "usage": [
+            {
+              "prompt_tokens": 672,
+              "completion_tokens": 86,
+              "total_tokens": 758
+            },
+            {
+              "prompt_tokens": 250,
+              "completion_tokens": 31,
+              "total_tokens": 281
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "modelId": "gpt-6.1-terra",
+      "label": "configured",
+      "live": true,
+      "available": true,
+      "files": [
+        {
+          "filename": "probe.docx",
+          "bytes": 8572,
+          "mimetype": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          "contextPreserved": true,
+          "responseIds": [
+            "resp_01eda5c31361e3fe016af210cf5aac87d29e2f099878614f27",
+            "resp_01eda5c31361e3fe016af210d1507487d295ab04f65fb3c054"
+          ],
+          "usage": [
+            {
+              "prompt_tokens": 674,
+              "completion_tokens": 69,
+              "total_tokens": 743
+            },
+            {
+              "prompt_tokens": 235,
+              "completion_tokens": 14,
+              "total_tokens": 249
+            }
+          ]
+        },
+        {
+          "filename": "probe.xlsx",
+          "bytes": 6732,
+          "mimetype": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          "contextPreserved": true,
+          "responseIds": [
+            "resp_0380537ed32dc492016af210d24d8c87d2a801e2c3e5196ae7",
+            "resp_0380537ed32dc492016af210d4e18487d282bcec25d33e62b0"
+          ],
+          "usage": [
+            {
+              "prompt_tokens": 672,
+              "completion_tokens": 75,
+              "total_tokens": 747
+            },
+            {
+              "prompt_tokens": 239,
+              "completion_tokens": 15,
+              "total_tokens": 254
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "modelId": "gpt-6.1-sol",
+      "label": "configured",
+      "live": true,
+      "available": true,
+      "files": [
+        {
+          "filename": "probe.docx",
+          "bytes": 8578,
+          "mimetype": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          "contextPreserved": true,
+          "responseIds": [
+            "resp_0040f88b3d82be7b016af210d68bf487d2bbac8375de7ce0f9",
+            "resp_0040f88b3d82be7b016af210d92d8487d288772196f88a6248"
+          ],
+          "usage": [
+            {
+              "prompt_tokens": 674,
+              "completion_tokens": 81,
+              "total_tokens": 755
+            },
+            {
+              "prompt_tokens": 247,
+              "completion_tokens": 32,
+              "total_tokens": 279
+            }
+          ]
+        },
+        {
+          "filename": "probe.xlsx",
+          "bytes": 6732,
+          "mimetype": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          "contextPreserved": true,
+          "responseIds": [
+            "resp_06120078f46b8c9d016af210daa94c87d299f75b1265f106f9",
+            "resp_06120078f46b8c9d016af210ddc81487d2b2add42b930099e2"
+          ],
+          "usage": [
+            {
+              "prompt_tokens": 672,
+              "completion_tokens": 79,
+              "total_tokens": 751
+            },
+            {
+              "prompt_tokens": 243,
+              "completion_tokens": 29,
+              "total_tokens": 272
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "modelId": "gpt-6-astra",
+      "label": "configured",
+      "live": true,
+      "available": true,
+      "files": [
+        {
+          "filename": "probe.docx",
+          "bytes": 8578,
+          "mimetype": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          "contextPreserved": true,
+          "responseIds": [
+            "resp_0843ca2bcc30f7b7016af210dffb0087d2a5b43106c6078208",
+            "resp_0843ca2bcc30f7b7016af210e30ac087d2bb46553c8e481aa4"
+          ],
+          "usage": [
+            {
+              "prompt_tokens": 684,
+              "completion_tokens": 83,
+              "total_tokens": 767
+            },
+            {
+              "prompt_tokens": 249,
+              "completion_tokens": 32,
+              "total_tokens": 281
+            }
+          ]
+        },
+        {
+          "filename": "probe.xlsx",
+          "bytes": 6732,
+          "mimetype": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          "contextPreserved": true,
+          "responseIds": [
+            "resp_05c2b7fed5019199016af210e566e887d28c9f00fd4e0819fb",
+            "resp_05c2b7fed5019199016af210e8843087d2bc5f0b34bb2c1d13"
+          ],
+          "usage": [
+            {
+              "prompt_tokens": 682,
+              "completion_tokens": 81,
+              "total_tokens": 763
+            },
+            {
+              "prompt_tokens": 245,
+              "completion_tokens": 27,
+              "total_tokens": 272
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

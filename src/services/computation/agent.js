@@ -1,5 +1,5 @@
 const {ChatTurn}=require('../../models');
-const accounting=require('./accounting');const policy=require('./policy');const fileIO=require('./files');
+const accounting=require('./accounting');const policy=require('./policy');
 const store=require('../files/store');
 const partial=(turn,reason)=>({assistantText:`Calculation stopped (${reason}). Only successfully completed computations and attached files are available; the task may be incomplete.`,usage:turn.computeState.usage,computation:{status:'partial',reason,files:turn.computeState.files||[],runs:turn.computeState.runs,executionMs:turn.computeState.executionMs}});
 async function run(turn,token,model,messages,firstCall,usage,available,client,parentSignal){
@@ -15,46 +15,7 @@ async function run(turn,token,model,messages,firstCall,usage,available,client,pa
   const transcript=messages.map(m=>({...m}));let call=firstCall;
   while(call){
    if(controller.signal.aborted)throw policy.fail('COMPUTE_ABORTED');
-   const action=policy.parse(call.function.arguments),state=turn.computeState;
-   if(state.runs>=l.runs||state.executionMs>=l.totalMs)throw policy.fail('COMPUTE_RUN_LIMIT');
-   if(action.exports.length&&!require('../files/artifacts').outputEnabled(model))throw policy.fail('COMPUTE_OUTPUT_DISABLED');
-   // Avoid spending CPU on a loop that cannot afford even the bounded next answer.
-   const preview=require('./budget').estimate(transcript,[policy.tool],turn.pricing);
-   const extra=accounting.cost({promptTokens:state.usage.promptTokens-usage.promptTokens,completionTokens:state.usage.completionTokens-usage.completionTokens},turn.pricing)*turn.pricing.tokenValueUsd;
-   if(extra+preview.usd>l.usd){
-    require('./budget').diagnoseRejection(turn,'before_python',preview,extra,l.usd);
-    throw policy.fail('COMPUTE_BUDGET_LIMIT');
-   }
-   const inputs=await fileIO.inputs(turn,action,available);
-   const started=Date.now();await save({...state,runs:state.runs+1,stage:'executing'});
-   let result,prepared=[];
-   try{
-    result=await require('./session').run({code:action.code,files:inputs,exports:action.exports,timeoutMs:Math.min(l.runMs,l.totalMs-state.executionMs)},controller.signal);
-    prepared=await fileIO.outputs(result,action,model);
-   }catch(e){
-    if(e.cleanupUnconfirmed){cleanupUnconfirmed=true;throw e;}
-    if(controller.signal.aborted)throw policy.fail('COMPUTE_ABORTED');
-    result={ok:false,text:e.fileError||'COMPUTE_EXECUTION_FAILED',exports:[],truncated:false};
-   }
-   const next={...turn.computeState,executionMs:state.executionMs+Date.now()-started,stage:'computed'};
-   // File bytes and their checkpoint commit together; failed validation creates nothing.
-   await store.transaction(async session=>{
-    const current=await ChatTurn.findOne(accounting.guard(turn,token)).session(session);if(!current)throw Object.assign(Error('Stale lease'),{staleLease:true});
-    const replacements=new Set(prepared.map(f=>f.name.normalize('NFC').toLowerCase()));
-    const previous=current.computeState.files||[];
-    const refs=previous.filter(f=>!replacements.has(f.name.normalize('NFC').toLowerCase()));
-    if(refs.length+prepared.length>l.files||refs.reduce((n,f)=>n+f.size,0)+prepared.reduce((n,f)=>n+f.buffer.length,0)>l.outputBytes)throw policy.fail('COMPUTE_OUTPUT_LIMIT');
-    for(const old of previous)if(replacements.has(old.name.normalize('NFC').toLowerCase()))await store.removeTemporary(turn.user,old.fileId,session);
-    for(let i=0;i<prepared.length;i++){
-     const f=prepared[i];
-     const stored=await store.create({...f,user:turn.user,source:'generated',retention:'temporary',resultKey:`${turn.turnId}:${turn.attempt}:compute:${next.runs}:${i}`,session});
-     // Staged results expire unless finalization attaches them. This also covers crashes.
-     refs.push({fileId:String(stored._id),name:stored.originalName,size:stored.size});
-    }
-    next.files=refs;
-    const r=await ChatTurn.updateOne(accounting.guard(turn,token),{$set:{computeState:next}},{session});if(!r.matchedCount)throw Object.assign(Error('Stale lease'),{staleLease:true});
-   });
-   turn.computeState=next;
+   const {result,next}=await require('./execute').run({turn,token,model,call,available,transcript,initialUsage:usage,save,signal:controller.signal});
    transcript.push({role:'assistant',content:null,tool_calls:[call]},{role:'tool',tool_call_id:call.id,content:JSON.stringify({ok:result.ok,text:result.text,truncated:result.truncated,files:next.files,executionMs:next.executionMs})});
    if(controller.signal.aborted||Date.now()>deadline-1000)throw policy.fail('COMPUTE_TIMEOUT');
    const options=next.runs<l.runs&&next.executionMs<l.totalMs&&next.calls<l.calls-1?{tools:[policy.tool],tool_choice:'auto',parallel_tool_calls:false}:{};
@@ -75,6 +36,7 @@ async function run(turn,token,model,messages,firstCall,usage,available,client,pa
    }
   }
  }catch(e){
+  if(e.cleanupUnconfirmed)cleanupUnconfirmed=true;
   policy.diagnose(e,turn,'agent');
   if(e.staleLease||!turn.computeState||turn.computeState.pending)throw e;
   return partial(turn,e.fileError||e.protocolError?.code||'PROVIDER_UNAVAILABLE');

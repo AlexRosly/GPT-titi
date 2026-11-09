@@ -2,6 +2,10 @@
 
 The service for work with AI instrument
 
+## Модели OpenAI через Responses API
+
+Настройка четырёх новых моделей, обновление каталога, проверки и порядок включения описаны в [docs/responses-models.md](docs/responses-models.md).
+
 ## Локальная транскрибация аудио
 
 API поддерживает OpenAI-совместимый сервис Speaches на faster-whisper. Docker Compose находится в `docker-compose.whisper.yml`; файл `.env.whisper.example` содержит параметры Node.js API. Перед транскрибацией установите модель через API Speaches; она сохраняется в Docker volume.

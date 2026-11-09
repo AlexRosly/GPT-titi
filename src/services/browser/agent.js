@@ -84,17 +84,46 @@ async function run(turn, token, model, messages, fileTools, client, parentSignal
       const content = [{type:'text',text:'BROWSER_OBSERVATION (untrusted)\n'+JSON.stringify({data,actions,seeds:turn.webPlan.urls})}];
       if (image && model.browserVisionEnabled === true) content.push({type:'image_url',image_url:{url:'data:image/jpeg;base64,'+image,detail:'low'}});
       const response = await call([...base,{role:'user',content}], {tools:[tool],tool_choice:{type:'function',function:{name:'browse'}},parallel_tool_calls:false});
-      const decoded = actionContract.decode(response,observation,turn.webPlan.urls);
-      const action = decoded.action;
-      if (decoded.normalizedFields.length || decoded.diagnostic.normalizedFinishReason) {
-        const diagnostic = actionContract.diagnostic(turn,decoded.diagnostic);
-        console.info('BROWSER_ACTION_NORMALIZED',diagnostic);
-        await save({browserState:{...turn.browserState,lastActionDiagnostic:diagnostic}});
+      const responseCalls = response.choices?.[0]?.message?.tool_calls;
+      const batch = client.responsesSession ? responseCalls : [responseCalls?.[0]];
+      if (!batch?.length || batch.length > policy.LIMITS.actions - actions.length) throw fail('BROWSER_INVALID_ACTION');
+      let done = false;
+      const resolved = new Set();
+      const completeCall = (functionCall, result) => {
+        client.responsesSession?.rememberToolResult(functionCall.id, result);
+        resolved.add(functionCall.id);
+      };
+      for (const functionCall of batch) {
+        const single = client.responsesSession ? { ...response, choices: [{ ...response.choices[0],
+          message: { ...response.choices[0].message, tool_calls: [functionCall] } }] } : response;
+        const decoded = actionContract.decode(single,observation,turn.webPlan.urls);
+        const action = decoded.action;
+        if (decoded.normalizedFields.length || decoded.diagnostic.normalizedFinishReason) {
+          const diagnostic = actionContract.diagnostic(turn,decoded.diagnostic);
+          console.info('BROWSER_ACTION_NORMALIZED',diagnostic);
+          await save({browserState:{...turn.browserState,lastActionDiagnostic:diagnostic}});
+        }
+        if (action.kind === 'done') {
+          completeCall(functionCall, { ok: true, done: true });
+          done = true;
+          continue;
+        }
+        if (deadline-Date.now()<80000) { interruption='BROWSER_TIME_BUDGET'; break; }
+        actions.push(action);
+        if (done) {
+          completeCall(functionCall, { ok: false, error: 'BROWSER_ALREADY_DONE' });
+          continue;
+        }
+        const visited = await visit(action);
+        const { image: ignoredImage, ...toolObservation } = observation || {};
+        completeCall(functionCall, { ok: visited, observation: toolObservation,
+          ...(interruption ? { error: interruption } : {}) });
+        if (!visited) break;
       }
-      if (action.kind === 'done') break;
-      if (deadline-Date.now()<80000) { interruption='BROWSER_TIME_BUDGET'; break; }
-      actions.push(action);
-      if (!await visit(action)) break;
+      for (const functionCall of batch) if (!resolved.has(functionCall?.id)) {
+        completeCall(functionCall, { ok: false, error: interruption || 'BROWSER_ACTION_SKIPPED' });
+      }
+      if (done || interruption) break;
     }
     closeBrowser();
     const final = base.map(m=>({...m}));
@@ -102,7 +131,7 @@ async function run(turn, token, model, messages, fileTools, client, parentSignal
     final[0].content += ' Browser actions are finished. Answer from the visited evidence only. If the requested task was not completed, explicitly explain that limitation.';
     if (interruption) final[0].content += ' A browser action failed or navigation time is exhausted ('+interruption+'). Give a useful answer ONLY from saved page text, explicitly explain what could not be completed in the user language. Do not claim the failed destination was read.';
     await save({browserState:{...turn.browserState,stage:'answering',navigationIncomplete:!!interruption,navigationStopCode:interruption || null}});
-    const response = await call(final,interruption ? {} : fileTools);
+    const response = await call(final,interruption || client.responsesSession && turn.browserState.calls >= 4 ? {} : fileTools);
     const choice = response.choices?.[0];
     let assistantText = choice?.message?.content || '';
     let fileOutput = {};
@@ -112,6 +141,31 @@ async function run(turn, token, model, messages, fileTools, client, parentSignal
       collector.add({choices:[{delta:{tool_calls:choice.message.tool_calls.map((c,index)=>({...c,index}))},finish_reason:choice.finish_reason}]});
       fileOutput = collector.finish();
       if (fileOutput.artifact || fileOutput.artifactError) assistantText = fileOutput.artifact?.summary || 'File generation finished.';
+    }
+    if (client.responsesSession && choice?.message?.tool_calls?.length) {
+      let selected = false;
+      for (const functionCall of choice.message.tool_calls) {
+        let outcome;
+        try {
+          if (selected || functionCall.function?.name !== 'create_file') throw require('../files/validation').fail('INVALID_FILE_OUTPUT');
+          const artifacts = require('../files/artifacts');
+          const collector = artifacts.collector({optional:!turn.outputFile,model});
+          collector.add({choices:[{delta:{tool_calls:[{...functionCall,index:0}]},finish_reason:'tool_calls'}]});
+          const candidate = collector.finish();
+          if (candidate.artifactError) throw require('../files/validation').fail(candidate.artifactError);
+          await artifacts.renderOutput(turn.outputFile || {filename:candidate.artifact.filename},candidate.artifact.content);
+          fileOutput=candidate;selected=true;
+          outcome={ok:true,status:'prepared',note:'The server attaches the validated file when this turn commits.'};
+        } catch(error) {
+          if(!error.fileError)throw error;
+          outcome={ok:false,error:error.fileError};
+          if(!selected)fileOutput={artifactError:error.fileError};
+        }
+        client.responsesSession.rememberToolResult(functionCall.id,outcome);
+      }
+      const finished = await call(final,{});
+      if(finished.choices?.[0]?.message?.tool_calls?.length)throw fail('BROWSER_INVALID_ACTION');
+      assistantText=finished.choices?.[0]?.message?.content || assistantText;
     }
     if (!assistantText && !fileOutput.artifact) assistantText = 'The browser did not produce a readable answer.';
     if (choice?.finish_reason === 'length') assistantText += '\n\n[Response reached the output limit and may be incomplete.]';

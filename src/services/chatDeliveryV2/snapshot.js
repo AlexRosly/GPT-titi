@@ -49,6 +49,7 @@ const snapshot = async (turn) => {
     assistantMessage: messageDto(assistant),
     billing: turn.billing || null,
     error: turn.error || null,
+    cancelRequested: Boolean(turn.cancelRequestedAt),
     createdAt: toIso(turn.createdAt),
     updatedAt: toIso(turn.updatedAt),
   };

@@ -28,6 +28,13 @@ const registerChatDeliveryV2 = (io) => {
     .catch((error) => console.error("chat v2 worker startup error", error));
 
   io.on("connection", (socket) => {
+    socket.on('chat:cancel', async (envelope, ack) => {
+      try {
+        const { turnId } = validateTurnRequest(envelope, 'chat:cancel');
+        const turn = await require('../../../services/chatDeliveryV2/cancelTurn')({ turnId, userId: socket.user._id });
+        if (typeof ack === 'function') ack({ ok: true, protocolVersion: 2, turn: await snapshot(turn) });
+      } catch (error) { if (typeof ack === 'function') ackError(ack, error); }
+    });
     socket.on("chat:send", async (envelope, ack) => {
       try {
         const payload = validateChatSend(envelope);

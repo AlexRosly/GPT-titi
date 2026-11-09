@@ -18,6 +18,32 @@ function setup(t){
 const choose=action=>({usage,choices:[{finish_reason:'tool_calls',message:{tool_calls:[{id:'call1',type:'function',function:{name:'browse',arguments:JSON.stringify(action)}}]}}]});
 const client=fn=>({chat:{completions:{create:fn}}});
 const messages=[{role:'system',content:'Help.'},{role:'user',content:'Прочитай https://example.com/'}];
+
+test('Responses browser returns every action output and completes a file function before finalizing', async t => {
+  const f=setup(t),requests=[];
+  const {ResponsesSession}=require('../../src/services/chatDeliveryV2/responsesProvider');
+  const artifacts=require('../../src/services/files/artifacts');
+  const outputs=[
+    [{type:'reasoning',id:'rs',encrypted_content:'opaque'},
+      {type:'function_call',status:'completed',call_id:'browse1',name:'browse',arguments:JSON.stringify({kind:'done',ref:null,url:null,query:null})}],
+    [{type:'function_call',status:'completed',call_id:'file1',name:'create_file',arguments:JSON.stringify({filename:'summary.txt',content:'Evidence-based summary',summary:'Ready'})}],
+    [{type:'message',content:[{type:'output_text',text:'Summary ready'}]}],
+  ];
+  const provider={responses:{async *create(req){
+    requests.push(req);
+    const output=outputs[requests.length-1];
+    assert.ok(output,'No unplanned provider retry');
+    yield {type:'response.completed',response:{id:'response_'+requests.length,status:'completed',output,usage:{input_tokens:10,output_tokens:5,total_tokens:15}}};
+  }}};
+  const session=new ResponsesSession(provider,{apiMode:'responses',reasoningEffort:'medium'});
+  const result=await run(f.turn,'lease',{},messages,artifacts.autoToolOptions({}),session.asChatClient());
+  assert.equal(result.artifact.filename,'summary.txt');
+  assert.equal(result.usage.totalTokens,45);
+  assert.equal(requests[1].input.some(i=>i.type==='function_call_output'&&i.call_id==='browse1'),true);
+  assert.equal(requests[2].input.some(i=>i.type==='function_call_output'&&i.call_id==='file1'),true);
+  assert.equal(requests[2].input.some(i=>i.type==='reasoning'&&i.encrypted_content==='opaque'),true);
+  assert.equal(f.actions(),1);
+});
 test('navigate then answer, aggregate actual usage and preserve visited sources without screenshots',async t=>{
   const f=setup(t);let calls=0;
   const result=await run(f.turn,'lease',{},messages,{},client(async req=>{

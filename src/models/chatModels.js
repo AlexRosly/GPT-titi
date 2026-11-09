@@ -33,6 +33,8 @@ const ContentSchema = Schema(
 
 const ChatModelsSchema = Schema(
   {
+    apiMode: { type: String, enum: ['chat_completions', 'responses'], default: 'chat_completions' },
+    reasoningEffort: { type: String, enum: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] },
     computationEnabled: { type: Boolean, default: true },
     zipInputEnabled: { type: Boolean, default: true },
     zipOutputEnabled: { type: Boolean, default: true },

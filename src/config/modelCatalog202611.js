@@ -6,6 +6,7 @@ const additions = [
   { modelId: 'gpt-6-astra', label: 'GPT-6 Astra', apiMode: 'responses', reasoningEffort: 'medium' },
 ];
 const retained = ['gpt-5.4-mini', 'gpt-5.4', 'gpt-5.5'];
+const chatModelIds = [...retained, ...additions.map(model => model.modelId)];
 const allowedEfforts = Object.fromEntries(additions.map(model => [model.modelId,
   ['low', 'medium', 'high', 'xhigh', 'max', ...(['gpt-6-luna', 'gpt-6.1-terra'].includes(model.modelId) ? ['none'] : [])]]));
 const retired = /^(?:o1(?:-\d{4}-\d{2}-\d{2})?|o3-mini(?:-\d{4}-\d{2}-\d{2})?|gpt-4o(?:-mini)?(?:-\d{4}-\d{2}-\d{2})?|gpt-5\.1(?:-\d{4}-\d{2}-\d{2})?)$/;
@@ -26,4 +27,4 @@ function plan(existing) {
   }
   return operations;
 }
-module.exports = { additions, retained, retired, allowedEfforts, plan };
+module.exports = { additions, retained, chatModelIds, retired, allowedEfforts, plan };

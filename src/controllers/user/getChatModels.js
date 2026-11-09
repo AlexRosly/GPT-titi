@@ -1,9 +1,10 @@
 const { ChatModels } = require("../../models");
+const { chatModelIds } = require("../../config/modelCatalog202611");
 
 const getChatModels = async (req, res) => {
   try {
     const models = await ChatModels.find(
-      { enabled: true },
+      { enabled: true, modelId: { $in: chatModelIds } },
       {
         // modelId: 1,
         // label: 1,

@@ -921,13 +921,22 @@ test(
         { $unset: { officeInputEnabled: 1 } },
       );
     }
+    const fixturesBuffer = await fixtures.docx("A".repeat(60000));
     const large = await store.create({
       user: user._id,
       name: "large.docx",
       mimetype: "application/octet-stream",
-      buffer: await fixtures.docx("A".repeat(60000)),
+      buffer: fixturesBuffer,
     });
-    await send([large, large, large], "TEXT_ATTACHMENTS_CONTEXT_TOO_LARGE");
+    await send([large, large, large], "INVALID_ATTACHMENTS");
+    const largeCopies = await Promise.all([1, 2].map(n => store.create({
+      user: user._id,
+      name: `large-${n}.docx`,
+      mimetype: "application/octet-stream",
+      buffer: fixturesBuffer,
+    })));
+    await send([large, ...largeCopies], "TEXT_ATTACHMENTS_CONTEXT_TOO_LARGE");
+    for (const file of [large, ...largeCopies]) await assertSavedLibraryFile(file);
     const after = await models.User.findById(user._id);
     assert.equal(after.reservedAppTokens, before.reservedAppTokens);
     assert.equal(after.appTokens, before.appTokens);
@@ -1141,7 +1150,15 @@ test(
       mimetype: "text/plain",
       buffer: Buffer.alloc(65536, 65),
     });
-    await send([valid, text, text], "TEXT_ATTACHMENTS_CONTEXT_TOO_LARGE");
+    await send([valid, text, text], "INVALID_ATTACHMENTS");
+    const secondText = await store.create({
+      user: user._id,
+      name: "full-2.txt",
+      mimetype: "text/plain",
+      buffer: Buffer.alloc(65536, 65),
+    });
+    await send([valid, text, secondText], "TEXT_ATTACHMENTS_CONTEXT_TOO_LARGE");
+    for (const file of [valid, text, secondText]) await assertSavedLibraryFile(file);
     const after = await models.User.findById(user._id);
     assert.equal(after.reservedAppTokens, before.reservedAppTokens);
     assert.equal(after.appTokens, before.appTokens);

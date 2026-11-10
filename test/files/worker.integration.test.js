@@ -15,6 +15,18 @@ const accept = require("../../src/services/chatDeliveryV2/acceptTurn");
 const store = require("../../src/services/files/store");
 const { snapshot } = require("../../src/services/chatDeliveryV2/snapshot");
 let user, conversation, modelId;
+async function assertSavedLibraryFile(file) {
+  const record = await File.findById(file._id);
+  assert.equal(record.status, "ready");
+  assert.equal(record.retention, "library");
+  assert.equal(record.expiresAt, null);
+  assert.equal(record.checksum, file.checksum);
+  assert.equal(record.size, file.size);
+  const saved = await store.read(file.user, String(file._id));
+  assert.equal(saved.buffer.length, file.size);
+}
+
+
 test.before(async () => {
   if (!uri) return;
   if (!/\/gptiti_files_test_[a-zA-Z0-9_-]+(?:\?|$)/.test(uri))
@@ -621,7 +633,7 @@ test(
         }),
         0,
       );
-      assert.notEqual((await File.findById(file._id)).expiresAt, null);
+      await assertSavedLibraryFile(file);
       await store.remove(user._id, String(file._id));
     }
     const foreign = await store.create({
@@ -680,7 +692,7 @@ test(
 );
 
 test(
-  "aggregate text budget and attachment reserve reject before admission without retaining uploads",
+  "aggregate text budget and attachment reserve reject before admission while preserving library files",
   { skip: !uri },
   async () => {
     const poor = await models.User.create({
@@ -706,19 +718,28 @@ test(
       message: "Read",
       files: [{ storage: "private", fileId: String(input._id) }],
     };
+    // Duplicates have a separate admission rule. Use three distinct stored IDs
+    // to exercise the actual extracted-text budget instead of masking it.
     await assert.rejects(
-      accept({
-        userId: poor._id,
-        payload: { ...payload, files: Array(3).fill(payload.files[0]) },
-      }),
-      (e) => e.fileError === "TEXT_ATTACHMENTS_CONTEXT_TOO_LARGE",
+      accept({ userId: poor._id, payload: { ...payload, files: Array(3).fill(payload.files[0]) } }),
+      { fileError: "INVALID_ATTACHMENTS" },
     );
+    const additional = await Promise.all([1, 2].map(n => store.create({
+      user: poor._id, name: `large-${n}.txt`, mimetype: "text/plain", buffer: Buffer.alloc(65536, 65),
+    })));
+    await assert.rejects(
+      accept({ userId: poor._id, payload: { ...payload,
+        files: [input, ...additional].map(f => ({ storage: "private", fileId: String(f._id) })),
+      } }),
+      { fileError: "TEXT_ATTACHMENTS_CONTEXT_TOO_LARGE" },
+    );
+    for (const f of additional) await assertSavedLibraryFile(f);
     await assert.rejects(
       accept({ userId: poor._id, payload }),
       (e) => e.protocolError?.code === "INSUFFICIENT_BALANCE",
     );
     assert.equal(await models.ChatTurn.countDocuments({ user: poor._id }), 0);
-    assert.notEqual((await File.findById(input._id)).expiresAt, null);
+    await assertSavedLibraryFile(input);
     assert.equal(
       (await models.User.findById(poor._id)).reservedAppTokens || 0,
       0,
@@ -836,7 +857,7 @@ test(
 );
 
 test(
-  "Office rejection rolls back retention, turn and reservation; opt-out and owner checks apply",
+  "Office rejection preserves library files without turn or reservation; opt-out and owner checks apply",
   { skip: !uri },
   async () => {
     const fixtures = require("./fixtures/officeInput");
@@ -880,7 +901,7 @@ test(
       );
     };
     await send([valid, invalid], "INVALID_OFFICE_DOCUMENT");
-    assert.notEqual((await File.findById(valid._id)).expiresAt, null);
+    await assertSavedLibraryFile(valid);
     const foreign = await store.create({
       user: new mongoose.Types.ObjectId(),
       name: "foreign.docx",
@@ -1040,7 +1061,7 @@ test(
 );
 
 test(
-  "PDF scans, corruption, size, opt-out and foreign files reject without turn, retention or reserve",
+  "PDF scans, corruption, size, opt-out and foreign files reject without turn or reserve and preserve saved files",
   { skip: !uri },
   async () => {
     const { makePdf } = require("./fixtures/pdfInput");
@@ -1076,7 +1097,7 @@ test(
         }),
         0,
       );
-      assert.notEqual((await File.findById(valid._id)).expiresAt, null);
+      await assertSavedLibraryFile(valid);
     };
     for (const [buffer, expected] of [
       [await makePdf([""]), "PDF_OCR_REQUIRED"],
@@ -1245,7 +1266,7 @@ test(
   },
 );
 test(
-  "OCR concurrent preparation claims derived quota once; delete and expiry clear it",
+  "OCR concurrent preparation claims derived quota once; explicit deletion and temporary expiry clear it",
   { skip: !uri },
   async (t) => {
     enableOcr(t);
@@ -1274,6 +1295,8 @@ test(
     const expired = await store.create({
       user: user._id,
       name: "expiry.png",
+      source: "generated",
+      retention: "temporary",
       mimetype: "image/png",
       buffer: makeImage(),
     });
@@ -1326,7 +1349,7 @@ test(
         0,
       );
       const record = await File.findById(file._id);
-      assert.notEqual(record.expiresAt, null);
+      await assertSavedLibraryFile(file);
       assert.equal(record.ocrCache, null);
     }
     const foreign = await store.create({
@@ -1382,12 +1405,15 @@ test(
       mimetype: "text/plain",
       buffer: Buffer.alloc(65536, 65),
     });
+    const secondFull = await store.create({
+      user: user._id, name: "full-2.txt", mimetype: "text/plain", buffer: Buffer.alloc(65536, 65),
+    });
     const payload = {
       clientMessageId: crypto.randomUUID(),
       conversationId: chat.id,
       modelId,
       message: "Read",
-      files: [input, full, full].map((f) => ({
+      files: [input, full, secondFull].map((f) => ({
         fileId: f.id,
         storage: "private",
       })),
@@ -1402,7 +1428,7 @@ test(
       }),
       0,
     );
-    assert.notEqual((await File.findById(input._id)).expiresAt, null);
+    await assertSavedLibraryFile(input);
     const after = await models.User.findById(user._id).lean();
     assert.equal(after.appTokens, before.appTokens);
     assert.equal(after.reservedAppTokens, before.reservedAppTokens);
@@ -1442,7 +1468,7 @@ test(
       await models.ChatBillingLedger.countDocuments({ user: poor._id }),
       0,
     );
-    assert.notEqual((await File.findById(poorFile._id)).expiresAt, null);
+    await assertSavedLibraryFile(poorFile);
   },
 );
 test(

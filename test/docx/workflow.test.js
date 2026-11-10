@@ -4,11 +4,12 @@ const {fixture,table,border}=require('./fixtures');
 const {ChatTurn}=require('../../src/models'),store=require('../../src/services/files/store');
 const engine=require('../../src/services/docx/engine'),policy=require('../../src/services/docx/policy'),action=require('../../src/services/docx/action');
 const accounting=require('../../src/services/computation/accounting'),agent=require('../../src/services/computation/agent'),execute=require('../../src/services/computation/execute'),leases=require('../../src/services/computation/leases');
+const realAccountingBegin=accounting.begin;
 const sourceId='012345678901234567890123',resultId='012345678901234567890124';
 const usage={promptTokens:20,completionTokens:10,totalTokens:30},providerUsage={prompt_tokens:10,completion_tokens:5,total_tokens:15};
 const tool=(name,args,id='one')=>({id,type:'function',function:{name,arguments:JSON.stringify(args)}});
-async function setup(t){
- const input=await fixture(table);let saved,creates=0;
+async function setup(t,body=table){
+ const input=await fixture(body);let saved,creates=0;
  const turn={_id:'turn',turnId:'uuid',attempt:1,user:'owner',modelId:'test',pricing:{inputPerM:0.1,outputPerM:0.2,tokenValueUsd:0.00001}};
  const available=[{fileId:sourceId,name:'source.docx',size:input.length}];
  t.mock.method(store,'owned',async(user,id)=>{assert.equal(user,'owner');if(id!==sourceId)throw Object.assign(Error(),{fileError:'FILE_NOT_FOUND'});return {originalName:'source.docx',size:input.length};});
@@ -21,7 +22,7 @@ async function setup(t){
  t.mock.method(accounting,'begin',async()=>{turn.computeState.pending=true;turn.computeState.calls++;});
  t.mock.method(accounting,'received',async(_,__,u)=>{turn.computeState.pending=false;const old=turn.computeState.usage;turn.computeState.usage={promptTokens:old.promptTokens+u.prompt_tokens,completionTokens:old.completionTokens+u.completion_tokens,totalTokens:old.totalTokens+u.total_tokens};});
  const inspection=tool('inspect_docx',{fileId:sourceId,target:'table0',offset:0});
- const edit=()=>tool('edit_docx',{fileId:sourceId,sourceChecksum:engine.hash(input),filename:'edited.docx',operations:[border('cell0'),border('cell2')]},'two');
+ const edit=(complete=false)=>tool('edit_docx',{fileId:sourceId,sourceChecksum:engine.hash(input),filename:'edited.docx',operations:[border('cell0'),border('cell2')],complete},'two');
  return {turn,input,available,inspection,edit,stats:()=>({saved,creates})};
 }
 test('Chat Completions inspect/edit pipeline attaches a verified binary copy with known usage',async t=>{
@@ -66,15 +67,19 @@ test('cancellation before execution or before commit never publishes a partial D
 test('quota refusal preserves original and does not checkpoint a ready result',async t=>{
  const f=await setup(t);f.turn.computeState={usage,initialUsage:usage,runs:0,executionMs:0,files:[],docxInspections:{[sourceId]:engine.hash(f.input)}};
  t.mock.method(store,'create',async()=>{throw Object.assign(Error(),{fileError:'FILE_QUOTA_EXCEEDED'});});
- await assert.rejects(execute.run({turn:f.turn,token:'lease',model:{},call:f.edit(),available:f.available,transcript:[],initialUsage:usage,save:async s=>{f.turn.computeState=s;},signal:new AbortController().signal}),{fileError:'FILE_QUOTA_EXCEEDED'});
- assert.deepEqual(f.turn.computeState.files,[]);assert.equal(engine.load(f.input).byId.get('text0').text,'Посада');
+ await assert.rejects(execute.run({turn:f.turn,token:'lease',model:{},call:f.edit(true),available:f.available,transcript:[],initialUsage:usage,save:async s=>{f.turn.computeState=s;},signal:new AbortController().signal,completionAllowed:true}),{fileError:'FILE_QUOTA_EXCEEDED'});
+ assert.deepEqual(f.turn.computeState.files,[]);assert.equal(f.turn.computeState.docxCompletion,undefined);assert.equal(engine.load(f.input).byId.get('text0').text,'Посада');
 });
-test('unchanged cost cap blocks before inspection, without starting a document worker',async t=>{
+test('unchanged cost cap blocks the next paid call after a local inspection',async t=>{
  const f=await setup(t);f.turn.pricing={inputPerM:5,outputPerM:30,tokenValueUsd:0.00001};
  const old=process.env.COMPUTE_MAX_USD;process.env.COMPUTE_MAX_USD='0.001';t.after(()=>{if(old===undefined)delete process.env.COMPUTE_MAX_USD;else process.env.COMPUTE_MAX_USD=old;});
- let actions=0;t.mock.method(action,'run',async()=>{actions++;throw Error('must not execute');});t.mock.method(console,'warn',()=>{});
- const r=await agent.run(f.turn,'lease',{},[],f.inspection,usage,f.available,{},new AbortController().signal);
- assert.equal(r.computation.reason,'COMPUTE_BUDGET_LIMIT');assert.equal(actions,0);assert.equal(r.usage.totalTokens,30);
+ // Exercise real accounting: budget refusal must occur at the paid boundary.
+ t.mock.method(accounting,'begin',realAccountingBegin);
+ t.mock.method(require('mongoose'),'startSession',async()=>({withTransaction:async fn=>fn(),endSession:async()=>{}}));
+ let providerCalls=0;t.mock.method(console,'warn',()=>{});
+ const client={chat:{completions:{create:async()=>{providerCalls++;throw Error('must not call');}}}};
+ const r=await agent.run(f.turn,'lease',{},[],f.inspection,usage,f.available,client,new AbortController().signal);
+ assert.equal(r.computation.reason,'COMPUTE_BUDGET_LIMIT');assert.equal(r.computation.runs,1);assert.equal(providerCalls,0);assert.equal(r.usage.totalTokens,30);assert.equal(f.stats().creates,0);
 });
 test('stream collector recognizes document tools; feature flag removes them without changing Python',()=>{
  const compute=require('../../src/services/computation/policy');const c=compute.collector();c.add({choices:[{delta:{tool_calls:[{index:0,id:'a',function:{name:'inspect_docx',arguments:'{}'}}]},finish_reason:'tool_calls'}]});assert.equal(c.finish().function.name,'inspect_docx');
@@ -96,4 +101,120 @@ test('failed edit remains a partial result with its precise failure code and no 
  const client={chat:{completions:{create:async()=>({choices:[{message:{content:'This edit is unsupported.'},finish_reason:'stop'}],usage:providerUsage})}}};
  const r=await agent.run(f.turn,'lease',{},[],f.inspection,usage,f.available,client,new AbortController().signal);
  assert.equal(r.computation.status,'partial');assert.equal(r.computation.reason,'DOCX_EDIT_UNSUPPORTED');assert.equal(r.computation.files.length,0);assert.equal(f.stats().creates,0);
+});
+
+test('final verified Chat Completions edit returns without a concluding provider call',async t=>{
+ const f=await setup(t);let calls=0;
+ const client={chat:{completions:{create:async()=>{
+  assert.equal(++calls,1,'a concluding paid call is forbidden');
+  return {choices:[{message:{tool_calls:[f.edit(true)]},finish_reason:'tool_calls'}],usage:providerUsage};
+ }}}};
+ const r=await agent.run(f.turn,'lease',{},[],f.inspection,usage,f.available,client,new AbortController().signal);
+ assert.equal(r.computation.status,'completed');assert.equal(r.usage.totalTokens,45);assert.equal(calls,1);
+ assert.equal(r.computation.files.length,1);assert.match(r.assistantText,/Structural checks passed/);
+ assert.equal(f.turn.computeState.docxCompletion.fileId,resultId);
+});
+
+test('final verified Responses edit returns without a concluding call and retains known usage',async t=>{
+ const f=await setup(t);let requests=0;
+ const calls=[f.inspection,f.edit(true)];
+ const client={responses:{create:async function*(){
+  assert.ok(requests<2,'a concluding paid call is forbidden');const c=calls[requests++];
+  yield {type:'response.completed',response:{id:'resp_'+requests,status:'completed',output:[{id:'fc_'+c.id,type:'function_call',call_id:c.id,name:c.function.name,arguments:c.function.arguments,status:'completed'}],usage:{input_tokens:10,output_tokens:5,total_tokens:15}}};
+ }}};
+ const r=await require('../../src/services/chatDeliveryV2/responsesTurn').run({turn:f.turn,token:'lease',model:{apiMode:'responses',reasoningEffort:'low'},messages:[],fileTools:{tools:policy.tools},computeFiles:f.available,exactFiles:[],client,signal:new AbortController().signal,onText:async()=>{},save:async v=>Object.assign(f.turn,v),providerProgress:{}});
+ assert.equal(requests,2);assert.equal(r.computation.status,'completed');assert.equal(r.usage.totalTokens,30);assert.equal(r.computation.files.length,1);
+ assert.equal(f.turn.responseState.pending,false);assert.equal(f.turn.computeState.pending,false);
+});
+
+test('already planned local edit finishes near the cap without reserving a hypothetical future call',async t=>{
+ const f=await setup(t);f.turn.pricing={inputPerM:5,outputPerM:30,tokenValueUsd:0.00001};
+ f.turn.computeState={calls:1,pending:false,usage:{promptTokens:39820,completionTokens:10,totalTokens:39830},initialUsage:usage,runs:1,executionMs:0,files:[],docxInspections:{[sourceId]:engine.hash(f.input)}};
+ t.mock.method(accounting,'begin',()=>{throw Error('Local edit cannot reserve a provider call');});
+ const {next}=await execute.run({turn:f.turn,token:'lease',model:{},call:f.edit(true),available:f.available,transcript:[{role:'user',content:'large source '.repeat(10000)}],initialUsage:usage,save:async s=>{f.turn.computeState=s;},signal:new AbortController().signal,completionAllowed:true});
+ assert.equal(next.calls,1);assert.equal(next.runs,2);assert.equal(next.files.length,1);assert.ok(next.docxCompletion);
+});
+
+test('rollback restores the old pre-worker budget refusal',async t=>{
+ const f=await setup(t),old=process.env.DOCX_CONTINUATION_V2_ENABLED,oldCap=process.env.COMPUTE_MAX_USD;
+ process.env.DOCX_CONTINUATION_V2_ENABLED='false';process.env.COMPUTE_MAX_USD='0.001';
+ t.after(()=>{for(const [k,v] of [['DOCX_CONTINUATION_V2_ENABLED',old],['COMPUTE_MAX_USD',oldCap]])v===undefined?delete process.env[k]:process.env[k]=v;});
+ f.turn.pricing={inputPerM:5,outputPerM:30,tokenValueUsd:0.00001};let actions=0;
+ t.mock.method(action,'run',()=>{actions++;throw Error('must not run');});t.mock.method(console,'warn',()=>{});
+ const r=await agent.run(f.turn,'lease',{},[],f.inspection,usage,f.available,{},new AbortController().signal);
+ assert.equal(r.computation.reason,'COMPUTE_BUDGET_LIMIT');assert.equal(actions,0);
+});
+
+for(const api of ['chat_completions','responses'])test(`${api}: long multilingual DOCX fits unchanged cap with real budget accounting and bounded local tools`,async t=>{
+ const mongoose=require('mongoose'),{User}=require('../../src/models'),ledger=require('../../src/services/tokenLedger');
+ const sources=require('../../src/services/files/sourceParts'),textInput=require('../../src/services/files/textInput'),compute=require('../../src/services/computation/policy');
+ const estimate=require('../../src/services/computation/budget').estimate;
+ const raw='Код A-073; 数量 12,50; العربية; 日本語; 한국어; Ελληνικά; ґрунт.\n'.repeat(450);
+ const f=await setup(t,raw.trim().split('\n').map(require('./fixtures').p).join('')+table);
+ const part=sources.mark(textInput.part({originalName:'source.docx'},raw),{_id:sourceId,originalName:'source.docx',mimetype:require('../../src/services/files/office').mimes.docx});
+ const messages=[{role:'system',content:policy.instructions},{role:'user',content:[{type:'text',text:'Change only signature borders. Preserve every name and amount.'},part]}];
+ const original=JSON.stringify(messages);
+ f.turn.pricing={inputPerM:5,outputPerM:30,tokenValueUsd:0.00001};f.turn.reservedAppTokens=100000;
+ // This is the spent amount from the reported refusal. It is simulated usage,
+ // not a claim about actual live provider token counts after compaction.
+ const measuredUsage={prompt_tokens:8549,completion_tokens:0,total_tokens:8549};
+ assert.ok(estimate(messages,compute.toolsFor({}),f.turn.pricing).usd+0.042745>0.20);
+ t.mock.method(accounting,'begin',realAccountingBegin);
+ t.mock.method(mongoose,'startSession',async()=>({withTransaction:async fn=>fn(),endSession:async()=>{}}));
+ t.mock.method(User,'findById',()=>({session:()=>({lean:async()=>({status:'active',appTokens:200000,reservedAppTokens:100000})})}));
+ t.mock.method(ledger,'notifyCommitted',()=>{});
+ let requests=0;
+ const inspectIndex=tool('inspect_docx',{fileId:sourceId,target:'tables',offset:0},'index');
+ const inspectTable=tool('inspect_docx',{fileId:sourceId,target:'table0',offset:0},'details');
+ const modelMessages=[];
+ const nextCall=()=>requests===(api==='responses'?2:1)?inspectTable:f.edit(true);
+ let result;
+ if(api==='chat_completions'){
+  const client={chat:{completions:{create:async req=>{
+   requests++;assert.ok(requests<=2);modelMessages.push(req.messages);
+   assert.doesNotMatch(JSON.stringify(req.messages),/END_ATTACHED_FILE_DATA/);
+   assert.match(JSON.stringify(req.messages),/Change only signature borders/);
+   return {choices:[{message:{tool_calls:[nextCall()]},finish_reason:'tool_calls'}],usage:measuredUsage};
+  }}}};
+  result=await agent.run(f.turn,'lease',{},messages,inspectIndex,usage,f.available,client,new AbortController().signal);
+ }else{
+  const client={responses:{create:async function*(req){
+   requests++;assert.ok(requests<=3);modelMessages.push(req.input);
+   if(requests>1){assert.doesNotMatch(JSON.stringify(req.input),/END_ATTACHED_FILE_DATA/);assert.ok(req.input.some(i=>i.type==='reasoning'&&i.encrypted_content==='opaque-reasoning-1'));}
+   const c=requests===1?inspectIndex:nextCall();
+   yield {type:'response.completed',response:{id:'resp_'+requests,status:'completed',output:[{type:'reasoning',id:'r'+requests,encrypted_content:'opaque-reasoning-'+requests},{id:'fc_'+c.id,type:'function_call',call_id:c.id,name:c.function.name,arguments:c.function.arguments,status:'completed'}],usage:requests===1?{input_tokens:20,output_tokens:10,total_tokens:30}:{input_tokens:8549,output_tokens:0,total_tokens:8549}}};
+  }}};
+  result=await require('../../src/services/chatDeliveryV2/responsesTurn').run({turn:f.turn,token:'lease',model:{apiMode:'responses',reasoningEffort:'low'},messages,fileTools:{tools:compute.toolsFor({})},computeFiles:f.available,exactFiles:[],client,signal:new AbortController().signal,onText:async()=>{},save:async v=>Object.assign(f.turn,v),providerProgress:{}});
+ }
+ assert.equal(result.computation.status,'completed');assert.equal(result.computation.runs,3);assert.equal(result.computation.files.length,1);
+ assert.equal(f.turn.computeState.calls,2);assert.equal(f.turn.computeState.pending,false);assert.equal(result.usage.totalTokens,30+8549*2);
+ assert.equal(JSON.stringify(messages),original);assert.equal(f.stats().creates,1);
+});
+
+test('Responses never short-circuits a group containing another outstanding tool action',async t=>{
+ const f=await setup(t);let requests=0;
+ const client={responses:{create:async function*(req){
+  requests++;const calls=requests===1?[f.inspection]:requests===2?[f.edit(true),tool('inspect_docx',{fileId:sourceId,target:'tables',offset:0},'three')]:[];
+  if(requests===3){const outputs=req.input.filter(i=>i.type==='function_call_output');assert.equal(outputs.length,3);}
+  yield {type:'response.completed',response:{id:'resp_'+requests,status:'completed',output:calls.length?calls.map(c=>({id:'fc_'+c.id,type:'function_call',call_id:c.id,name:c.function.name,arguments:c.function.arguments,status:'completed'})):[{type:'message',content:[{type:'output_text',text:'All requested actions processed.'}]}],usage:{input_tokens:10,output_tokens:5,total_tokens:15}}};
+ }}};
+ const r=await require('../../src/services/chatDeliveryV2/responsesTurn').run({turn:f.turn,token:'lease',model:{apiMode:'responses',reasoningEffort:'low'},messages:[],fileTools:{tools:policy.tools},computeFiles:f.available,exactFiles:[],client,signal:new AbortController().signal,onText:async()=>{},save:async v=>Object.assign(f.turn,v),providerProgress:{}});
+ assert.equal(requests,3);assert.equal(r.computation.runs,3);assert.equal(f.turn.computeState.docxCompletion,undefined);assert.equal(r.assistantText,'All requested actions processed.');
+});
+
+test('complete=true cannot turn a rejected edit into success',async t=>{
+ const f=await setup(t);let calls=0;const bad=f.edit(true),args=JSON.parse(bad.function.arguments);args.operations[0].target='cell999';bad.function.arguments=JSON.stringify(args);
+ const client={chat:{completions:{create:async()=>{
+  calls++;return {choices:[calls===1?{message:{tool_calls:[bad]},finish_reason:'tool_calls'}:{message:{content:'The requested target was not found.'},finish_reason:'stop'}],usage:providerUsage};
+ }}}};
+ const r=await agent.run(f.turn,'lease',{},[],f.inspection,usage,f.available,client,new AbortController().signal);
+ assert.equal(calls,2);assert.equal(r.computation.status,'partial');assert.equal(r.computation.reason,'DOCX_TARGET_NOT_FOUND');assert.equal(r.computation.files.length,0);assert.equal(f.turn.computeState.docxCompletion,undefined);
+});
+
+test('cancel after a final edit is verified but before its quota transaction publishes no output or completion marker',async t=>{
+ const f=await setup(t),c=new AbortController();
+ f.turn.computeState={calls:0,pending:false,usage,initialUsage:usage,runs:1,executionMs:0,files:[],docxInspections:{[sourceId]:engine.hash(f.input)}};
+ t.mock.method(store,'transaction',async fn=>{c.abort();return fn({});});
+ await assert.rejects(execute.run({turn:f.turn,token:'lease',model:{},call:f.edit(true),available:f.available,transcript:[],initialUsage:usage,save:async s=>{f.turn.computeState=s;},signal:c.signal,completionAllowed:true}));
+ assert.equal(f.stats().creates,0);assert.equal(f.turn.computeState.docxCompletion,undefined);assert.deepEqual(f.turn.computeState.files,[]);
 });

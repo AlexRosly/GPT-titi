@@ -163,3 +163,21 @@ test('document checkpoint recovery retains document status without a provider re
   await f.worker.recoverExpired();
   assert.deepEqual(f.counts(),{providerCalls:0,charges:1,releases:1});
 });
+
+for(const responses of [false,true])test(`verified final DOCX checkpoint recovers as completed (${responses?'Responses':'Chat Completions'}) with one charge`,async t=>{
+  const f=fixture(t),usage={promptTokens:12,completionTokens:4,totalTokens:16};
+  const fileId='012345678901234567890123';
+  f.doc.leaseUntil=new Date(0);
+  if(responses)f.doc.responseState={pending:false,calls:2,usage,partialData:{assistantText:'Preparing edit'}};
+  f.doc.computeState={kind:'document',pending:false,calls:1,runs:2,executionMs:40,usage,files:[{fileId,name:'edited.docx',size:100}],docxCompletion:{version:1,run:2,fileId}};
+  const store=require('../../src/services/files/store');
+  t.mock.method(store,'owned',async()=>({_id:fileId,user:'owner',status:'ready',originalName:'edited.docx',size:100,resultKey:'turn-id:1:compute:2:0'}));
+  t.mock.method(require('../../src/models/managedFile'),'updateOne',async()=>({matchedCount:1}));
+  await f.worker.recoverExpired();
+  assert.equal(f.doc.status,'completed');
+  const restored=await snapshot(f.doc);
+  assert.equal(restored.assistantMessage.computation.status,'completed');assert.equal(restored.assistantMessage.attachments.length,1);
+  assert.match(restored.assistantMessage.content,/Structural checks passed/);
+  await f.worker.recoverExpired();
+  assert.deepEqual(f.counts(),{providerCalls:0,charges:1,releases:1});
+});

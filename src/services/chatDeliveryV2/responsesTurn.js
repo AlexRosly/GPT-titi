@@ -31,7 +31,8 @@ async function run({ turn, token, model, messages, fileTools, computeFiles, exac
   const compute = require('../computation/policy');
   const accounting = require('../computation/accounting');
   const exact = require('../files/exactTranscription');
-  const transcript = messages.map(m => ({ ...m }));
+  const docxContinuation = require('../docx/continuation');
+  let transcript = messages.map(m => ({ ...m }));
   const session = new ResponsesSession(client, model, { onResponseId });
   const allowed = new Map((fileTools.tools || []).map(t => [t.function.name, t.function]));
   let usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
@@ -112,9 +113,13 @@ async function run({ turn, token, model, messages, fileTools, computeFiles, exac
                 runs: 0, executionMs: 0, files: [], stage: 'preparing' });
             }
             const executed = await require('../computation/execute').run({ turn, token, model, call, available: computeFiles,
-              transcript, initialUsage: turn.computeState.initialUsage, save: saveCompute, signal });
-            result = { ok: executed.result.ok, text: executed.result.text, truncated: executed.result.truncated,
-              files: executed.next.files, executionMs: executed.next.executionMs };
+              transcript, initialUsage: turn.computeState.initialUsage, save: saveCompute, signal,
+              completionAllowed: calls.length === 1 && !turn.outputFile && !createdFile && exactText === null });
+            signal.throwIfAborted();
+            const completed = docxContinuation.completion(turn);
+            if (completed) return completed;
+            transcript = docxContinuation.compact(transcript, executed.next);
+            result = docxContinuation.toolResult(call, executed.result, executed.next);
           } else throw failure('TOOL_NOT_AVAILABLE', 'No handler for this function.');
         } catch (error) {
           if (error.cleanupUnconfirmed) { cleanupUnconfirmed = true; throw error; }

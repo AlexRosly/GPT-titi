@@ -6,7 +6,7 @@ const accounting = require('./accounting');
 const fileIO = require('./files');
 const store = require('../files/store');
 
-async function run({ turn, token, model, call, available, transcript, initialUsage, save, signal }) {
+async function run({ turn, token, model, call, available, transcript, initialUsage, save, signal, completionAllowed = false }) {
   signal?.throwIfAborted();
   const l = policy.limits();
   const docx = require('../docx/policy').isTool(call.function.name);
@@ -15,20 +15,24 @@ async function run({ turn, token, model, call, available, transcript, initialUsa
   const state = turn.computeState;
   if (state.runs >= l.runs || state.executionMs >= l.totalMs) throw policy.fail('COMPUTE_RUN_LIMIT');
   if (!docx && action.exports.length && !require('../files/artifacts').outputEnabled(model)) throw policy.fail('COMPUTE_OUTPUT_DISABLED');
-  const preview = require('./budget').estimate(transcript, policy.toolsFor(model), turn.pricing);
-  const extra = accounting.cost({ promptTokens: state.usage.promptTokens - initialUsage.promptTokens,
-    completionTokens: state.usage.completionTokens - initialUsage.completionTokens }, turn.pricing) * turn.pricing.tokenValueUsd;
-  if (extra + preview.usd > l.usd) {
-    require('./budget').diagnoseRejection(turn, 'before_python', preview, extra, l.usd);
-    throw policy.fail('COMPUTE_BUDGET_LIMIT');
+  if (!docx || !require('../docx/continuation').enabled()) {
+    const preview = require('./budget').estimate(transcript, policy.toolsFor(model), turn.pricing);
+    const extra = accounting.cost({ promptTokens: state.usage.promptTokens - initialUsage.promptTokens,
+      completionTokens: state.usage.completionTokens - initialUsage.completionTokens }, turn.pricing) * turn.pricing.tokenValueUsd;
+    if (extra + preview.usd > l.usd) {
+      require('./budget').diagnoseRejection(turn, 'before_python', preview, extra, l.usd);
+      throw policy.fail('COMPUTE_BUDGET_LIMIT');
+    }
   }
+  // A DOCX worker makes no provider call. Its resource/ownership/quota guards
+  // remain below; accounting.begin still enforces the cap before every paid call.
   const inputs = docx ? null : await fileIO.inputs(turn, action, available);
   const started = Date.now();
   await save({ ...state, runs: state.runs + 1, stage: 'executing', ...(docx ? {kind:'document'} : {}) });
-  let result, prepared = [], statePatch = {};
+  let result, prepared = [], statePatch = {}, completed = false;
   try {
     if (docx) {
-      ({result,prepared,statePatch}=await require('../docx/action').run({turn,model,call,available,signal}));
+      ({result,prepared,statePatch,completed}=await require('../docx/action').run({turn,model,call,available,signal}));
     } else {
       result = await require('./session').run({ code: action.code, files: inputs, exports: action.exports,
       timeoutMs: Math.min(l.runMs, l.totalMs - state.executionMs) }, signal);
@@ -59,6 +63,10 @@ async function run({ turn, token, model, call, available, transcript, initialUsa
       refs.push({ fileId: String(stored._id), name: stored.originalName, size: stored.size });
     }
     next.files = refs;
+    if (docx && require('../docx/continuation').enabled() && completionAllowed && completed && result.ok && prepared.length === 1) {
+      // Durable only with the verified output in this same quota transaction.
+      next.docxCompletion = { version: 1, run: next.runs, fileId: refs.at(-1).fileId };
+    }
     signal?.throwIfAborted();
     const update = await ChatTurn.updateOne(accounting.guard(turn, token), { $set: { computeState: next } }, { session });
     if (!update.matchedCount) throw Object.assign(Error('Stale lease'), { staleLease: true });

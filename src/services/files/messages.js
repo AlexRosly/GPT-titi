@@ -50,7 +50,7 @@ const providerContent = async (user, text, files = [], options = {}) => {
       try {
         const metadata = await store.owned(user, String(f.fileId));
         if (inputReader.supported(metadata, options.model)) {
-          content.push(await inputReader.readPart(user, metadata, options));
+          content.push(require('./sourceParts').mark(await inputReader.readPart(user, metadata, options), metadata));
           if (!['image/png', 'image/jpeg', 'image/webp'].includes(metadata.mimetype) || options.model?.limits?.maxImages === 0) continue;
         }
         if (!['image/png', 'image/jpeg', 'image/webp'].includes(metadata.mimetype)) throw fail('DOCUMENT_PROCESSING_NOT_ENABLED', 415);

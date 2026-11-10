@@ -1,5 +1,6 @@
 const {ChatTurn}=require('../../models');
 const accounting=require('./accounting');const policy=require('./policy');
+const docxContinuation=require('../docx/continuation');
 const store=require('../files/store');
 const partial=(turn,reason)=>({assistantText:`Calculation stopped (${reason}). Only successfully completed computations and attached files are available; the task may be incomplete.`,usage:turn.computeState.usage,computation:{status:'partial',kind:turn.computeState.kind,reason,files:turn.computeState.files||[],runs:turn.computeState.runs,executionMs:turn.computeState.executionMs}});
 async function run(turn,token,model,messages,firstCall,usage,available,client,parentSignal){
@@ -12,11 +13,15 @@ async function run(turn,token,model,messages,firstCall,usage,available,client,pa
   await save({...(require('../docx/policy').isTool(firstCall.function?.name)?{kind:'document'}:{}),calls:0,pending:false,usage,initialUsage:usage,runs:0,executionMs:0,files:[],stage:'preparing'});
   if(!policy.enabled(model))throw policy.fail('COMPUTE_DISABLED');
   release=await require('./leases').acquire(turn.user);
-  const transcript=messages.map(m=>({...m}));let call=firstCall;
+  let transcript=messages.map(m=>({...m}));let call=firstCall;
   while(call){
    if(controller.signal.aborted)throw policy.fail('COMPUTE_ABORTED');
-   const {result,next}=await require('./execute').run({turn,token,model,call,available,transcript,initialUsage:usage,save,signal:controller.signal});
-   transcript.push({role:'assistant',content:null,tool_calls:[call]},{role:'tool',tool_call_id:call.id,content:JSON.stringify({ok:result.ok,text:result.text,truncated:result.truncated,files:next.files,executionMs:next.executionMs})});
+   const {result,next}=await require('./execute').run({turn,token,model,call,available,transcript,initialUsage:usage,save,signal:controller.signal,completionAllowed:!turn.outputFile});
+   controller.signal.throwIfAborted();
+   const completed=docxContinuation.completion(turn);
+   if(completed)return completed;
+   transcript=docxContinuation.compact(transcript,next);
+   transcript.push({role:'assistant',content:null,tool_calls:[call]},{role:'tool',tool_call_id:call.id,content:JSON.stringify(docxContinuation.toolResult(call,result,next))});
    if(controller.signal.aborted||Date.now()>deadline-1000)throw policy.fail('COMPUTE_TIMEOUT');
    const options=next.runs<l.runs&&next.executionMs<l.totalMs&&next.calls<l.calls-1?{tools:policy.toolsFor(model),tool_choice:'auto',parallel_tool_calls:false}:{};
    await accounting.begin(turn,token,transcript,options.tools);

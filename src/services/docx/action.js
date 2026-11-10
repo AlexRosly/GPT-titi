@@ -24,6 +24,7 @@ async function run({turn,model,call,available,signal}){
   statePatch:{docxInspections:{...turn.computeState.docxInspections,[args.fileId]:output.inspection.checksum}}};
  const result=Buffer.from(output.buffer);
  return {result:{ok:true,text:JSON.stringify({verification:{...output.report,operations:undefined,operationCount:output.report.operations.length},filename:args.filename}),truncated:false},
+  completed:args.complete===true && output.report.requestedPropertiesVerified===true && output.report.documentXmlOutsideTargetsUnchanged===true && output.report.otherPartsByteIdentical===true,
   prepared:[{name:args.filename,mimetype:require('../files/office').mimes.docx,buffer:result,documentEdit:{sourceFileId:args.fileId,...output.report}}],
   statePatch:{docxEdits:[...(turn.computeState.docxEdits||[]),{sourceFileId:args.fileId,...output.report}]}};
 }

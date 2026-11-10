@@ -768,6 +768,14 @@ const recoverExpired = async () => {
       await failTurn(turn, turn.leaseToken, errorFor('USER_CANCELLED'), { expiredOnly: true });
       continue;
     }
+    const completedDocx = !turn.providerResult && require('../docx/continuation').completion(turn);
+    if (completedDocx) {
+      const saved = await ChatTurn.updateOne({ _id: turn._id, status: 'processing', attempt: turn.attempt,
+        leaseToken: turn.leaseToken, leaseUntil: { $lte: new Date() }, providerResult: null, cancelRequestedAt: null },
+      { $set: { providerResult: completedDocx } });
+      if (!saved.matchedCount) continue;
+      turn.providerResult = completedDocx;
+    }
     if (!turn.providerResult && turn.responseState && !turn.responseState.pending) {
       const state = turn.responseState;
       const data = { ...state.partialData, assistantText: (state.partialData?.assistantText || '') + '\n\n[Generation interrupted; only completed work is available.]',

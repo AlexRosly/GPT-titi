@@ -1,5 +1,7 @@
 # DOCX editing — stage 1
 
+Follow-up: [DOCX continuation budget fix](docx-continuation-budget.md) changes repeat context, local-action preflight and finalization. The stage-1 record below describes the original release.
+
 Base: backend `e5651168f2fbcaf5c4c8cfadd1ad3b9a0d99254d`, frontend `1f64c48478d56048de50b60388d4381a7070fa63` (main checked 2026-11-10). Includes current file library, provider adapters and V2 reservation/checkpoint code. Last numbered OCR patch is 42; later library/model changes are unnumbered. This release uses the name `docx-editing-stage1`, not an assumed OCR patch number. OCR remains `regions-4`.
 
 ## Behavior

@@ -13,7 +13,7 @@ const crc32 = bytes => {
   return (crc ^ 0xffffffff) >>> 0;
 };
 // Strict classic ZIP reader: no filesystem extraction, ZIP64, spanning or encryption.
-module.exports = function readZip(buffer) {
+module.exports = function readZip(buffer, { all = false } = {}) {
   let end = -1;
   for (let i = buffer.length - 22; i >= Math.max(0, buffer.length - 65557); i--) {
     if (buffer.readUInt32LE(i) === 0x06054b50 && i + 22 + buffer.readUInt16LE(i + 20) === buffer.length) { end = i; break; }
@@ -54,7 +54,7 @@ module.exports = function readZip(buffer) {
     const bytes = e.method === 8 ? inflateRawSync(raw, { maxOutputLength: Math.max(1, e.length) }) : raw;
     if (bytes.length !== e.length || crc32(bytes) !== e.crc) bad();
     // Validate every entry's bytes, but retain only XML parts used below.
-    if (name.endsWith('.xml') || name.endsWith('.rels')) output.set(name, bytes);
+    if (all || name.endsWith('.xml') || name.endsWith('.rels')) output.set(name, bytes);
     if (/vbaProject|\/embeddings\/|\/activeX\/|\/externalLinks\//i.test(name)) throw fail('OFFICE_DOCUMENT_UNSUPPORTED');
   }
   if (!output.has('[Content_Types].xml') || !output.has('_rels/.rels')) bad();

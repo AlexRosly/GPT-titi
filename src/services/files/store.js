@@ -22,11 +22,12 @@ const transaction = async (fn) => {
   try { return await session.withTransaction(() => fn(session)); }
   finally { await session.endSession(); }
 };
-const create = async ({ user, name, mimetype, buffer, generatedPreview = null, source = 'upload', resultKey, retention = 'library', session }) => {
+const create = async ({ user, name, mimetype, buffer, generatedPreview = null, documentEdit = null, source = 'upload', resultKey, retention = 'library', session }) => {
   if (!Buffer.isBuffer(buffer) || !buffer.length || buffer.length > config.maxBytes()) throw fail('FILE_TOO_LARGE', 413);
-  if (!session) return transaction((s) => create({ user, name, mimetype, buffer, generatedPreview, source, resultKey, retention, session: s }));
+  if (!session) return transaction((s) => create({ user, name, mimetype, buffer, generatedPreview, documentEdit, source, resultKey, retention, session: s }));
   if (!['library', 'temporary'].includes(retention) || (retention === 'temporary' && source !== 'generated')) throw fail('INVALID_FILE_RETENTION');
   if (generatedPreview && (source !== 'generated' || Buffer.byteLength(JSON.stringify(generatedPreview)) > 65536)) throw fail('INVALID_FILE_PREVIEW');
+  if (documentEdit && (source !== 'generated' || Buffer.byteLength(JSON.stringify(documentEdit)) > 40000)) throw fail('INVALID_DOCUMENT_PROVENANCE');
   if (resultKey) {
     const existing = await File.findOne({ user, resultKey }).session(session);
     if (existing) return existing; // Tombstones prevent recreating a deleted result on replay.
@@ -36,7 +37,7 @@ const create = async ({ user, name, mimetype, buffer, generatedPreview = null, s
     { $inc: { bytes: buffer.length, count: 1 } }, { session });
   if (!reserved.modifiedCount) throw fail('FILE_QUOTA_EXCEEDED', 413);
   const [file] = await File.create([{ user, originalName: name, mimetype, size: buffer.length,
-    generatedPreview,
+    generatedPreview, documentEdit,
     checksum: crypto.createHash('sha256').update(buffer).digest('hex'), source, resultKey,
     retention, expiresAt: retention === 'temporary' ? new Date(Date.now() + 3600000) : null }], { session });
   const chunks = [];

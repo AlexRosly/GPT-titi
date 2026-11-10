@@ -149,3 +149,17 @@ test('user cancel aborts the live provider signal and terminates the V2 turn', a
   assert.equal(f.events.some(e => e.name === 'chat:end'), false);
   assert.equal(f.doc.needsReconciliation, true);
 });
+
+test('document checkpoint recovery retains document status without a provider replay or second charge',async t=>{
+  const f=fixture(t),usage={promptTokens:12,completionTokens:4,totalTokens:16};
+  f.doc.leaseUntil=new Date(0);
+  f.doc.responseState={pending:false,calls:1,usage,partialData:{assistantText:'Inspection completed.'}};
+  f.doc.computeState={kind:'document',pending:false,calls:1,runs:1,executionMs:40,usage,files:[]};
+  await f.worker.recoverExpired();
+  const restored=await snapshot(f.doc);
+  assert.equal(restored.assistantMessage.computation.kind,'document');
+  assert.equal(restored.assistantMessage.computation.status,'partial');
+  assert.equal(restored.assistantMessage.computation.reason,'PROCESS_INTERRUPTED');
+  await f.worker.recoverExpired();
+  assert.deepEqual(f.counts(),{providerCalls:0,charges:1,releases:1});
+});

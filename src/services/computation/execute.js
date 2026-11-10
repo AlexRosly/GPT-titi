@@ -9,31 +9,42 @@ const store = require('../files/store');
 async function run({ turn, token, model, call, available, transcript, initialUsage, save, signal }) {
   signal?.throwIfAborted();
   const l = policy.limits();
-  const action = policy.parse(call.function.arguments), state = turn.computeState;
+  const docx = require('../docx/policy').isTool(call.function.name);
+  if (!policy.accepts(call.function.name, model)) throw policy.fail('COMPUTE_INVALID_ACTION');
+  const action = docx ? require('../docx/policy').parse(call.function.name, call.function.arguments) : policy.parse(call.function.arguments);
+  const state = turn.computeState;
   if (state.runs >= l.runs || state.executionMs >= l.totalMs) throw policy.fail('COMPUTE_RUN_LIMIT');
-  if (action.exports.length && !require('../files/artifacts').outputEnabled(model)) throw policy.fail('COMPUTE_OUTPUT_DISABLED');
-  const preview = require('./budget').estimate(transcript, [policy.tool], turn.pricing);
+  if (!docx && action.exports.length && !require('../files/artifacts').outputEnabled(model)) throw policy.fail('COMPUTE_OUTPUT_DISABLED');
+  const preview = require('./budget').estimate(transcript, policy.toolsFor(model), turn.pricing);
   const extra = accounting.cost({ promptTokens: state.usage.promptTokens - initialUsage.promptTokens,
     completionTokens: state.usage.completionTokens - initialUsage.completionTokens }, turn.pricing) * turn.pricing.tokenValueUsd;
   if (extra + preview.usd > l.usd) {
     require('./budget').diagnoseRejection(turn, 'before_python', preview, extra, l.usd);
     throw policy.fail('COMPUTE_BUDGET_LIMIT');
   }
-  const inputs = await fileIO.inputs(turn, action, available);
+  const inputs = docx ? null : await fileIO.inputs(turn, action, available);
   const started = Date.now();
-  await save({ ...state, runs: state.runs + 1, stage: 'executing' });
-  let result, prepared = [];
+  await save({ ...state, runs: state.runs + 1, stage: 'executing', ...(docx ? {kind:'document'} : {}) });
+  let result, prepared = [], statePatch = {};
   try {
-    result = await require('./session').run({ code: action.code, files: inputs, exports: action.exports,
+    if (docx) {
+      ({result,prepared,statePatch}=await require('../docx/action').run({turn,model,call,available,signal}));
+    } else {
+      result = await require('./session').run({ code: action.code, files: inputs, exports: action.exports,
       timeoutMs: Math.min(l.runMs, l.totalMs - state.executionMs) }, signal);
-    prepared = await fileIO.outputs(result, action, model);
+      prepared = await fileIO.outputs(result, action, model);
+    }
   } catch (error) {
     if (error.cleanupUnconfirmed) throw error;
     if (signal?.aborted) throw policy.fail('COMPUTE_ABORTED');
     result = { ok: false, text: error.fileError || 'COMPUTE_EXECUTION_FAILED', exports: [], truncated: false };
   }
-  const next = { ...turn.computeState, executionMs: state.executionMs + Date.now() - started, stage: 'computed' };
+  signal?.throwIfAborted();
+  const next = { ...turn.computeState, ...statePatch, lastActionFailed:!result.ok,
+    lastActionError: !result.ok && /^[A-Z_]{1,64}$/.test(result.text) ? result.text : null,
+    ...(docx ? {kind:'document'} : {}), executionMs: state.executionMs + Date.now() - started, stage: 'computed' };
   await store.transaction(async session => {
+    signal?.throwIfAborted();
     const current = await ChatTurn.findOne(accounting.guard(turn, token)).session(session);
     if (!current) throw Object.assign(Error('Stale lease'), { staleLease: true });
     const replacements = new Set(prepared.map(f => f.name.normalize('NFC').toLowerCase()));
@@ -48,6 +59,7 @@ async function run({ turn, token, model, call, available, transcript, initialUsa
       refs.push({ fileId: String(stored._id), name: stored.originalName, size: stored.size });
     }
     next.files = refs;
+    signal?.throwIfAborted();
     const update = await ChatTurn.updateOne(accounting.guard(turn, token), { $set: { computeState: next } }, { session });
     if (!update.matchedCount) throw Object.assign(Error('Stale lease'), { staleLease: true });
   });

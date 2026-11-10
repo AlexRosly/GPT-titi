@@ -468,10 +468,11 @@ const processTurn = async (claimed) => {
     const computeFiles = computeEnabled ? await require('../computation/files').candidates(turn, fileModel) : [];
     const computeCollector = computeEnabled ? computation.collector() : null;
     if (computeEnabled) {
-      fileTools.tools = [...(fileTools.tools || []), computation.tool];
+      fileTools.tools = [...(fileTools.tools || []), ...computation.toolsFor(fileModel)];
       fileTools.tool_choice = 'auto'; fileTools.parallel_tool_calls = false;
       messages[0].content += ' ' + computation.instructions(fileModel) + ' Office exports follow: ' + require('../files/office').instructions;
       messages[0].content += '\nCOMPUTATION_FILES: ' + JSON.stringify(computeFiles);
+      if (require('../docx/policy').enabled(fileModel)) messages[0].content += ' ' + require('../docx/policy').instructions;
     }
     const exact = require("../files/exactTranscription");
     const exactFiles = turn.outputFile || turn.webPlan?.mode === "browser" ? [] : await exact.candidates(turn.user, history, fileModel);
@@ -770,7 +771,7 @@ const recoverExpired = async () => {
     if (!turn.providerResult && turn.responseState && !turn.responseState.pending) {
       const state = turn.responseState;
       const data = { ...state.partialData, assistantText: (state.partialData?.assistantText || '') + '\n\n[Generation interrupted; only completed work is available.]',
-        usage: state.usage, ...(turn.computeState ? { computation: { status: 'partial', reason: 'PROCESS_INTERRUPTED',
+        usage: state.usage, ...(turn.computeState ? { computation: { status: 'partial', kind: turn.computeState.kind, reason: 'PROCESS_INTERRUPTED',
           files: turn.computeState.files, runs: turn.computeState.runs, executionMs: turn.computeState.executionMs } } : {}) };
       const saved = await ChatTurn.updateOne({ _id: turn._id, status: 'processing', attempt: turn.attempt,
         leaseToken: turn.leaseToken, leaseUntil: { $lte: new Date() }, providerResult: null }, { $set: { providerResult: data } });

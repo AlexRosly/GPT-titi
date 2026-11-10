@@ -74,7 +74,7 @@ async function run({ turn, token, model, messages, fileTools, computeFiles, exac
       if (!response.calls.length) {
         if (turn.outputFile && !fileOutput.artifact && !fileOutput.artifactError) fileOutput = { artifactError: 'INVALID_FILE_OUTPUT' };
         return { assistantText: exactText ?? (assistantText || response.text), usage, ...fileOutput,
-          ...(turn.computeState ? { computation: { status: 'completed', files: turn.computeState.files,
+          ...(turn.computeState ? { computation: { status: turn.computeState.lastActionFailed ? 'partial' : 'completed', kind: turn.computeState.kind, reason: turn.computeState.lastActionError, files: turn.computeState.files,
             runs: turn.computeState.runs, executionMs: turn.computeState.executionMs } } : {}) };
       }
       const calls = response.calls.map(c => ({ id: c.call_id, type: 'function', function: { name: c.name, arguments: c.arguments } }));
@@ -105,10 +105,10 @@ async function run({ turn, token, model, messages, fileTools, computeFiles, exac
             if (createdFile) throw failure('TOOL_CONFLICT', 'A downloadable file is already prepared for this turn.');
             exactText = await exact.render(turn.user, { ids: args.fileIds }, exactFiles);
             result = { ok: exactText !== exact.failure, status: 'prepared', note: 'The server inserts the saved extraction verbatim. Do not rewrite it.' };
-          } else if (call.function.name === 'run_python') {
+          } else if (compute.accepts(call.function.name,model)) {
             if (!turn.computeState) {
               release = await require('../computation/leases').acquire(turn.user);
-              await saveCompute({ calls: 0, pending: false, usage, initialUsage: usage,
+              await saveCompute({ ...(require('../docx/policy').isTool(call.function.name)?{kind:'document'}:{}), calls: 0, pending: false, usage, initialUsage: usage,
                 runs: 0, executionMs: 0, files: [], stage: 'preparing' });
             }
             const executed = await require('../computation/execute').run({ turn, token, model, call, available: computeFiles,
@@ -120,6 +120,7 @@ async function run({ turn, token, model, messages, fileTools, computeFiles, exac
           if (error.cleanupUnconfirmed) { cleanupUnconfirmed = true; throw error; }
           if (error.staleLease || signal.aborted || !error.protocolError && !error.fileError) throw error;
           const code = error.fileError || error.protocolError.code;
+          if (turn.computeState && compute.accepts(call.function.name,model)) await saveCompute({...turn.computeState,lastActionFailed:true,lastActionError:code});
           if (call.function.name === 'create_file' && !createdFile) fileOutput = { artifactError: code };
           result = { ok: false, error: code };
         }

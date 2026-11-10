@@ -25,7 +25,7 @@ test('real V2 transaction stores original/copy/provenance, charges once and reco
  });
  await worker.processTurn(claim);await worker.recoverExpired();
  const turn=await models.ChatTurn.findById(claim.turn._id);assert.equal(turn.status,'completed');assert.equal(turn.reservationState,'settled');assert.equal(calls,2);
- assert.deepEqual(turn.usage,{promptTokens:200,completionTokens:60,totalTokens:260});
+ assert.deepEqual(turn.usage.toObject(),{promptTokens:200,completionTokens:60,totalTokens:260});
  const message=await models.ChatMessage.findById(turn.assistantMessage);assert.equal(message.computation.kind,'document');assert.equal(message.attachments.length,1);
  const output=await store.read(user.id,message.attachments[0].fileId);assert.equal(output.file.retention,'library');assert.equal(output.file.documentEdit.sourceFileId,original.id);assert.equal(output.file.documentEdit.requestedPropertiesVerified,true);
  assert.deepEqual((await store.read(user.id,original.id)).buffer,input);assert.equal(engine.load(output.buffer).byId.get('text0').text,'Посада');

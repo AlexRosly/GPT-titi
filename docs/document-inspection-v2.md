@@ -25,12 +25,17 @@ evaluation or unrestricted large-file support.
 - Batch up to 64 distinct table IDs in one target, such as `table7,table8`.
 - `query: null` retains detailed inspection. Legacy actions may omit the field;
   new strict provider schemas require it, with null allowed.
-- A table query has `mode: "rows" | "summary"`, `start`, `end`, `contains`.
-  Start/end select original zero-based row coordinates `[start,end)` separately
-  within each requested table. Null end means through the end.
+- A query object is valid for every inspection target and has
+  `mode: "rows" | "summary"`, `start`, `end`, `contains`. Explicit table IDs use
+  original zero-based row coordinates `[start,end)` separately within each
+  requested table. For `tables`/`document` indexes and paragraph text nodes,
+  the same range selects original item positions shown as `sourceIndex`.
+  These views also expose `queryUnit: "items"` and `sourceTotal`. Null end means
+  through the end. A cell ID retains its existing first-paragraph alias, with
+  the query preserved when resolving that alias.
 - `contains` is a case-insensitive NFC-normalized literal substring, not code or
   a regular expression. It scans full selected row text, including undisplayed
-  rows. Null means no text filter. No cell-column predicate is provided yet.
+  rows/items. Null means no text filter. No cell-column predicate is provided yet.
 - Detailed responses use the existing 14,000-byte UTF-8 JSON bound, with explicit
   `nextOffset` if needed. There is no 20-row page. Offset indexes the filtered
   result and requires the same target/query.
@@ -115,7 +120,8 @@ in-flight provider action may refer to a newly introduced selection operation.
 
 ## Validation
 
-Local checks on this baseline:
+Initial inspection-V2 checks on this baseline (the subsequent query-target fix
+and its validation are documented in `docx-query-target-fix.md`):
 
 - `npm run test:docx`: 43 passed, zero failed/skipped.
 - Regression command in the package README: 88 passed, zero failed; seven

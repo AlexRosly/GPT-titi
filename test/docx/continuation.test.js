@@ -80,3 +80,14 @@ test('column encoding preserves every cell/index property and all coverage/selec
  const unknown={items:[{row:0,cells:[{id:'cell0',futureProperty:'must remain'}]}]};
  assert.equal(continuation.providerData(unknown),unknown);
 });
+
+test('argument correction feedback is fixed, bounded and does not mark a failed tool successful',()=>{
+ const call={function:{name:'inspect_docx'}};
+ const output=continuation.toolResult(call,{ok:false,text:'DOCUMENT_INVALID_QUERY',truncated:false},{files:[],executionMs:1});
+ assert.equal(output.ok,false);assert.equal(output.text,'DOCUMENT_INVALID_QUERY');assert.equal(output.data,undefined);
+ assert.match(output.correction,/query=null/);assert.ok(output.correction.length<600);
+ const unrelated=continuation.toolResult({function:{name:'run_python'}},{ok:false,text:'DOCUMENT_INVALID_QUERY'},{files:[]});
+ assert.equal(unrelated.correction,undefined);
+ const unknown=continuation.toolResult(call,{ok:false,text:'UNRECOGNIZED_ERROR'},{files:[]});
+ assert.equal(unknown.correction,undefined);
+});

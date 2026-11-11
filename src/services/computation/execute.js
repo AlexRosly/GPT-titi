@@ -11,7 +11,11 @@ async function run({ turn, token, model, call, available, transcript, initialUsa
   const l = policy.limits();
   const docx = require('../docx/policy').isTool(call.function.name);
   if (!policy.accepts(call.function.name, model)) throw policy.fail('COMPUTE_INVALID_ACTION');
-  const action = docx ? require('../docx/policy').parse(call.function.name, call.function.arguments) : policy.parse(call.function.arguments);
+  // DOCX arguments are validated by action.run inside the guarded try below,
+  // before any file read. Return correctable argument errors to the model and
+  // count the attempt against the existing run limit, rather than ending the
+  // Chat Completions turn before it can correct its inspection request.
+  const action = docx ? null : policy.parse(call.function.arguments);
   const state = turn.computeState;
   if (state.runs >= l.runs || state.executionMs >= l.totalMs) throw policy.fail('COMPUTE_RUN_LIMIT');
   if (!docx && action.exports.length && !require('../files/artifacts').outputEnabled(model)) throw policy.fail('COMPUTE_OUTPUT_DISABLED');

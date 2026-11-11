@@ -90,7 +90,6 @@ function inspect(doc, target, offset, query = null) {
       target,query:q,rowCount:items.length,cellCount:items.reduce((n,r) => n + children(r.node,'tc').length,0)};
     render = r => ({...(target.includes(',') ? {table:r.table} : {}),row:r.index,cells:children(r.node,'tc').map(cellDetails)});
   } else {
-    if (query !== null) error('DOCX_INVALID_QUERY_TARGET');
     if (target === 'document' || target === 'tables') {
       items = [...doc.byId.values()].filter(n => n.local === 'tbl' || target === 'document' && n.local === 'p' && !ancestor(n,'tbl'));
       render = n => ({id:n.id,kind:n.local === 'tbl' ? 'table' : 'paragraph',...snippet(n,200),
@@ -100,9 +99,17 @@ function inspect(doc, target, offset, query = null) {
       if (n.local === 'p') {
         items = doc.nodes.filter(t => t.local === 't' && t.uri === W && ancestor(t,'p') === n);
         render = t => ({id:t.id,text:t.text});
-      } else if (n.local === 'tc') return inspect(doc,children(n,'p')[0]?.id || '',offset);
+      } else if (n.local === 'tc') return inspect(doc,children(n,'p')[0]?.id || '',offset,query);
       else error('DOCX_TARGET_NOT_FOUND');
     }
+    // The provider schema permits query on every target. For indexes and text
+    // nodes, ranges address source item positions, not table rows. Never discard
+    // a non-null query: a literal filter must inspect the full source text.
+    const sourceTotal = items.length, renderNode = render;
+    const selected = inspection.select(items.map((node,index) => ({node,index,text:node.text})),q);
+    return inspection.present({base:{checksum:doc.checksum,target,query:q,queryUnit:'items',sourceTotal,
+      verification:'Structure only. No page rendering or visual layout verification.'},
+      items:selected,offset,render:item => ({sourceIndex:item.index,...renderNode(item.node)}),summary:q.mode === 'summary'});
   }
   return inspection.present({base:{checksum:doc.checksum,target,...(selection ? {selection} : {}),
     verification:'Structure only. No page rendering or visual layout verification.'},items,offset,render,summary:q.mode === 'summary'});

@@ -20,13 +20,13 @@ test('real V2 transaction stores original/copy/provenance, charges once and reco
  const payload={clientMessageId:crypto.randomUUID(),conversationId:conversation.id,modelId,message:'Extend signature lines only',files:[{fileId:original.id,storage:'private'}]};
  const admitted=await accept({userId:user.id,payload}),claim=await worker.claimTurn(admitted.turn.turnId);let calls=0;
  t.mock.method(Completions.prototype,'create',req=>{
-  calls++;assert.ok(calls<=2,'No concluding provider call');const call=calls===1?{id:'inspect',type:'function',function:{name:'inspect_docx',arguments:JSON.stringify({fileId:original.id,target:'table0',offset:0,query:null})}}:{id:'edit',type:'function',function:{name:'edit_docx',arguments:JSON.stringify({fileId:original.id,sourceChecksum:engine.hash(input),filename:'edited.docx',operations:[{type:'selection_border',selectionId:selection.id,expectedCells:3,side:'bottom',style:'single',size:4,color:'auto'}],complete:true})}};
+  calls++;assert.ok(calls<=3,'No concluding provider call');const call=calls<=2?{id:'inspect'+calls,type:'function',function:{name:'inspect_docx',arguments:JSON.stringify({fileId:original.id,target:calls===1?'tables':'table0',offset:0,query:{mode:'rows',start:0,end:null,contains:null}})}}:{id:'edit',type:'function',function:{name:'edit_docx',arguments:JSON.stringify({fileId:original.id,sourceChecksum:engine.hash(input),filename:'edited.docx',operations:[{type:'selection_border',selectionId:selection.id,expectedCells:3,side:'bottom',style:'single',size:4,color:'auto'}],complete:true})}};
   if(req.stream){assert.ok(req.tools.some(t=>t.function.name==='edit_docx'));return(async function*(){yield {choices:[{delta:{tool_calls:[{...call,index:0}]},finish_reason:'tool_calls'}],usage};})();}
-  return Promise.resolve({choices:[calls===2?{message:{tool_calls:[call]},finish_reason:'tool_calls'}:{message:{content:'Edited copy attached.'},finish_reason:'stop'}],usage});
+  return Promise.resolve({choices:[{message:{tool_calls:[call]},finish_reason:'tool_calls'}],usage});
  });
  await worker.processTurn(claim);await worker.recoverExpired();
- const turn=await models.ChatTurn.findById(claim.turn._id);assert.equal(turn.status,'completed');assert.equal(turn.reservationState,'settled');assert.equal(calls,2);
- assert.deepEqual(turn.usage.toObject(),{promptTokens:200,completionTokens:60,totalTokens:260});
+ const turn=await models.ChatTurn.findById(claim.turn._id);assert.equal(turn.status,'completed');assert.equal(turn.reservationState,'settled');assert.equal(calls,3);
+ assert.deepEqual(turn.usage.toObject(),{promptTokens:300,completionTokens:90,totalTokens:390});
  assert.equal(turn.computeState.docxSelections[selection.id].fileId,original.id);
  assert.equal(turn.computeState.docxEdits[0].expandedOperationCount,3);
  const message=await models.ChatMessage.findById(turn.assistantMessage);assert.equal(message.computation.kind,'document');assert.equal(message.attachments.length,1);
@@ -34,5 +34,5 @@ test('real V2 transaction stores original/copy/provenance, charges once and reco
  assert.deepEqual((await store.read(user.id,original.id)).buffer,input);assert.equal(engine.load(output.buffer).byId.get('text0').text,'Посада');
  assert.equal((await Quota.findById(user.id)).bytes,input.length+output.buffer.length);
  assert.equal(await models.ChatBillingLedger.countDocuments({turnId:turn.turnId}),1);assert.equal((await models.User.findById(user.id)).reservedAppTokens,0);
- assert.equal((await accept({userId:user.id,payload})).disposition,'duplicate');assert.equal(calls,2);
+ assert.equal((await accept({userId:user.id,payload})).disposition,'duplicate');assert.equal(calls,3);
 });

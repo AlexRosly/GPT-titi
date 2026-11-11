@@ -293,3 +293,65 @@ test('saved range cannot cross file ownership, and a cancelled range publishes n
  await assert.rejects(execute.run({turn:f.turn,token:'lease',model:{},call,available:f.available,transcript:[],initialUsage:usage,save:async s=>{f.turn.computeState=s;},signal:c.signal,completionAllowed:true}));
  assert.equal(f.stats().creates,0);assert.equal(f.turn.computeState.docxCompletion,undefined);
 });
+
+async function queryWorkflow(f,api,calls,before=()=>{}){
+ let at=api==='responses'?0:1,requests=0;
+ const next=req=>{assert.ok(at<calls.length,'No unplanned provider call');before(at,req);requests++;return calls[at++];};
+ let result;
+ if(api==='chat_completions'){
+  result=await agent.run(f.turn,'lease',{},[],calls[0],usage,f.available,{chat:{completions:{create:async req=>({
+   choices:[{message:{tool_calls:[next(req)]},finish_reason:'tool_calls'}],usage:providerUsage,
+  })}}},new AbortController().signal);
+ }else{
+  const client={responses:{create:async function*(req){const call=next(req);
+   yield {type:'response.completed',response:{id:'query_'+requests,status:'completed',output:[{type:'function_call',id:'fc_'+requests,call_id:call.id,name:call.function.name,arguments:call.function.arguments,status:'completed'}],usage:{input_tokens:10,output_tokens:5,total_tokens:15}}};
+  }}};
+  result=await require('../../src/services/chatDeliveryV2/responsesTurn').run({turn:f.turn,token:'lease',model:{apiMode:'responses',reasoningEffort:'low'},messages:[],fileTools:{tools:policy.tools},computeFiles:f.available,exactFiles:[],client,signal:new AbortController().signal,onText:async()=>{},save:async v=>Object.assign(f.turn,v),providerProgress:{}});
+ }
+ assert.equal(requests,calls.length-(api==='chat_completions'?1:0));
+ return result;
+}
+
+for(const api of ['chat_completions','responses'])for(const mode of ['rows','summary','filtered'])test(`${api}: non-null ${mode} index query completes inspection and edit in one turn`,async t=>{
+ const f=await setup(t),query={mode:mode==='summary'?'summary':'rows',start:0,end:null,contains:mode==='filtered'?'Посада':null};
+ const index=tool('inspect_docx',{fileId:sourceId,target:'tables',offset:0,query},'index');
+ const r=await queryWorkflow(f,api,[index,f.inspection,f.edit(true)],at=>{
+  if(at===1){assert.equal(f.turn.computeState.runs,1);assert.equal(f.turn.computeState.lastActionFailed,false);assert.equal(f.turn.computeState.docxInspections[sourceId],engine.hash(f.input));}
+ });
+ assert.equal(r.computation.status,'completed');assert.equal(r.computation.runs,3);
+ assert.equal(r.computation.files.length,1);assert.equal(f.stats().creates,1);
+ assert.equal(r.usage.totalTokens,api==='chat_completions'?60:45);
+ const output=engine.load(f.stats().saved.buffer);
+ assert.equal(engine.inspect(output,'table0',0).items[0].cells.filter(c=>c.borders.some(b=>b.side==='bottom')).length,3);
+ assert.equal(output.byId.get('text0').text,'Посада');
+});
+
+for(const api of ['chat_completions','responses'])test(`${api}: invalid query receives safe correction before any file read and can recover within the turn`,async t=>{
+ const f=await setup(t);
+ const bad=tool('inspect_docx',{fileId:sourceId,target:'tables',offset:0,query:{mode:'rows',start:10,end:5,contains:null}},'bad');
+ const r=await queryWorkflow(f,api,[bad,f.inspection,f.edit(true)],(at,req)=>{
+  if(at!==1)return;
+  assert.equal(store.read.mock.callCount(),0);assert.equal(store.owned.mock.callCount(),0);assert.equal(f.stats().creates,0);
+  assert.equal(f.turn.computeState.runs,1);assert.equal(f.turn.computeState.lastActionError,'DOCUMENT_INVALID_QUERY');
+  assert.equal(f.turn.computeState.docxInspections,undefined);
+  const outputs=api==='responses'?req.input.filter(i=>i.type==='function_call_output').map(i=>JSON.parse(i.output)):
+   req.messages.filter(i=>i.role==='tool').map(i=>JSON.parse(i.content));
+  assert.equal(outputs[0].ok,false);assert.equal(outputs[0].text,'DOCUMENT_INVALID_QUERY');
+  assert.match(outputs[0].correction,/end=null or an integer greater than start/);
+ });
+ assert.equal(r.computation.status,'completed');assert.equal(r.computation.runs,3);assert.equal(f.stats().creates,1);
+ assert.equal(f.turn.computeState.lastActionError,null);assert.equal(f.turn.computeState.pending,false);
+});
+
+test('invalid DOCX argument attempts consume the existing run limit without reading or publishing files',async t=>{
+ const f=await setup(t),call={id:'bad',function:{name:'inspect_docx',arguments:'{invalid'}};
+ f.turn.computeState={usage,initialUsage:usage,calls:0,pending:false,runs:0,executionMs:0,files:[]};
+ const run=()=>execute.run({turn:f.turn,token:'lease',model:{},call,available:f.available,transcript:[],initialUsage:usage,
+  save:async state=>{f.turn.computeState=state;},signal:new AbortController().signal});
+ for(let i=0;i<require('../../src/services/computation/policy').limits().runs;i++){
+  const {result}=await run();assert.equal(result.ok,false);assert.equal(result.text,'DOCX_INVALID_ACTION');
+ }
+ await assert.rejects(run(),{fileError:'COMPUTE_RUN_LIMIT'});
+ assert.equal(store.read.mock.callCount(),0);assert.equal(store.owned.mock.callCount(),0);assert.equal(f.stats().creates,0);
+ assert.equal(f.turn.computeState.docxCompletion,undefined);assert.deepEqual(f.turn.computeState.usage,usage);
+});

@@ -54,7 +54,10 @@
     "test:files:library": "node --test test/files/library.test.js",
     "db:migrate:file-library": "node scripts/migrateFileLibrary.js",
     "test:docx": "node --test test/docx/engine.test.js test/docx/workflow.test.js test/docx/continuation.test.js test/docx/inspection.test.js test/docx/queryTarget.test.js",
-    "test:docx:integration": "node --test test/docx/integration.test.js"
+    "test:docx:integration": "node --test test/docx/integration.test.js",
+    "test:document-jobs": "node --test test/xlsx/*.test.js",
+    "test:document-jobs:integration": "node scripts/testDocumentJobsIntegration.js",
+    "db:indexes:document-jobs": "node scripts/createDocumentJobIndexes.js"
   },
   "repository": {
     "type": "git",

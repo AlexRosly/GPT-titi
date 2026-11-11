@@ -16,7 +16,9 @@ async function run(turn,token,model,messages,firstCall,usage,available,client,pa
   let transcript=messages.map(m=>({...m}));let call=firstCall;
   while(call){
    if(controller.signal.aborted)throw policy.fail('COMPUTE_ABORTED');
-   const {result,next}=await require('./execute').run({turn,token,model,call,available,transcript,initialUsage:usage,save,signal:controller.signal,completionAllowed:!turn.outputFile});
+   const executed=await require('./execute').run({turn,token,model,call,available,transcript,initialUsage:usage,save,signal:controller.signal,completionAllowed:!turn.outputFile});
+   if(executed.deferred)return executed;
+   const {result,next}=executed;
    controller.signal.throwIfAborted();
    const completed=docxContinuation.completion(turn);
    if(completed)return completed;

@@ -183,6 +183,8 @@ const failTurn = async (
   return updated;
 };
 
+const completionCancellationGuard = { $or: [{cancelRequestedAt:null}, {'computeState.documentJob.active':false,'computeState.pending':false,'providerResult.computation.reason':'USER_CANCELLED'}] };
+
 const commitCompletion = async (turn, leaseToken, assistantText, usage) => {
   // Render outside the transaction; Office/PDF work runs in a bounded worker thread.
   // Recovery repeats only local rendering from the saved provider result, never the model call.
@@ -192,7 +194,7 @@ const commitCompletion = async (turn, leaseToken, assistantText, usage) => {
     status: "processing",
     leaseToken,
     leaseUntil: { $gt: new Date() },
-    cancelRequestedAt: null,
+    ...completionCancellationGuard,
   }).lean();
   if (!savedTurn) throw Object.assign(new Error(), { staleLease: true });
   let preparedFile, renderError;
@@ -230,7 +232,7 @@ const commitCompletion = async (turn, leaseToken, assistantText, usage) => {
         status: "processing",
         leaseToken,
         leaseUntil: { $gt: new Date() },
-        cancelRequestedAt: null,
+        ...completionCancellationGuard,
       }).session(session);
       if (!current) throw Object.assign(new Error(), { staleLease: true });
 
@@ -472,6 +474,7 @@ const processTurn = async (claimed) => {
       fileTools.tool_choice = 'auto'; fileTools.parallel_tool_calls = false;
       messages[0].content += ' ' + computation.instructions(fileModel) + ' Office exports follow: ' + require('../files/office').instructions;
       messages[0].content += '\nCOMPUTATION_FILES: ' + JSON.stringify(computeFiles);
+      if (require('../xlsx/policy').enabled(fileModel)) messages[0].content += ' ' + require('../xlsx/policy').instructions;
       if (require('../docx/policy').enabled(fileModel)) messages[0].content += ' ' + require('../docx/policy').instructions;
     }
     const exact = require("../files/exactTranscription");
@@ -552,6 +555,7 @@ const processTurn = async (claimed) => {
           pendingText += delta;
           if (pendingText.length >= 256 || Date.now() - lastFlush >= BATCH_MS) await flush();
         } });
+      if (data.deferred) return;
       await flush();
       await saveResponse({ providerResult: data });
       resultStored = true;
@@ -673,6 +677,7 @@ const processTurn = async (claimed) => {
     if (computeCall) {
       // A completed usage record is mandatory before executing any code.
       const data = await require('../computation/agent').run(turn, leaseToken, fileModel, messages, computeCall, usage, computeFiles, client, controller.signal);
+      if (data.deferred) return;
       const saved = await ChatTurn.updateOne(require('../computation/accounting').guard(turn, leaseToken), { $set: { providerResult: data } });
       if (!saved.matchedCount) return;
       resultStored = true;
@@ -761,6 +766,7 @@ const processTurn = async (claimed) => {
 const recoverExpired = async () => {
   const expired = await ChatTurn.find({
     status: "processing",
+    "computeState.documentJob.active": { $ne: true },
     leaseUntil: { $lte: new Date() },
   });
   for (const turn of expired) {

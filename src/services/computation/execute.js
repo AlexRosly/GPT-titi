@@ -10,16 +10,18 @@ async function run({ turn, token, model, call, available, transcript, initialUsa
   signal?.throwIfAborted();
   const l = policy.limits();
   const docx = require('../docx/policy').isTool(call.function.name);
+  const xlsx = require('../xlsx/policy').isTool(call.function.name);
+  const document = docx || xlsx;
   if (!policy.accepts(call.function.name, model)) throw policy.fail('COMPUTE_INVALID_ACTION');
   // DOCX arguments are validated by action.run inside the guarded try below,
   // before any file read. Return correctable argument errors to the model and
   // count the attempt against the existing run limit, rather than ending the
   // Chat Completions turn before it can correct its inspection request.
-  const action = docx ? null : policy.parse(call.function.arguments);
+  const action = document ? null : policy.parse(call.function.arguments);
   const state = turn.computeState;
   if (state.runs >= l.runs || state.executionMs >= l.totalMs) throw policy.fail('COMPUTE_RUN_LIMIT');
-  if (!docx && action.exports.length && !require('../files/artifacts').outputEnabled(model)) throw policy.fail('COMPUTE_OUTPUT_DISABLED');
-  if (!docx || !require('../docx/continuation').enabled()) {
+  if (!document && action.exports.length && !require('../files/artifacts').outputEnabled(model)) throw policy.fail('COMPUTE_OUTPUT_DISABLED');
+  if (!document || docx && !require('../docx/continuation').enabled()) {
     const preview = require('./budget').estimate(transcript, policy.toolsFor(model), turn.pricing);
     const extra = accounting.cost({ promptTokens: state.usage.promptTokens - initialUsage.promptTokens,
       completionTokens: state.usage.completionTokens - initialUsage.completionTokens }, turn.pricing) * turn.pricing.tokenValueUsd;
@@ -30,12 +32,16 @@ async function run({ turn, token, model, call, available, transcript, initialUsa
   }
   // A DOCX worker makes no provider call. Its resource/ownership/quota guards
   // remain below; accounting.begin still enforces the cap before every paid call.
-  const inputs = docx ? null : await fileIO.inputs(turn, action, available);
+  const inputs = document ? null : await fileIO.inputs(turn, action, available);
   const started = Date.now();
-  await save({ ...state, runs: state.runs + 1, stage: 'executing', ...(docx ? {kind:'document'} : {}) });
+  await save({ ...state, runs: state.runs + 1, stage: 'executing', ...(document ? {kind:'document'} : {}) });
   let result, prepared = [], statePatch = {}, completed = false;
   try {
-    if (docx) {
+    if (xlsx) {
+      const output = await require('../xlsx/action').run({turn,token,model,call,available,signal,completionAllowed});
+      if (output.deferred) return output;
+      ({result,prepared,statePatch}=output);
+    } else if (docx) {
       ({result,prepared,statePatch,completed}=await require('../docx/action').run({turn,model,call,available,signal}));
     } else {
       result = await require('./session').run({ code: action.code, files: inputs, exports: action.exports,
@@ -50,7 +56,7 @@ async function run({ turn, token, model, call, available, transcript, initialUsa
   signal?.throwIfAborted();
   const next = { ...turn.computeState, ...statePatch, lastActionFailed:!result.ok,
     lastActionError: !result.ok && /^[A-Z_]{1,64}$/.test(result.text) ? result.text : null,
-    ...(docx ? {kind:'document'} : {}), executionMs: state.executionMs + Date.now() - started, stage: 'computed' };
+    ...(document ? {kind:'document'} : {}), executionMs: state.executionMs + Date.now() - started, stage: 'computed' };
   await store.transaction(async session => {
     signal?.throwIfAborted();
     const current = await ChatTurn.findOne(accounting.guard(turn, token)).session(session);

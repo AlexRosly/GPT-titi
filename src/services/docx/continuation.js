@@ -38,6 +38,11 @@ function providerData(data) {
 
 function toolResult(call, result, next) {
   const base = { ok: result.ok, truncated: result.truncated, files: next.files, executionMs: next.executionMs };
+  if (require('../xlsx/policy').isTool(call.function.name)) {
+    if(result.ok)return {...base,data:JSON.parse(result.text)};
+    const correction={XLSX_PREVIEW_TOO_WIDE:'Narrow the A1 column range and inspect again; all selected rows are still scanned.',XLSX_INVALID_ACTION:'Correct arguments to match the schema; use an available fileId and the exact inspected sheet name.',XLSX_INVALID_RANGE:'Use a valid bounded A1 range and columns inside the saved selection.',XLSX_SELECTION_MISMATCH:'Inspect the exact source again and use its selectionId and matchingRows count.',XLSX_TERMINAL_ACTION_REQUIRED:'Finish other requested tools and explanations, then call edit_xlsx alone.'}[result.text];
+    if(correction)return {...base,text:result.text,correction};
+  }
   if (enabled() && policy.isTool(call.function.name) && result.ok) {
     // The DOCX adapter emits bounded JSON. Avoid encoding it as a JSON string
     // inside another JSON string in every subsequent provider request.

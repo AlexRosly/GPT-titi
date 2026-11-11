@@ -115,6 +115,7 @@ async function run({ turn, token, model, messages, fileTools, computeFiles, exac
             const executed = await require('../computation/execute').run({ turn, token, model, call, available: computeFiles,
               transcript, initialUsage: turn.computeState.initialUsage, save: saveCompute, signal,
               completionAllowed: calls.length === 1 && !turn.outputFile && !createdFile && exactText === null });
+            if (executed.deferred) return executed;
             signal.throwIfAborted();
             const completed = docxContinuation.completion(turn);
             if (completed) return completed;

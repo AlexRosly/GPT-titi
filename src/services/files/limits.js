@@ -28,6 +28,7 @@ const effective = model => ({
   processing: {
     text: { enabled: require('./textInput').enabled(model), maxBytes: require('./textInput').FILE_BYTES },
     office: { enabled: require('./officeInput').enabled(model), maxBytes: require('./officeInput').FILE_BYTES },
+    xlsx: { enabled: require('../xlsx/policy').enabled(model), maxBytes: require('../xlsx/policy').limits.inputBytes, background: true, checkpointRows: require('../xlsx/policy').limits.rowsPerChunk, maxExpandedBytes: require('../xlsx/policy').limits.expandedBytes },
     pdf: { enabled: require('./pdfInput').enabled(model), maxBytes: require('./pdfInput').FILE_BYTES },
     ocr: { enabled: require('./ocrInput').enabled(model), maxBytes: require('./preparationQueue').enabled() ? 25000000 : 5 * 1024 ** 2, maxOcrPages: require('./preparationQueue').enabled() ? 30 : 10, maxTextBytes: require('./preparationQueue').enabled() ? 1048576 : 65536, maxPdfPages: require('./preparationQueue').enabled() ? 100 : 50, imageMaxBytes: 5 * 1024 ** 2 },
     zip: { enabled: require('./zipInput').enabled(model), ...require('./zipCodec').LIMITS },

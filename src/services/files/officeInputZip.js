@@ -13,14 +13,14 @@ const crc32 = bytes => {
   return (crc ^ 0xffffffff) >>> 0;
 };
 // Strict classic ZIP reader: no filesystem extraction, ZIP64, spanning or encryption.
-module.exports = function readZip(buffer, { all = false } = {}) {
+module.exports = function readZip(buffer, { all = false, maxExpanded = MAX_EXPANDED, maxPart = 8 * 1024 * 1024, maxEntries = 1000 } = {}) {
   let end = -1;
   for (let i = buffer.length - 22; i >= Math.max(0, buffer.length - 65557); i--) {
     if (buffer.readUInt32LE(i) === 0x06054b50 && i + 22 + buffer.readUInt16LE(i + 20) === buffer.length) { end = i; break; }
   }
   if (end < 0 || buffer.readUInt16LE(end + 4) || buffer.readUInt16LE(end + 6)) bad();
   const count = buffer.readUInt16LE(end + 10), size = buffer.readUInt32LE(end + 12), start = buffer.readUInt32LE(end + 16);
-  if (!count || count > 1000) limit();
+  if (!count || count > maxEntries) limit();
   if (buffer.readUInt16LE(end + 8) !== count || start + size !== end) bad();
   const entries = new Map(), ranges = []; let cursor = start, expanded = 0;
   for (let i = 0; i < count; i++) {
@@ -35,7 +35,7 @@ module.exports = function readZip(buffer, { all = false } = {}) {
     const name = new TextDecoder('utf-8', { fatal: true }).decode(nameBytes);
     if (!name || /[\x00-\x1f\\%]/.test(name) || name.startsWith('/') || name.includes(':') || name.split('/').some(p => p === '..' || p === '.') || entries.has(name)) bad();
     expanded += length;
-    if (expanded > MAX_EXPANDED || length > 8 * 1024 * 1024) limit();
+    if (expanded > maxExpanded || length > maxPart) limit();
     if (buffer.readUInt32LE(offset) !== 0x04034b50 || buffer.readUInt16LE(offset + 6) !== flags || buffer.readUInt16LE(offset + 8) !== method) bad();
     const localName = buffer.readUInt16LE(offset + 26), localExtra = buffer.readUInt16LE(offset + 28);
     const data = offset + 30 + localName + localExtra;

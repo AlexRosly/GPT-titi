@@ -7,7 +7,7 @@ const accounting=require('../../src/services/computation/accounting'),agent=requ
 const realAccountingBegin=accounting.begin;
 const sourceId='012345678901234567890123',resultId='012345678901234567890124';
 const usage={promptTokens:20,completionTokens:10,totalTokens:30},providerUsage={prompt_tokens:10,completion_tokens:5,total_tokens:15};
-const tool=(name,args,id='one')=>({id,type:'function',function:{name,arguments:JSON.stringify(args)}});
+const tool=(name,args,id='one')=>({id,type:'function',function:{name,arguments:JSON.stringify(name==='inspect_docx'?{query:null,...args}:args)}});
 async function setup(t,body=table){
  const input=await fixture(body);let saved,creates=0;
  const turn={_id:'turn',turnId:'uuid',attempt:1,user:'owner',modelId:'test',pricing:{inputPerM:0.1,outputPerM:0.2,tokenValueUsd:0.00001}};
@@ -217,4 +217,79 @@ test('cancel after a final edit is verified but before its quota transaction pub
  t.mock.method(store,'transaction',async fn=>{c.abort();return fn({});});
  await assert.rejects(execute.run({turn:f.turn,token:'lease',model:{},call:f.edit(true),available:f.available,transcript:[],initialUsage:usage,save:async s=>{f.turn.computeState=s;},signal:c.signal,completionAllowed:true}));
  assert.equal(f.stats().creates,0);assert.equal(f.turn.computeState.docxCompletion,undefined);assert.deepEqual(f.turn.computeState.files,[]);
+});
+
+// Whole workflows: both cumulative input and NONZERO generated/reasoning output
+// contribute at every paid boundary. No fixed 'already spent' benchmark shortcut.
+for (const api of ['chat_completions','responses']) test(`${api}: cumulative budget covers batched 25-row selection and local range edit`, async t => {
+ const {User}=require('../../src/models'),mongoose=require('mongoose'),ledger=require('../../src/services/tokenLedger');
+ const compute=require('../../src/services/computation/policy'),office=require('../../src/services/files/office');
+ const artifacts=require('../../src/services/files/artifacts'),textInput=require('../../src/services/files/textInput');
+ const sources=require('../../src/services/files/sourceParts'),estimate=require('../../src/services/computation/budget').estimate;
+ const enc=require('js-tiktoken').getEncoding('o200k_base');
+ const body=Array.from({length:100},(_,i)=>require('./fixtures').p('Архівний текст '+i)).join('')+
+  Array.from({length:5},()=>table.replace(/<w:tr>[\s\S]*<\/w:tr>/,table.match(/<w:tr>[\s\S]*<\/w:tr>/)[0].repeat(5))).join('');
+ const f=await setup(t,body),raw=await require('../../src/services/files/officeInput').extract(f.input,'docx');
+ const messages=[{role:'system',content:'You are a helpful assistant. '+textInput.instructions+' '+artifacts.fileSystemInstructions+' '+compute.instructions({})+' Office exports follow: '+office.instructions+'\nCOMPUTATION_FILES: '+JSON.stringify(f.available)+' '+policy.instructions},
+  {role:'user',content:[{type:'text',text:'Apply a bottom border to all physical cells in all five tables. Keep every text and all other formatting.'},sources.mark(textInput.part({originalName:'source.docx'},raw),{_id:sourceId,originalName:'source.docx',mimetype:office.mimes.docx})]}];
+ f.turn.pricing={inputPerM:5,outputPerM:30,tokenValueUsd:0.00001};f.turn.reservedAppTokens=100000;
+ t.mock.method(mongoose,'startSession',async()=>({withTransaction:async fn=>fn(),endSession:async()=>{}}));
+ t.mock.method(User,'findById',()=>({session:()=>({lean:async()=>({status:'active',appTokens:200000,reservedAppTokens:100000})})}));
+ t.mock.method(ledger,'notifyCommitted',()=>{});
+ const projections=[]; let currentBudget, requests=0, editing;
+ t.mock.method(accounting,'begin',async(...args)=>{
+  const st=f.turn.computeState;
+  const spent=((st.usage.promptTokens-st.initialUsage.promptTokens)*5+(st.usage.completionTokens-st.initialUsage.completionTokens)*30)/1e6;
+  currentBudget=await realAccountingBegin(...args);projections.push({spent,estimate:currentBudget.usd});return currentBudget;
+ });
+ const index=tool('inspect_docx',{fileId:sourceId,target:'tables',offset:0},'index');
+ const target='table0,table1,table2,table3,table4';
+ function choose(){
+  requests++;
+  if(requests===(api==='responses'?1:0))return index;
+  if(requests===(api==='responses'?2:1))return tool('inspect_docx',{fileId:sourceId,target,offset:0},'tables');
+  assert.equal(requests,api==='responses'?3:2,'No model call for paging or final narration');
+  const s=Object.values(f.turn.computeState.docxSelections).find(s=>s.target===target);
+  assert.equal(s.cellCount,75);assert.equal(f.turn.computeState.docxLastInspection.matching,25);
+  assert.equal(f.turn.computeState.docxLastInspection.hasMore,false);
+  editing=tool('edit_docx',{fileId:sourceId,sourceChecksum:engine.hash(f.input),filename:'range.docx',complete:true,
+   operations:[{type:'selection_border',selectionId:s.id,expectedCells:s.cellCount,side:'bottom',style:'single',size:4,color:'auto'}]},'edit');return editing;
+ }
+ const allTools=[...artifacts.autoToolOptions({}).tools,...compute.toolsFor({})];
+ const initialPrompt=estimate(messages,allTools,f.turn.pricing).promptTokens;
+ const initial={promptTokens:initialPrompt,completionTokens:700,totalTokens:initialPrompt+700};
+ function paidUsage(call){
+  const prompt=currentBudget?.promptTokens??initialPrompt;
+  const completion=512+enc.encode(JSON.stringify(call),[],[]).length;
+  assert.ok(completion<=2048);return {prompt_tokens:prompt,completion_tokens:completion,total_tokens:prompt+completion};
+ }
+ let r;
+ if(api==='chat_completions'){
+  r=await agent.run(f.turn,'lease',{},messages,index,initial,f.available,{chat:{completions:{create:async()=>{
+   const call=choose();return {choices:[{message:{tool_calls:[call]},finish_reason:'tool_calls'}],usage:paidUsage(call)};
+  }}}},new AbortController().signal);
+ }else{
+  const client={responses:{create:async function*(){const call=choose(),u=paidUsage(call);
+   yield {type:'response.completed',response:{id:'r'+requests,status:'completed',output:[{type:'function_call',id:'fc'+requests,call_id:call.id,name:call.function.name,arguments:call.function.arguments,status:'completed'}],usage:{input_tokens:u.prompt_tokens,output_tokens:u.completion_tokens,total_tokens:u.total_tokens}}};
+  }}};
+  r=await require('../../src/services/chatDeliveryV2/responsesTurn').run({turn:f.turn,token:'lease',model:{apiMode:'responses',reasoningEffort:'low'},messages,fileTools:{tools:allTools},computeFiles:f.available,exactFiles:[],client,signal:new AbortController().signal,onText:async()=>{},save:async v=>Object.assign(f.turn,v),providerProgress:{}});
+ }
+ assert.equal(r.computation.status,'completed');assert.equal(r.computation.runs,3);assert.equal(projections.length,2);
+ assert.ok(projections[1].spent>0.02);assert.ok(projections.every(p=>p.spent+p.estimate<=0.2));
+ const output=engine.load(f.stats().saved.buffer);
+ assert.equal(f.stats().saved.documentEdit.expandedOperationCount,75);
+ assert.equal((output.xml.match(/<w:bottom /g)||[]).length,75);
+ assert.equal(f.stats().creates,1);assert.equal(r.computation.files.length,1);assert.equal(f.turn.computeState.pending,false);
+});
+
+test('saved range cannot cross file ownership, and a cancelled range publishes nothing',async t=>{
+ const f=await setup(t),s=engine.inspect(engine.load(f.input),'table0',0).selection;
+ const call=tool('edit_docx',{fileId:sourceId,sourceChecksum:engine.hash(f.input),filename:'range.docx',complete:true,
+  operations:[{type:'selection_border',selectionId:s.id,expectedCells:3,side:'bottom',style:'single',size:4,color:'auto'}]});
+ f.turn.computeState={usage,initialUsage:usage,runs:1,executionMs:0,files:[],docxInspections:{[sourceId]:engine.hash(f.input)},docxSelections:{[s.id]:{...s,fileId:resultId}}};
+ await assert.rejects(action.run({turn:f.turn,model:{},call,available:f.available,signal:new AbortController().signal}),{fileError:'DOCX_SELECTION_REQUIRED'});
+ f.turn.computeState.docxSelections[s.id].fileId=sourceId;
+ const c=new AbortController();t.mock.method(store,'transaction',async fn=>{c.abort();return fn({});});
+ await assert.rejects(execute.run({turn:f.turn,token:'lease',model:{},call,available:f.available,transcript:[],initialUsage:usage,save:async s=>{f.turn.computeState=s;},signal:c.signal,completionAllowed:true}));
+ assert.equal(f.stats().creates,0);assert.equal(f.turn.computeState.docxCompletion,undefined);
 });

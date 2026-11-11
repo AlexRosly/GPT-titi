@@ -122,7 +122,7 @@ test('budget diagnostics expose numeric estimates only and cannot alter rejectio
  const budget={usd:0.22,promptTokens:32000,outputTokens:2048,content:'SECRET'};
  for(const stage of ['before_python','before_provider'])diagnoseRejection(turn,stage,budget,0,0.2);
  assert.equal(logs.length,2);assert.equal(logs[0][0],'COMPUTE_BUDGET_REJECTED');
- assert.deepEqual(logs[0][1],{diagnosticVersion:1,turnId:'test-turn',attempt:1,stage:'before_python',limitUsd:0.2,spentUsd:0,estimatedUsd:0.22,projectedUsd:0.22,promptTokens:32000,outputTokens:2048,inputPerM:5,outputPerM:30,calls:0,runs:0});
+ assert.deepEqual(logs[0][1],{diagnosticVersion:2,turnId:'test-turn',attempt:1,stage:'before_python',limitUsd:0.2,spentUsd:0,estimatedUsd:0.22,projectedUsd:0.22,promptTokens:32000,outputTokens:2048,inputPerM:5,outputPerM:30,calls:0,runs:0,docxInspectionVersion:null,docxDisplayed:null,docxMatching:null,docxHasMore:false,docxSampled:false});
  assert.equal(logs[1][1].stage,'before_provider');assert.equal(JSON.stringify(logs).includes('SECRET'),false);
  diagnoseRejection({...turn,turnId:'SECRET\nINJECTION'},'before_python',budget,0,0.2);assert.equal(logs[2][1].turnId,null);
  console.warn.mock.mockImplementation(()=>{throw Error('logger unavailable');});

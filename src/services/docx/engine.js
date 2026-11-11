@@ -61,44 +61,69 @@ function load(buffer) {
 }
 const ancestor = (n, name) => { for (let p = n.parent; p; p = p.parent) if (p.uri === W && p.local === name) return p; };
 function snippet(n, max = 500) { return { text: n.text.slice(0, max), textTruncated: n.text.length > max }; }
-function tableRows(n) { return children(n, 'tr').map((row, index) => ({ row: index,
-      cells: children(row, 'tc').map(c => ({ id: c.id, ...snippet(c),
-        gridSpan: attr(child(child(c, 'tcPr'), 'gridSpan'), 'val') || '1',
-        verticalMerge: child(child(c, 'tcPr'), 'vMerge') ? attr(child(child(c, 'tcPr'), 'vMerge'), 'val') || 'continue' : null,
-        width: attr(child(child(c, 'tcPr'), 'tcW'), 'w') || null,
-        borders: (child(child(c, 'tcPr'), 'tcBorders')?.children || []).filter(b => b.uri === W).map(b => ({side:b.local,style:attr(b,'val'),size:attr(b,'sz'),color:attr(b,'color')})),
-        paragraphs: children(c, 'p').map(p => p.id) })) })); }
-function inspect(doc, target, offset) {
-  let items;
-  if (target === 'document' || target === 'tables') {
-    items = [...doc.byId.values()].filter(n => n.local === 'tbl' || target === 'document' && n.local === 'p' && !ancestor(n, 'tbl'))
-      .map(n => ({ id: n.id, kind: n.local === 'tbl' ? 'table' : 'paragraph', ...snippet(n, 200),
-        ...(n.local === 'tbl' ? { rows: children(n, 'tr').length } : {}) }));
-  } else if (target.includes(',')) {
-    const ids=target.split(',');
-    if(ids.length>5 || ids.some(id=>!/^table\d+$/.test(id))) error('DOCX_TARGET_NOT_FOUND');
-    // Gather all rows once, then apply the shared output page/byte limit below.
-    items=ids.flatMap(id=>{
-      const n=doc.byId.get(id);if(!n||n.local!=='tbl')error('DOCX_TARGET_NOT_FOUND');
-      return tableRows(n).map(row=>({table:id,...row}));
-    });
-  } else {
-    const n = doc.byId.get(target); if (!n) error('DOCX_TARGET_NOT_FOUND');
-    if (n.local === 'tbl') items = tableRows(n);
-    else if (n.local === 'p') items = doc.nodes.filter(t => t.local === 't' && t.uri === W && ancestor(t, 'p') === n).map(t => ({ id: t.id, text: t.text }));
-    else if (n.local === 'tc') return inspect(doc, children(n, 'p')[0]?.id || '', offset);
-    else error('DOCX_TARGET_NOT_FOUND');
-  }
-  const out = { checksum: doc.checksum, target, total: items.length, offset, items: [], nextOffset: null,
-    verification: 'Structure only. No page rendering or visual layout verification.' };
-  for (let i = offset; i < items.length && out.items.length < 20; i++) {
-    out.items.push(items[i]);
-    if (Buffer.byteLength(JSON.stringify(out)) > 14000) { out.items.pop(); break; }
-  }
-  if (!out.items.length && offset < items.length) error('DOCX_INSPECTION_LIMIT');
-  if (offset + out.items.length < items.length) out.nextOffset = offset + out.items.length;
-  return out;
+const inspection = require('../documents/inspection');
+function cellDetails(c) {
+  return {id:c.id, ...snippet(c),
+    gridSpan:attr(child(child(c,'tcPr'),'gridSpan'),'val') || '1',
+    verticalMerge:child(child(c,'tcPr'),'vMerge') ? attr(child(child(c,'tcPr'),'vMerge'),'val') || 'continue' : null,
+    width:attr(child(child(c,'tcPr'),'tcW'),'w') || null,
+    borders:(child(child(c,'tcPr'),'tcBorders')?.children || []).filter(b => b.uri === W)
+      .map(b => ({side:b.local,style:attr(b,'val'),size:attr(b,'sz'),color:attr(b,'color')})),
+    paragraphs:children(c,'p').map(p => p.id)};
 }
+function selectedRows(doc, target, query) {
+  const ids = target.split(',');
+  if (ids.length > 64 || new Set(ids).size !== ids.length || ids.some(id => !/^table\d+$/.test(id))) error('DOCX_TARGET_NOT_FOUND');
+  return ids.flatMap(id => {
+    const n = doc.byId.get(id);
+    if (!n || n.local !== 'tbl') error('DOCX_TARGET_NOT_FOUND');
+    const rows = children(n,'tr').map((node,index) => ({node,index,text:node.text,table:id}));
+    return inspection.select(rows, query);
+  });
+}
+function inspect(doc, target, offset, query = null) {
+  const q = inspection.normalize(query);
+  let items, render, selection;
+  if (/^table\d+(,table\d+)*$/.test(target)) {
+    items = selectedRows(doc,target,q);
+    selection = {version:1,id:inspection.identity(doc.checksum,target,q),sourceChecksum:doc.checksum,
+      target,query:q,rowCount:items.length,cellCount:items.reduce((n,r) => n + children(r.node,'tc').length,0)};
+    render = r => ({...(target.includes(',') ? {table:r.table} : {}),row:r.index,cells:children(r.node,'tc').map(cellDetails)});
+  } else {
+    if (query !== null) error('DOCX_INVALID_QUERY_TARGET');
+    if (target === 'document' || target === 'tables') {
+      items = [...doc.byId.values()].filter(n => n.local === 'tbl' || target === 'document' && n.local === 'p' && !ancestor(n,'tbl'));
+      render = n => ({id:n.id,kind:n.local === 'tbl' ? 'table' : 'paragraph',...snippet(n,200),
+        ...(n.local === 'tbl' ? {rows:children(n,'tr').length,cells:children(n,'tr').reduce((sum,r) => sum + children(r,'tc').length,0)} : {})});
+    } else {
+      const n = doc.byId.get(target); if (!n) error('DOCX_TARGET_NOT_FOUND');
+      if (n.local === 'p') {
+        items = doc.nodes.filter(t => t.local === 't' && t.uri === W && ancestor(t,'p') === n);
+        render = t => ({id:t.id,text:t.text});
+      } else if (n.local === 'tc') return inspect(doc,children(n,'p')[0]?.id || '',offset);
+      else error('DOCX_TARGET_NOT_FOUND');
+    }
+  }
+  return inspection.present({base:{checksum:doc.checksum,target,...(selection ? {selection} : {}),
+    verification:'Structure only. No page rendering or visual layout verification.'},items,offset,render,summary:q.mode === 'summary'});
+}
+
+function expandSelections(doc, operations, selections) {
+  const expanded = [];
+  for (const op of operations) {
+    if (op.type !== 'selection_border') { expanded.push(op); continue; }
+    const s = selections?.[op.selectionId];
+    if (!s || s.version !== 1 || s.sourceChecksum !== doc.checksum ||
+        inspection.identity(doc.checksum,s.target,s.query) !== op.selectionId) error('DOCX_SELECTION_REQUIRED');
+    const rows = selectedRows(doc,s.target,s.query), cells = rows.flatMap(r => children(r.node,'tc'));
+    if (cells.length !== op.expectedCells || cells.length !== s.cellCount || rows.length !== s.rowCount) error('DOCX_SELECTION_MISMATCH');
+    if (expanded.length + cells.length > 10000) error('DOCX_OPERATION_LIMIT');
+    for (const cell of cells) expanded.push({type:'cell_border',target:cell.id,side:op.side,style:op.style,size:op.size,color:op.color});
+  }
+  if (!expanded.length || expanded.length > 10000) error('DOCX_OPERATION_LIMIT');
+  return expanded;
+}
+
 function fragment(name, inner = '', attributes = '', namespaces) {
   // Reuse an in-scope prefix. Redundant nested Word namespace declarations are
   // legal XML but some Office importers lose border formatting when reading them.
@@ -126,13 +151,18 @@ function setProperty(source, container, name, replacement, successors, namespace
   if (root.isSelfClosing) return property(source, root, container, value);
   return source.slice(0, root.openEnd) + value + source.slice(root.openEnd);
 }
-async function edit(doc, operations) {
+async function edit(doc, requested, selections = {}) {
+  const operations = expandSelections(doc, requested, selections);
+  const blocked = new Set();
+  for (const n of doc.nodes) if (n.uri === W && ['fldChar','fldSimple','instrText','drawing','pict','sdt'].includes(n.local)) {
+    for (let at = n; at; at = at.parent) blocked.add(at);
+  }
   const changes = new Map(); const targets = new Set();
   for (const op of operations) {
     const node = doc.byId.get(op.target); if (!node) error('DOCX_TARGET_NOT_FOUND');
     const make = (name, inner, attributes) => fragment(name, inner, attributes, node.ns);
     // Fields, drawings, nested text boxes and content controls need dedicated adapters.
-    if (doc.nodes.some(n => n.start >= node.start && n.end <= node.end && n.uri === W && ['fldChar','fldSimple','instrText','drawing','pict','sdt'].includes(n.local))) error();
+    if (blocked.has(node)) error();
     if (ancestor(node, 'sdt') || ancestor(node, 'fldSimple')) error();
     const key = op.target + ':' + (op.type === 'cell_border' ? op.side : op.type);
     if (targets.has(key)) error('DOCX_DUPLICATE_OPERATION'); targets.add(key);
@@ -160,8 +190,10 @@ async function edit(doc, operations) {
   }
   const sorted = [...changes].sort((a,b) => a[0].start-b[0].start);
   if (sorted.some(([n],i) => i && n.start < sorted[i-1][0].end)) error('DOCX_OVERLAPPING_OPERATIONS');
-  let output = doc.xml;
-  for (const [n,replacement] of sorted.slice().reverse()) output = replaceIn(output,n,replacement);
+  const chunks = []; let cursor = 0;
+  for (const [n,replacement] of sorted) { chunks.push(doc.xml.slice(cursor,n.start),replacement); cursor = n.end; }
+  chunks.push(doc.xml.slice(cursor));
+  const output = chunks.join('');
   if (output === doc.xml) error('DOCX_NO_CHANGES');
   parse(output);
   const zip = new JSZip();
@@ -183,7 +215,7 @@ async function edit(doc, operations) {
       if (attr(b,'val') !== op.style || attr(b,'sz') !== String(op.size) || attr(b,'color') !== op.color) error('DOCX_VERIFICATION_FAILED');
     }
   }
-  return { buffer, report: { version:1, sourceChecksum:doc.checksum, resultChecksum:hash(buffer), operations,
+  return { buffer, report: { version:1, sourceChecksum:doc.checksum, resultChecksum:hash(buffer), operations:requested, expandedOperationCount:operations.length,
     changedParts:['word/document.xml'], otherPartsByteIdentical:true, requestedPropertiesVerified:true,
     documentXmlOutsideTargetsUnchanged:true, visualVerification:false } };
 }

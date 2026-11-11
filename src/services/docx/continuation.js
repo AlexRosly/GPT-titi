@@ -10,7 +10,7 @@ function compact(messages, state) {
       const source = sources.source(part);
       const checksum = source && state?.docxInspections?.[source.fileId];
       if (message.role !== 'user' || part.type !== 'text' || !checksum ||
-          source.mimetype !== require('../files/office').mimes.docx || !/\.docx$/i.test(source.filename)) return part;
+          ![require('../files/office').mimes.docx,'application/octet-stream'].includes(source.mimetype) || !/\.docx$/i.test(source.filename)) return part;
       // Only replace a server-built attachment after a successful inspection.
       // No history/user text, OCR data or inspection result is summarized/deleted.
       return { type: 'text', text: 'DOCX_SOURCE_REFERENCE\n' + JSON.stringify({
@@ -21,12 +21,26 @@ function compact(messages, state) {
   });
 }
 
+function providerData(data) {
+  const cellColumns = ['id','text','textTruncated','gridSpan','verticalMerge','width','borders','paragraphs'];
+  const tableColumns = ['id','kind','text','textTruncated','rows','cells'];
+  const exactKeys = (item, fields) => item && Object.keys(item).length === fields.length && fields.every(k=>Object.hasOwn(item,k));
+  if (Array.isArray(data.items) && data.items.length && data.items.every(row => Array.isArray(row.cells) && row.cells.every(c=>exactKeys(c,cellColumns)))) {
+    return {...data,encoding:'docx-columns-v1',cellColumns,
+      items:data.items.map(row=>({...row,cells:row.cells.map(c=>cellColumns.map(key=>c[key]))}))};
+  }
+  if (data.target === 'tables' && data.items?.length && data.items.every(item=>exactKeys(item,tableColumns))) {
+    return {...data,encoding:'docx-columns-v1',tableColumns,items:data.items.map(item=>tableColumns.map(key=>item[key]))};
+  }
+  return data;
+}
+
 function toolResult(call, result, next) {
   const base = { ok: result.ok, truncated: result.truncated, files: next.files, executionMs: next.executionMs };
   if (enabled() && policy.isTool(call.function.name) && result.ok) {
     // The DOCX adapter emits bounded JSON. Avoid encoding it as a JSON string
     // inside another JSON string in every subsequent provider request.
-    return { ...base, data: JSON.parse(result.text) };
+    return { ...base, data: providerData(JSON.parse(result.text)) };
   }
   return { ...base, text: result.text };
 }
@@ -47,4 +61,4 @@ function completion(turn) {
   };
 }
 
-module.exports = { enabled, compact, toolResult, completion };
+module.exports = { enabled, compact, toolResult, completion, providerData };

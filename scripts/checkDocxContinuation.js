@@ -32,7 +32,7 @@ async function measure(buffer, targets, pricing, spentUsd) {
    let offset = 0;
    do {
     if (steps.length >= compute.limits().runs) throw Error('Inspection plan exceeds the existing action limit');
-    const args = policy.parse('inspect_docx', JSON.stringify({ fileId: file._id, target, offset }));
+    const args = policy.parse('inspect_docx', JSON.stringify({ fileId: file._id, target, offset, query: null }));
     const call = { id: 'inspect_' + steps.length, type: 'function', function: { name: 'inspect_docx', arguments: JSON.stringify(args) } };
     const stepStart = performance.now();
     const { inspection } = await require('../src/services/docx/process').run(buffer, 'inspect_docx', args, new AbortController().signal);

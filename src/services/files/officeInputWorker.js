@@ -62,7 +62,12 @@ function extract(buffer, ext) {
   } });
   if (contentType !== (ext === 'docx' ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml')) invalid();
   let output = '', bytes = 0;
-  const append = text => { bytes += Buffer.byteLength(text); if (bytes > 65536) throw fail('OFFICE_EXTRACTED_TEXT_TOO_LARGE'); output += text; };
+  const append = text => {
+    // Validation still parses all parts/relationships and body content. Only
+    // materializing the text context is optional for the structured editor.
+    if(workerData.validateOnly === true && ext === 'docx') return;
+    bytes += Buffer.byteLength(text); if (bytes > 65536) throw fail('OFFICE_EXTRACTED_TEXT_TOO_LARGE'); output += text;
+  };
   if (ext === 'docx') {
     append('[DOCX text extraction: paragraphs and table cells in document order. Formatting, images, drawings, headers, footers, footnotes, comments and deleted revisions are not included. No embedded code or links are executed.]\n');
     const stack = []; let skip = 0, body = false, visible = 0;

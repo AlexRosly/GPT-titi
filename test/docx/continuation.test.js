@@ -65,3 +65,18 @@ test('complete is strict boolean, legacy omitted value stays non-terminal; rollb
   assert.equal(continuation.compact(parts, { docxInspections: { [id]: checksum } }), parts);
   assert.equal(continuation.toolResult({ function: { name: 'inspect_docx' } }, { ok: true, text: '{}' }, {}).text, '{}');
 });
+
+
+test('column encoding preserves every cell/index property and all coverage/selection metadata losslessly',async()=>{
+ const engine=require('../../src/services/docx/engine'),{fixture,table}=require('./fixtures');
+ const doc=engine.load(await fixture(table));
+ for(const target of ['tables','table0']){
+  const raw=engine.inspect(doc,target,0),packed=continuation.providerData(raw);
+  const decoded={...packed};delete decoded.encoding;delete decoded.cellColumns;delete decoded.tableColumns;
+  decoded.items=packed.cellColumns?packed.items.map(row=>({...row,cells:row.cells.map(cell=>Object.fromEntries(packed.cellColumns.map((key,i)=>[key,cell[i]])))})):
+   packed.items.map(item=>Object.fromEntries(packed.tableColumns.map((key,i)=>[key,item[i]])));
+  assert.deepEqual(decoded,raw);
+ }
+ const unknown={items:[{row:0,cells:[{id:'cell0',futureProperty:'must remain'}]}]};
+ assert.equal(continuation.providerData(unknown),unknown);
+});

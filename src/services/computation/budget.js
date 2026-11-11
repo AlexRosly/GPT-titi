@@ -17,13 +17,18 @@ function diagnoseRejection(turn,stage,budget,spentUsd,limitUsd){
  const numeric=value=>Number.isFinite(value)?value:null;
  const id=typeof turn.turnId==='string'&&/^[a-zA-Z0-9-]{1,64}$/.test(turn.turnId)?turn.turnId:null;
  try{console.warn('COMPUTE_BUDGET_REJECTED',{
-  diagnosticVersion:1,turnId:id,attempt:numeric(turn.attempt),
+  diagnosticVersion:2,turnId:id,attempt:numeric(turn.attempt),
   stage:stage==='before_python'?'before_python':'before_provider',
   limitUsd:numeric(limitUsd),spentUsd:numeric(spentUsd),
   estimatedUsd:numeric(budget.usd),projectedUsd:numeric(spentUsd+budget.usd),
   promptTokens:numeric(budget.promptTokens),outputTokens:numeric(budget.outputTokens),
   inputPerM:numeric(turn.pricing?.inputPerM),outputPerM:numeric(turn.pricing?.outputPerM),
-  calls:numeric(turn.computeState?.calls),runs:numeric(turn.computeState?.runs)
+  calls:numeric(turn.computeState?.calls),runs:numeric(turn.computeState?.runs),
+  docxInspectionVersion:numeric(turn.computeState?.docxLastInspection?.version),
+  docxDisplayed:numeric(turn.computeState?.docxLastInspection?.displayed),
+  docxMatching:numeric(turn.computeState?.docxLastInspection?.matching),
+  docxHasMore:turn.computeState?.docxLastInspection?.hasMore === true,
+  docxSampled:turn.computeState?.docxLastInspection?.sampled === true
  });}catch{/* Diagnostics are best-effort; retain the original rejection. */}
 }
 module.exports={estimate,diagnoseRejection};

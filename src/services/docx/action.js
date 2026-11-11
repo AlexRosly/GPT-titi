@@ -15,13 +15,26 @@ async function run({turn,model,call,available,signal}){
   const inspection=turn.computeState?.docxInspections?.[args.fileId];
   if(inspection!==args.sourceChecksum)throw fail('DOCX_INSPECTION_REQUIRED');
   if(args.filename.normalize('NFC').toLowerCase()===metadata.originalName.normalize('NFC').toLowerCase())throw fail('DOCX_NEW_FILENAME_REQUIRED');
+  const selected=args.operations.filter(o=>o.type==='selection_border');
+  if(selected.length){
+   args.selections={};
+   for(const op of selected){
+    const saved=turn.computeState.docxSelections?.[op.selectionId];
+    if(!saved||saved.fileId!==args.fileId||saved.sourceChecksum!==args.sourceChecksum)throw fail('DOCX_SELECTION_REQUIRED');
+    args.selections[op.selectionId]=saved;
+   }
+  }
  }
  const limits=require('../computation/policy').limits();
  const timeoutMs=Math.min(10000,limits.runMs,limits.totalMs-(turn.computeState?.executionMs||0));
  const output=await require('./process').run(buffer,call.function.name,args,signal,timeoutMs);
  signal?.throwIfAborted();
  if(output.inspection)return {result:{ok:true,text:JSON.stringify(output.inspection),truncated:false},prepared:[],
-  statePatch:{docxInspections:{...turn.computeState.docxInspections,[args.fileId]:output.inspection.checksum}}};
+  statePatch:{docxInspections:{...turn.computeState.docxInspections,[args.fileId]:output.inspection.checksum},
+   docxLastInspection:{version:2,displayed:output.inspection.items.length,matching:output.inspection.total,
+    hasMore:output.inspection.nextOffset!==null,sampled:output.inspection.coverage.sampled},
+   ...(output.inspection.selection?{docxSelections:{...turn.computeState.docxSelections,
+    [output.inspection.selection.id]:{...output.inspection.selection,fileId:args.fileId}}}:{})}};
  const result=Buffer.from(output.buffer);
  return {result:{ok:true,text:JSON.stringify({verification:{...output.report,operations:undefined,operationCount:output.report.operations.length},filename:args.filename}),truncated:false},
   completed:args.complete===true && output.report.requestedPropertiesVerified===true && output.report.documentXmlOutsideTargetsUnchanged===true && output.report.otherPartsByteIdentical===true,

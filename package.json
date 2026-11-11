@@ -53,7 +53,7 @@
     "test:ocr:regions": "node --test test/files/ocrRegionBounds.test.js test/files/ocrRegions.test.js test/files/ocrRegions.native.test.js",
     "test:files:library": "node --test test/files/library.test.js",
     "db:migrate:file-library": "node scripts/migrateFileLibrary.js",
-    "test:docx": "node --test test/docx/engine.test.js test/docx/workflow.test.js test/docx/continuation.test.js",
+    "test:docx": "node --test test/docx/engine.test.js test/docx/workflow.test.js test/docx/continuation.test.js test/docx/inspection.test.js",
     "test:docx:integration": "node --test test/docx/integration.test.js"
   },
   "repository": {

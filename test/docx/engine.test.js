@@ -65,9 +65,9 @@ test('tool schema rejects unsupported and injectable properties before mutation'
  assert.throws(()=>policy.parse('edit_docx',JSON.stringify({...good,filename:'../bad.docx'})));
  assert.throws(()=>policy.parse('edit_docx',JSON.stringify({...good,operations:[]})));
 });
-test('inspection paginates and reports omitted content rather than implying full coverage',async()=>{
+test('small document inspection spans former pages and retains explicit coverage',async()=>{
  const d=engine.load(await fixture(Array.from({length:45},(_,i)=>p('Text '+i)).join('')));
- const r=engine.inspect(d,'document',0);assert.equal(r.items.length,20);assert.equal(r.nextOffset,20);assert.equal(r.total,45);
+ const r=engine.inspect(d,'document',0);assert.equal(r.items.length,45);assert.equal(r.nextOffset,null);assert.equal(r.total,45);assert.equal(r.coverage.complete,true);
  const last=engine.inspect(d,'document',40);assert.equal(last.items.length,5);assert.equal(last.nextOffset,null);
 });
 

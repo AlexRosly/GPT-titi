@@ -99,3 +99,26 @@ test('Office handles UTF-16 XML and refuses unsupported workbook sheet types', a
   });
   await assert.rejects(office.extract(chartsheet, 'xlsx'), { fileError: 'INVALID_OFFICE_DOCUMENT' });
 });
+
+test('large DOCX admission uses an explicit bounded outline only with structured tools enabled', async t => {
+  enabled(t);
+  for(const key of ['COMPUTE_V2_ENABLED','DOCX_EDIT_ENABLED']){
+    const old=process.env[key];process.env[key]='true';t.after(()=>old===undefined?delete process.env[key]:process.env[key]=old);
+  }
+  const buffer=await docx('Large text '.repeat(7000));
+  const file={_id:'0123456789abcdef01234567',originalName:'large.docx',mimetype:'application/octet-stream',size:buffer.length};
+  t.mock.method(store,'read',async()=>({file,buffer}));
+  const state=textInput.budget(),part=await office.readPart('owner',file,{model:{},state});
+  assert.match(part.text,/STRUCTURED_DOCX_SOURCE/);assert.match(part.text,/fullTextProvided/);
+  assert.ok(Buffer.byteLength(part.text)<16000);assert.equal(state.promptBytes,Buffer.byteLength(part.text));
+  const doc=JSON.parse(part.text.split('\n')[1]);
+  const structured=JSON.parse(doc.content.split('\n')[1]);
+  assert.equal(structured.fullTextProvided,false);assert.equal(structured.inspection.items[0].textTruncated,true);
+  await assert.rejects(office.readPart('owner',file,{model:{fileOutputEnabled:false}}),{fileError:'OFFICE_EXTRACTED_TEXT_TOO_LARGE'});
+  await assert.rejects(office.extract(buffer,'docx'),{fileError:'OFFICE_EXTRACTED_TEXT_TOO_LARGE'});
+  await office.validate(buffer,'docx');
+  for(const attack of [
+    z=>z.file('word/_rels/document.xml.rels','<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="x" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/attachedTemplate" TargetMode="External" Target="https://example.test"/></Relationships>'),
+    z=>z.file('word/document.xml','<!DOCTYPE a [<!ENTITY bad "x">]><a>&bad;</a>')
+  ])await assert.rejects(office.validate(await mutate(buffer,attack),'docx'));
+});

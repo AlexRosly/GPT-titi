@@ -68,6 +68,7 @@ const ChatTurnSchema = new Schema(
     cancelRequestedAt: { type: Date, default: null },
     reconciliation: { type: Schema.Types.Mixed, default: null },
     needsReconciliation: { type: Boolean, default: false },
+    failureDiagnostic: { type: Schema.Types.Mixed, default: null },
     attempt: { type: Number, default: 1 },
     lastSeq: { type: Number, default: 0 },
     partialContent: { type: String, default: "" },

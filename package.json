@@ -12,7 +12,7 @@
     "lint": "eslint **/*.js",
     "lint:fix": "eslint --fix **/*.js",
     "test": "node --test",
-    "test:responses": "node --test test/chatDeliveryV2/responsesProvider.test.js test/chatDeliveryV2/responsesTurn.test.js test/chatDeliveryV2/responsesWorker.test.js test/chatDeliveryV2/modelCatalog.test.js test/chatDeliveryV2/chatModelList.test.js test/chatDeliveryV2/cancelTurn.test.js",
+    "test:responses": "node --test test/chatDeliveryV2/responsesProvider.test.js test/chatDeliveryV2/responsesTurn.test.js test/chatDeliveryV2/responsesWorker.test.js test/chatDeliveryV2/failureRecovery.test.js test/chatDeliveryV2/modelCatalog.test.js test/chatDeliveryV2/chatModelList.test.js test/chatDeliveryV2/cancelTurn.test.js",
     "models:preview": "node scripts/updateModelCatalog202611.js",
     "models:apply": "node scripts/updateModelCatalog202611.js --apply",
     "models:check": "node scripts/checkResponsesModels.js",

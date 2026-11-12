@@ -95,6 +95,39 @@ test('provider EOF creates an error, keeps uncertain hold and never emits succes
   assert.equal(f.doc.reservationState, 'held');
   assert.equal(f.events.some(e => e.name === 'chat:end'), false);
   assert.equal(f.counts().charges, 0);
+  assert.equal(f.doc.failureDiagnostic.code, 'PROVIDER_STREAM_INTERRUPTED');
+});
+
+test('budget rejection after known inspection produces a partial result and settles once, without reconciliation', async t => {
+  const f = fixture(t), usage = { promptTokens: 12, completionTokens: 4, totalTokens: 16 };
+  t.mock.method(require('../../src/services/chatDeliveryV2/responsesTurn'),'run',async()=>{
+    f.doc.responseState={pending:false,calls:1,usage,partialData:{assistantText:''}};
+    f.doc.computeState={kind:'document',pending:false,usage,runs:1,executionMs:10,files:[]};
+    throw Object.assign(Error('Budget exhausted'),{fileError:'COMPUTE_BUDGET_LIMIT'});
+  });
+  await f.worker.processTurn({turn:f.doc,leaseToken:'lease'});
+  const result=await snapshot(f.doc);
+  assert.equal(f.doc.status,'completed');assert.notEqual(f.doc.needsReconciliation,true);
+  assert.equal(result.assistantMessage.computation.status,'partial');
+  assert.equal(result.assistantMessage.computation.reason,'COMPUTE_BUDGET_LIMIT');
+  assert.equal(f.doc.failureDiagnostic.code,'COMPUTE_BUDGET_LIMIT');
+  await f.worker.recoverExpired();assert.equal(f.counts().charges,1);
+});
+
+for(const known of [true,false])test(`incomplete provider response with ${known?'known':'unknown'} usage is handled without executing tools`,async t=>{
+  const f=fixture(t);
+  t.mock.method(Responses.prototype,'create',async function*(){
+    yield {type:'response.created',response:{id:'resp_limit'}};
+    yield {type:'response.incomplete',response:{id:'resp_limit',status:'incomplete',
+      incomplete_details:{reason:'max_output_tokens'},output:[{type:'function_call',name:'edit_xlsx',arguments:'{unfinished'}],
+      ...(known?{usage:{input_tokens:12,output_tokens:2048,total_tokens:2060}}:{})}};
+  });
+  await f.worker.processTurn({turn:f.doc,leaseToken:'lease'});
+  assert.equal(f.doc.failureDiagnostic.incompleteReason,'max_output_tokens');
+  if(known){assert.equal(f.doc.status,'completed');assert.equal(f.doc.usage.totalTokens,2060);
+    assert.notEqual(f.doc.needsReconciliation,true);assert.match((await snapshot(f.doc)).assistantMessage.content,/PROVIDER_RESPONSE_INCOMPLETE/);
+    await f.worker.recoverExpired();assert.equal(f.counts().charges,1);
+  }else{assert.equal(f.doc.status,'failed');assert.equal(f.doc.needsReconciliation,true);assert.equal(f.counts().charges,0);}
 });
 
 test('unavailable model returns MODEL_NOT_AVAILABLE without hidden fallback or charge', async t => {

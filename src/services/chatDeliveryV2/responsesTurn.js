@@ -64,8 +64,21 @@ async function run({ turn, token, model, messages, fileTools, computeFiles, exac
         });
       } catch (error) {
         if (step === 0 && error.providerRejectedBeforeOutput) providerProgress.rejectedBeforeOutput = true;
-        if (turn.computeState && error.providerRejectedBeforeOutput && [400, 401, 403, 404, 422, 429].includes(error.status)) {
-          await accounting.rejected(turn, token);
+        const terminal = error.providerResponse;
+        const terminalUsage = terminal && ['incomplete', 'failed', 'cancelled'].includes(terminal.status) && terminal.usage;
+        if (terminalUsage && [terminalUsage.input_tokens, terminalUsage.output_tokens, terminalUsage.total_tokens]
+          .every(n => Number.isSafeInteger(n) && n >= 0)) {
+          // A terminal response can be incomplete while its usage is authoritative.
+          // Account it once, but never execute its unfinished tool arguments.
+          const received = { prompt_tokens: terminalUsage.input_tokens, completion_tokens: terminalUsage.output_tokens,
+            total_tokens: terminalUsage.total_tokens };
+          usage = addUsage(usage, mappedUsage(received));
+          if (turn.computeState) await accounting.received(turn, token, received);
+          await checkpoint(false, step + 1);
+        } else if (error.providerRejectedBeforeOutput && [400, 401, 403, 404, 422, 429].includes(error.status)) {
+          if (turn.computeState) await accounting.rejected(turn, token);
+          // A first-call HTTP rejection remains the normal no-charge error path.
+          if (step > 0) await checkpoint(false, step + 1);
         }
         throw error;
       }

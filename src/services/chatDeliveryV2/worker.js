@@ -37,6 +37,7 @@ const emit = (userId, event, envelope) =>
 const safeProviderError = (error) => {
   const status = error?.status;
   if (status === 404 || status === 403) return errorFor('MODEL_NOT_AVAILABLE');
+  if (status === 400 || status === 422) return errorFor('PROVIDER_REQUEST_REJECTED');
   const code =
     status === 429 || status >= 500 ? "PROVIDER_UNAVAILABLE" : "INTERNAL_ERROR";
   return errorFor(code);
@@ -54,6 +55,7 @@ const claimTurn = async (turnId) => {
       $set: {
         status: "processing",
         processingStartedAt: now,
+        failureDiagnostic: null,
         leaseToken,
         leaseUntil: new Date(now.getTime() + LEASE_MS),
       },
@@ -72,6 +74,7 @@ const claimNextQueued = async () => {
       $set: {
         status: "processing",
         processingStartedAt: now,
+        failureDiagnostic: null,
         leaseToken,
         leaseUntil: new Date(now.getTime() + LEASE_MS),
       },
@@ -752,6 +755,30 @@ const processTurn = async (claimed) => {
       error?.code === "INSUFFICIENT_BALANCE"
         ? errorFor("INSUFFICIENT_BALANCE")
         : error?.protocolError || (error?.fileError ? errorFor(error.fileError) : safeProviderError(error));
+    const failure = require('./failureRecovery');
+    const failureDiagnostic = failure.diagnostic({ ...error, protocolError: protocol }, turn);
+    // Persist bounded codes and phase metadata, never prompts, file bytes,
+    // provider payloads, credentials or raw exception messages.
+    await ChatTurn.updateOne({ _id: turn._id, attempt: turn.attempt, status: 'processing', leaseToken,
+      providerResult: null, 'computeState.documentJob.active': { $ne: true } }, { $set: { failureDiagnostic } });
+    try { console.warn('CHAT_V2_FAILURE', { turnId: turn.turnId, attempt: turn.attempt, ...failureDiagnostic }); } catch {}
+    if (!controller.signal.aborted) {
+      const current = await ChatTurn.findOne({ _id: turn._id, attempt: turn.attempt, status: 'processing', leaseToken,
+        leaseUntil: { $gt: new Date() }, reservationState: 'held', cancelRequestedAt: null }).lean();
+      const data = current && failure.partialResult(current, protocol.code);
+      if (data) {
+        const saved = await ChatTurn.updateOne({ _id: turn._id, attempt: turn.attempt, status: 'processing', leaseToken,
+          leaseUntil: { $gt: new Date() }, cancelRequestedAt: null, providerResult: null,
+          'computeState.documentJob.active': { $ne: true } }, { $set: { providerResult: data } });
+        if (!saved.matchedCount) return;
+        resultStored = true;
+        const completion = await commitCompletion(turn, leaseToken, data.assistantText, data.usage);
+        emit(turn.user, 'chat:end', { protocolVersion: 2, event: 'chat:end', type: 'completed', turnId: turn.turnId,
+          clientMessageId: turn.clientMessageId, conversationId: turn.conversation.toString(), attempt: turn.attempt,
+          payload: { assistantMessage: messageDto(completion.assistant), billing: completion.billing } });
+        return;
+      }
+    }
     await failTurn(turn, leaseToken, protocol, {
       knownNoCharge: providerProgress.rejectedBeforeOutput && !turn.computeState && turn.webPlan?.mode !== "browser" && [400, 401, 403, 404, 422, 429].includes(error?.status),
     });

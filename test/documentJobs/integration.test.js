@@ -16,7 +16,7 @@ test.before(async()=>{
  input=await require('../xlsx/fixtures').fixture(10000);book=engine.load(input);selection=engine.inspect(book,{sheet:'Дані',range:'A2:E10001',where:null,offset:0}).selection;
 });
 test.after(async()=>{if(uri){await mongoose.connection.dropDatabase();await mongoose.disconnect();}});
-async function setup(t,apiMode='chat_completions'){
+async function setup(t,apiMode='chat_completions',failure=null){
  const id=crypto.randomUUID(),modelId='xlsx-'+id;
  const user=await models.User.create({email:id+'@example.test',name:'Xlsx integration',status:'active',appTokens:100000});
  await models.ChatModels.create({modelId,enabled:true,inputPerM:.1,outputPerM:.2,apiMode,...(apiMode==='responses'?{reasoningEffort:'low'}:{})});
@@ -34,11 +34,49 @@ async function setup(t,apiMode='chat_completions'){
   if(req.stream)return(async function*(){yield {choices:[{delta:{tool_calls:[{...call,index:0}]},finish_reason:'tool_calls'}],usage};})();
   return Promise.resolve({choices:[{message:{tool_calls:[call]},finish_reason:'tool_calls'}],usage});
  });
- t.mock.method(Responses.prototype,'create',async function*(){assert.equal(apiMode,'responses');const call=makeCall(),id='resp-'+calls;yield {type:'response.created',response:{id}};yield {type:'response.completed',response:{id,status:'completed',output:[{id:'fc-'+calls,type:'function_call',call_id:call.id,name:call.function.name,arguments:call.function.arguments,status:'completed'}],usage:{input_tokens:100,output_tokens:20,total_tokens:120}}};});
+ t.mock.method(Responses.prototype,'create',async function*(){assert.equal(apiMode,'responses');const call=makeCall(),id='resp-'+calls;
+  if(calls===2&&failure==='http')throw Object.assign(Error('Rejected'),{status:400,code:'invalid_request_error'});
+  yield {type:'response.created',response:{id}};
+  if(calls===2&&failure==='eof')return;
+  if(calls===2&&failure==='incomplete'){yield {type:'response.incomplete',response:{id,status:'incomplete',incomplete_details:{reason:'max_output_tokens'},output:[],usage:{input_tokens:50,output_tokens:2048,total_tokens:2098}}};return;}
+  yield {type:'response.completed',response:{id,status:'completed',output:[{id:'fc-'+calls,type:'function_call',call_id:call.id,name:call.function.name,arguments:call.function.arguments,status:'completed'}],usage:{input_tokens:100,output_tokens:20,total_tokens:120}}};});
+ if(failure==='budget')t.mock.method(require('../../src/services/computation/accounting'),'begin',async()=>{throw Object.assign(Error('Budget refused'),{fileError:'COMPUTE_BUDGET_LIMIT'});});
  const admitted=await accept({userId:user.id,payload}),claimed=await worker.claimTurn(admitted.turn.turnId);await worker.processTurn(claimed);
- const turn=await models.ChatTurn.findById(claimed.turn._id);assert.equal(turn.status,'processing');assert.equal(turn.computeState.documentJob.active,true);assert.equal(calls,2);
+ const turn=await models.ChatTurn.findById(claimed.turn._id);
+ if(!failure){assert.equal(turn.status,'processing');assert.equal(turn.computeState.documentJob.active,true);assert.equal(calls,2);}
  return {user,original,turn,payload,calls:()=>calls};
 }
+test('diagnostic report reads an existing XLSX turn without mutations or provider calls',opts,async t=>{
+ const ctx=await setup(t,'responses');
+ const before=(await models.ChatTurn.findById(ctx.turn._id)).toObject();
+ const {execFileSync}=require('node:child_process');
+ const output=execFileSync(process.execPath,['scripts/diagnoseDocumentTurn.js','--turn-id',ctx.turn.turnId],
+  {cwd:require('node:path').join(__dirname,'../..'),env:{...process.env,MONGO_URI:uri},encoding:'utf8',timeout:20000});
+ const report=JSON.parse(output);assert.equal(report.readOnly,true);assert.equal(report.reports.length,1);
+ assert.equal(report.reports[0].turnId,ctx.turn.turnId);assert.equal(report.reports[0].files[0].xlsx,true);
+ assert.equal(report.reports[0].jobs.length,1);assert.equal(report.reports[0].jobs[0].status,'queued');
+ assert.doesNotMatch(output,/example\.test|mongodb:|Multiply B2|source\.xlsx/);
+ assert.deepEqual((await models.ChatTurn.findById(ctx.turn._id)).toObject(),before);assert.equal(ctx.calls(),2);
+});
+for(const failure of ['budget','http','incomplete','eof'])test(`Responses ${failure} after XLSX inspection retains exact failure and settles only confirmed usage`,opts,async t=>{
+ const ctx=await setup(t,'responses',failure);
+ assert.equal(await Job.countDocuments({turnId:ctx.turn.turnId}),0);
+ const uncertain=failure==='eof';
+ assert.equal(ctx.turn.status,uncertain?'failed':'completed');
+ assert.equal(ctx.turn.needsReconciliation,uncertain);
+ assert.equal(ctx.turn.reservationState,uncertain?'held':'settled');
+ const expected={budget:'COMPUTE_BUDGET_LIMIT',http:'PROVIDER_REQUEST_REJECTED',incomplete:'PROVIDER_RESPONSE_INCOMPLETE',eof:'PROVIDER_STREAM_INTERRUPTED'};
+ assert.equal(ctx.turn.failureDiagnostic.code,expected[failure]);
+ if(!uncertain){
+  const msg=await models.ChatMessage.findById(ctx.turn.assistantMessage);
+  assert.equal(msg.computation.status,'partial');assert.equal(msg.computation.reason,expected[failure]);assert.equal(msg.attachments.length,0);
+  assert.equal(ctx.turn.usage.totalTokens,failure==='incomplete'?2218:120);
+  assert.equal((await models.User.findById(ctx.user.id)).reservedAppTokens,0);
+ }
+ await worker.recoverExpired();await worker.recoverExpired();
+ assert.equal(await models.ChatBillingLedger.countDocuments({turnId:ctx.turn.turnId}),uncertain?0:1);
+ assert.equal(ctx.calls(),failure==='budget'?1:2);
+});
 test('10000 rows: crash after durable chunk, two competing workers, restart and one final charge',opts,async t=>{
  const ctx=await setup(t),real=processXlsx.run;let failed=false;
  const mock=t.mock.method(processXlsx,'run',async(buffer,action,args,options)=>{

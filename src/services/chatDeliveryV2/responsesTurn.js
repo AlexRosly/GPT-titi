@@ -38,7 +38,7 @@ async function run({ turn, token, model, messages, fileTools, computeFiles, exac
   let usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
   let assistantText = '', exactText = null, fileOutput = {}, release, cleanupUnconfirmed = false;
   let createdFile = false;
-  const maxCalls = 6;
+  let maxCalls = 6;
   const deadline = Date.now() + (allowed.has('run_python') ? compute.limits().durationMs : 300000);
   const saveCompute = async computeState => { await save({ computeState }); turn.computeState = computeState; };
   const checkpoint = async (pending, calls) => save({ responseState: { pending, calls, usage,
@@ -121,6 +121,9 @@ async function run({ turn, token, model, messages, fileTools, computeFiles, exac
             result = { ok: exactText !== exact.failure, status: 'prepared', note: 'The server inserts the saved extraction verbatim. Do not rewrite it.' };
           } else if (compute.accepts(call.function.name,model)) {
             if (!turn.computeState) {
+              // Same meaning as Chat Completions: configured calls are paid
+              // continuations AFTER the first computation action, not total calls.
+              maxCalls = step + 1 + compute.limits().calls;
               release = await require('../computation/leases').acquire(turn.user);
               await saveCompute({ ...(require('../docx/policy').isTool(call.function.name)?{kind:'document'}:{}), calls: 0, pending: false, usage, initialUsage: usage,
                 runs: 0, executionMs: 0, files: [], stage: 'preparing' });

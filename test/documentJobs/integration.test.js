@@ -16,17 +16,17 @@ test.before(async()=>{
  input=await require('../xlsx/fixtures').fixture(10000);book=engine.load(input);selection=engine.inspect(book,{sheet:'Дані',range:'A2:E10001',where:null,offset:0}).selection;
 });
 test.after(async()=>{if(uri){await mongoose.connection.dropDatabase();await mongoose.disconnect();}});
-async function setup(t,apiMode='chat_completions',failure=null){
+async function setup(t,apiMode='chat_completions',failure=null,{inspections=1,pricing={inputPerM:.1,outputPerM:.2}}={}){
  const id=crypto.randomUUID(),modelId='xlsx-'+id;
  const user=await models.User.create({email:id+'@example.test',name:'Xlsx integration',status:'active',appTokens:100000});
- await models.ChatModels.create({modelId,enabled:true,inputPerM:.1,outputPerM:.2,apiMode,...(apiMode==='responses'?{reasoningEffort:'low'}:{})});
+ await models.ChatModels.create({modelId,enabled:true,...pricing,apiMode,...(apiMode==='responses'?{reasoningEffort:'low'}:{})});
  const conversation=await models.ChatConversation.create({user:user.id,modelId});
  const original=await store.create({user:user.id,name:'source.xlsx',mimetype:require('../../src/services/files/office').mimes.xlsx,buffer:input});
  const payload={clientMessageId:crypto.randomUUID(),conversationId:conversation.id,modelId,message:'Multiply B2:B10001 by 2, keep all formulas and other content. Return edited copy.',files:[{fileId:original.id,storage:'private'}]};
  let calls=0;const usage={prompt_tokens:100,completion_tokens:20,total_tokens:120};
  const makeCall=()=>{
-  calls++;assert.ok(calls<=2,'No provider call during background processing or recovery');
-  const call={id:'action-'+calls,type:'function',function:calls===1?{name:'inspect_xlsx',arguments:JSON.stringify({fileId:original.id,sheet:'Дані',range:'A2:E10001',where:null,offset:0})}:{name:'edit_xlsx',arguments:JSON.stringify({fileId:original.id,sourceChecksum:book.checksum,filename:'edited.xlsx',selectionId:selection.id,expectedRows:10000,operations:[{column:'B',type:'multiply',value:2,expected:null}]})}};
+  calls++;assert.ok(calls<=inspections+1,'No provider call during background processing or recovery');
+  const call={id:'action-'+calls,type:'function',function:calls<=inspections?{name:'inspect_xlsx',arguments:JSON.stringify({fileId:original.id,sheet:'Дані',range:'A2:E10001',where:null,offset:0})}:{name:'edit_xlsx',arguments:JSON.stringify({fileId:original.id,sourceChecksum:book.checksum,filename:'edited.xlsx',selectionId:selection.id,expectedRows:10000,operations:[{column:'B',type:'multiply',value:2,expected:null}]})}};
   return call;
  };
  t.mock.method(Completions.prototype,'create',req=>{
@@ -43,7 +43,7 @@ async function setup(t,apiMode='chat_completions',failure=null){
  if(failure==='budget')t.mock.method(require('../../src/services/computation/accounting'),'begin',async()=>{throw Object.assign(Error('Budget refused'),{fileError:'COMPUTE_BUDGET_LIMIT'});});
  const admitted=await accept({userId:user.id,payload}),claimed=await worker.claimTurn(admitted.turn.turnId);await worker.processTurn(claimed);
  const turn=await models.ChatTurn.findById(claimed.turn._id);
- if(!failure){assert.equal(turn.status,'processing');assert.equal(turn.computeState.documentJob.active,true);assert.equal(calls,2);}
+ if(!failure){assert.equal(turn.status,'processing');assert.equal(turn.computeState.documentJob.active,true);assert.equal(calls,inspections+1);}
  return {user,original,turn,payload,calls:()=>calls};
 }
 test('diagnostic report reads an existing XLSX turn without mutations or provider calls',opts,async t=>{
@@ -89,7 +89,10 @@ for(const failure of ['budget','http','incomplete','eof'])test(`Responses ${fail
  assert.equal(ctx.calls(),failure==='budget'?1:2);
 });
 test('an active document job cannot be failed by the chat worker after handoff',opts,async t=>{
- const ctx=await setup(t),before=ctx.turn.toObject();
+ const ctx=await setup(t);
+ // Also retain the atomic active-job guard for an already-expired old handoff.
+ await models.ChatTurn.updateOne({_id:ctx.turn._id},{$set:{leaseUntil:new Date(0)}});
+ const before=(await models.ChatTurn.findById(ctx.turn._id)).toObject();
  await worker.failTurn(ctx.turn,null,require('../../src/services/chatDeliveryV2/protocol').errorFor('PROCESS_INTERRUPTED'),{expiredOnly:true});
  assert.deepEqual((await models.ChatTurn.findById(ctx.turn._id)).toObject(),before);
  assert.equal(await models.ChatBillingLedger.countDocuments({turnId:ctx.turn.turnId}),0);
@@ -98,6 +101,46 @@ test('an active document job cannot be failed by the chat worker after handoff',
  assert.equal(turn.status,'completed');assert.equal(turn.computeState.documentJob.report.processedRows,10000);
  assert.equal(turn.computeState.documentJob.report.changed,10000);assert.equal(ctx.calls(),2);
  assert.equal(await models.ChatBillingLedger.countDocuments({turnId:turn.turnId}),1);
+});
+
+test('handoff is not an expired chat even to a legacy recovery scanner',opts,async t=>{
+ const ctx=await setup(t),job=await Job.findOne({turnId:ctx.turn.turnId});
+ assert.equal(ctx.turn.leaseUntil.getTime(),job.deadline.getTime());assert.ok(ctx.turn.leaseUntil>new Date());
+ // Previous workers did not know about computeState.documentJob.active.
+ const expired=await models.ChatTurn.find({_id:ctx.turn._id,status:'processing',leaseUntil:{$lte:new Date()}});
+ assert.equal(expired.length,0);
+ await queue.runOnce();const published=await models.ChatTurn.findById(ctx.turn._id);
+ assert.equal(published.leaseUntil.getTime(),0);assert.equal(published.computeState.documentJob.active,false);
+ await worker.recoverExpired();assert.equal((await models.ChatTurn.findById(ctx.turn._id)).status,'completed');
+ assert.equal(await models.ChatBillingLedger.countDocuments({turnId:ctx.turn.turnId}),1);assert.equal(ctx.calls(),2);
+});
+
+for(const apiMode of ['chat_completions','responses'])test(`${apiMode}: explicit test limits allow seven paid continuations, 10000 rows and one charge`,opts,async t=>{
+ const old={...process.env};t.after(()=>{process.env=old;});
+ Object.assign(process.env,{COMPUTE_MAX_USD:'1',COMPUTE_MAX_RUNS:'12',COMPUTE_MAX_CALLS:'16',COMPUTE_TOTAL_MS:'300000'});
+ const ctx=await setup(t,apiMode,null,{inspections:7,pricing:{inputPerM:5,outputPerM:30}});
+ assert.equal(ctx.turn.computeState.calls,7);assert.equal(ctx.turn.computeState.runs,8);
+ assert.equal(ctx.turn.workerRuntime.computeLimits.usd,1);
+ const hold=await models.TokenOperation.findOne({key:`reservation_hold:computation:${ctx.turn.turnId}:1:7`});assert.ok(hold);
+ const snapshot=await require('../../src/services/chatDeliveryV2/snapshot').snapshot(ctx.turn);
+ assert.equal(snapshot.computationStatus.calls,7);assert.equal(snapshot.computationStatus.runs,8);
+ await queue.runOnce();await worker.recoverExpired();await worker.recoverExpired();
+ const done=await models.ChatTurn.findById(ctx.turn._id);assert.equal(done.status,'completed');
+ assert.equal(done.computeState.documentJob.report.processedRows,10000);assert.equal(done.reservationState,'settled');
+ assert.equal(await models.ChatBillingLedger.countDocuments({turnId:done.turnId}),1);assert.equal(ctx.calls(),8);
+ assert.equal((await models.User.findById(ctx.user.id)).reservedAppTokens,0);
+});
+
+for(const apiMode of ['chat_completions','responses'])test(`${apiMode}: a lowered budget still stops before a paid continuation and records the estimate`,opts,async t=>{
+ const old={...process.env};t.after(()=>{process.env=old;});process.env.COMPUTE_MAX_USD='0.001';
+ const ctx=await setup(t,apiMode,'real-budget');
+ assert.equal(ctx.turn.status,'completed');assert.equal(ctx.turn.computeState.calls,0);assert.equal(ctx.calls(),1);
+ assert.equal(ctx.turn.computeState.pending,false);assert.equal(ctx.turn.reservationState,'settled');
+ const diagnostic=ctx.turn.computeState.budgetRejection;assert.equal(diagnostic.stage,'before_provider');
+ assert.equal(diagnostic.limitUsd,0.001);assert.equal(diagnostic.spentUsd,0);assert.ok(diagnostic.projectedUsd>diagnostic.limitUsd);
+ assert.equal(await Job.countDocuments({turnId:ctx.turn.turnId}),0);
+ const message=await models.ChatMessage.findById(ctx.turn.assistantMessage);assert.equal(message.computation.reason,'COMPUTE_BUDGET_LIMIT');
+ assert.equal(message.attachments.length,0);assert.equal(await models.ChatBillingLedger.countDocuments({turnId:ctx.turn.turnId}),1);
 });
 
 for(const knownUsage of [false,true])test(`a stale recovery candidate cannot close an active document job (known usage: ${knownUsage})`,opts,async t=>{

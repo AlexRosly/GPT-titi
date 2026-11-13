@@ -140,7 +140,7 @@ const changeReservation = ({ userId, amount, turnId, attempt, releasing = false,
 // transaction that claims a web/browser provider launch for this attempt.
 const increaseComputationReservation = ({ userId, amount, turnId, attempt, phase, session, filter }) => {
   assertAmount(amount);
-  if (!Number.isSafeInteger(phase) || phase < 1 || phase > 6 || !session || !turnId || !Number.isSafeInteger(attempt)) throw new Error("Invalid computation reservation identity");
+  if (!Number.isSafeInteger(phase) || phase < 1 || phase > require('../computation/config').ceilings.calls || !session || !turnId || !Number.isSafeInteger(attempt)) throw new Error("Invalid computation reservation identity");
   return mutate({ userId, delta: 0, kind: "reservation_hold",
     key: `reservation_hold:computation:${turnId}:${attempt}:${phase}`, session, filter,
     increments: { reservedAppTokens: amount, reservationVersion: 1 },

@@ -76,6 +76,40 @@ test('no-charge reconciliation for uncertain call still settles earlier complete
  assert.equal(result.charged,true);const row=await models.ChatTurn.findById(f.claim.turn._id);assert.equal(row.reservationState,'settled');assert.equal(row.needsReconciliation,false);assert.equal(await models.ChatBillingLedger.countDocuments({turnId:row.turnId}),1);
 });
 
+test('configured sixteen-call boundary preserves reservation identities and finalizes once',opts,async t=>{
+ const old={...process.env};t.after(()=>{process.env=old;});
+ Object.assign(process.env,{COMPUTE_MAX_USD:'1',COMPUTE_MAX_CALLS:'16'});
+ const f=await fixture(),state={pending:false,calls:0,usage:u,initialUsage:u,runs:0,files:[]};
+ await models.ChatTurn.updateOne({_id:f.claim.turn._id},{$set:{computeState:state}});f.claim.turn.computeState=state;
+ for(let i=1;i<=16;i++){
+  await accounting.begin(f.claim.turn,f.claim.leaseToken,[{role:'user',content:'bounded test context '.repeat(i*20)}],[]);
+  await accounting.received(f.claim.turn,f.claim.leaseToken,usage);
+ }
+ const before=await models.ChatTurn.findById(f.claim.turn._id);assert.equal(before.computeState.calls,16);
+ assert.ok(await models.TokenOperation.findOne({key:`reservation_hold:computation:${before.turnId}:1:16`}));
+ const holds=await models.TokenOperation.countDocuments({'context.turnId':before.turnId});
+ await assert.rejects(accounting.begin(f.claim.turn,f.claim.leaseToken,[{role:'user',content:'extra'}],[]),e=>e.fileError==='COMPUTE_CALL_LIMIT');
+ const after=await models.ChatTurn.findById(before._id);
+ assert.equal(after.computeState.calls,16);assert.equal(after.computeState.pending,false);assert.equal(after.reservedAppTokens,before.reservedAppTokens);
+ assert.equal(await models.TokenOperation.countDocuments({'context.turnId':before.turnId}),holds);
+ await worker.commitCompletion(after,f.claim.leaseToken,'Completed test calculation',after.computeState.usage);
+ await worker.recoverExpired();assert.equal(await models.ChatBillingLedger.countDocuments({turnId:after.turnId}),1);
+ assert.equal((await models.User.findById(f.user.id)).reservedAppTokens,0);
+});
+
+test('a larger budget still rejects cumulative known spend plus the next estimate before reserving',opts,async t=>{
+ const old=process.env.COMPUTE_MAX_USD;t.after(()=>{if(old===undefined)delete process.env.COMPUTE_MAX_USD;else process.env.COMPUTE_MAX_USD=old;});
+ process.env.COMPUTE_MAX_USD='1';const f=await fixture();
+ const state={pending:false,calls:2,usage:{promptTokens:999100,completionTokens:30,totalTokens:999130},initialUsage:u,runs:2,files:[]};
+ await models.ChatTurn.updateOne({_id:f.claim.turn._id},{$set:{computeState:state}});f.claim.turn.computeState=state;
+ const before=await models.ChatTurn.findById(f.claim.turn._id);
+ await assert.rejects(accounting.begin(f.claim.turn,f.claim.leaseToken,[{role:'user',content:'next step'}],[]),e=>e.fileError==='COMPUTE_BUDGET_LIMIT');
+ const after=await models.ChatTurn.findById(before._id),d=after.computeState.budgetRejection;
+ assert.equal(d.limitUsd,1);assert.equal(d.spentUsd,.999);assert.ok(d.estimatedUsd<1);assert.ok(d.projectedUsd>1);
+ assert.equal(after.reservedAppTokens,before.reservedAppTokens);assert.equal(after.computeState.pending,false);assert.equal(after.computeState.calls,2);
+ assert.deepEqual(after.computeState.usage,state.usage);assert.equal(await models.ChatBillingLedger.countDocuments({turnId:after.turnId}),0);
+});
+
 test('provider rejection before first chunk releases reserve; rejection after a chunk stays held',opts,async t=>{
  for(const started of [false,true]){
   const f=await fixture();

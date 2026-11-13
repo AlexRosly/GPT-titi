@@ -16,19 +16,21 @@ test('budget includes history, tools, images and bounded output; configuration i
  const more=estimate([{role:'system',content:'Instructions'},{role:'user',content:'History'.repeat(100)},{role:'user',content:[{type:'image_url',image_url:{url:'private'}}]}],[p.tool],pricing);
  assert.ok(more.amount>simple.amount);assert.equal(simple.outputTokens,2048);assert.ok(simple.usd>=2048*2/1e6);
  assert.throws(()=>estimate([],[],{...pricing,tokenValueUsd:0}));
- process.env.COMPUTE_MAX_RUNS='6';assert.throws(()=>p.limits());delete process.env.COMPUTE_MAX_RUNS;
+ process.env.COMPUTE_MAX_RUNS='25';assert.throws(()=>p.limits());delete process.env.COMPUTE_MAX_RUNS;
 });
 test('sandbox has no host mounts, secrets, network or elevated capabilities',()=>{
  const a=require('../../src/services/computation/session').args('test',p.limits());
  for(const flag of ['--network=none','--read-only','--user=10001:10001','--memory=512m','--memory-swap=512m','--cpus=1','--pids-limit=64','--cap-drop=ALL','--security-opt=no-new-privileges','--log-driver=none'])assert.ok(a.includes(flag));
  assert.ok(!a.includes('--privileged'));assert.ok(!a.includes('-v'));assert.ok(!a.some(s=>s.includes('docker.sock')));
 });
-test('computation reservations use a separate idempotent ledger identity through call six',async t=>{
+test('computation reservations retain idempotent identities through the ceiling, including after lowering config',async t=>{
  const ledger=require('../../src/services/tokenLedger'),{TokenOperation}=require('../../src/models');let key;
  t.mock.method(TokenOperation,'findOne',q=>{key=q.key;return {session:()=>({lean:async()=>({_id:'receipt',kind:'reservation_hold',status:'confirmed',entries:[{user:'owner',delta:0,balance:100,balanceVersion:1}]})})};});
- const r=await ledger.increaseComputationReservation({userId:'owner',amount:5,turnId:'turn',attempt:2,phase:6,session:{}});
- assert.equal(r.alreadyApplied,true);assert.equal(key,'reservation_hold:computation:turn:2:6');
- assert.throws(()=>ledger.increaseComputationReservation({userId:'owner',amount:5,turnId:'turn',attempt:2,phase:7,session:{}}));
+ for(const phase of [6,16,32]){
+  const r=await ledger.increaseComputationReservation({userId:'owner',amount:5,turnId:'turn',attempt:2,phase,session:{}});
+  assert.equal(r.alreadyApplied,true);assert.equal(key,`reservation_hold:computation:turn:2:${phase}`);
+ }
+ assert.throws(()=>ledger.increaseComputationReservation({userId:'owner',amount:5,turnId:'turn',attempt:2,phase:33,session:{}}));
 });
 test('public progress/result metadata excludes code, stdout and private file paths',()=>{
  const status=require('../../src/services/computation/status');
@@ -103,16 +105,31 @@ test('rejection diagnostics expose only correlation and fixed reason, never raw 
 });
 
 
-test('compute budget defaults to 20 cents, honors lower overrides and refuses higher caps',()=>{
+test('compute budget retains the default, allows explicit test budgets and refuses invalid values',()=>{
  const old=process.env.COMPUTE_MAX_USD;
  try {
   delete process.env.COMPUTE_MAX_USD;
   assert.equal(p.limits().usd,0.20);
   const priced=estimate([{role:'user',content:'Create XLSX and PNG'}],[p.tool],{inputPerM:5,outputPerM:30,tokenValueUsd:0.00001});
   assert.ok(priced.usd>0.05);assert.ok(priced.usd<0.20);
-  for(const value of ['0.05','0.20']){process.env.COMPUTE_MAX_USD=value;assert.equal(p.limits().usd,Number(value));}
-  for(const value of ['0.201','1','0','NaN','Infinity']){process.env.COMPUTE_MAX_USD=value;assert.throws(()=>p.limits(),e=>e.fileError==='COMPUTE_CONFIGURATION_ERROR');}
+  for(const value of ['0.05','0.20','1','5']){process.env.COMPUTE_MAX_USD=value;assert.equal(p.limits().usd,Number(value));}
+  for(const value of ['5.001','0','NaN','Infinity','']){process.env.COMPUTE_MAX_USD=value;assert.throws(()=>p.limits(),e=>e.fileError==='COMPUTE_CONFIGURATION_ERROR');}
  }finally{if(old===undefined)delete process.env.COMPUTE_MAX_USD;else process.env.COMPUTE_MAX_USD=old;}
+});
+
+test('test configuration expands planning only; invalid counts fail and historical progress is not truncated',()=>{
+ const old={...process.env};try{
+  Object.assign(process.env,{COMPUTE_MAX_USD:'1',COMPUTE_MAX_RUNS:'12',COMPUTE_MAX_CALLS:'16',COMPUTE_TOTAL_MS:'300000'});
+  const l=p.limits();assert.equal(l.usd,1);assert.equal(l.runs,12);assert.equal(l.calls,16);assert.equal(l.totalMs,300000);
+  assert.equal(l.runMs,60000);assert.equal(l.durationMs,600000);assert.equal(l.memoryMiB,512);assert.equal(l.outputTokens,2048);
+  for(const [key,invalid] of Object.entries({COMPUTE_MAX_RUNS:['25','0','1.5'],COMPUTE_MAX_CALLS:['33','0','NaN'],COMPUTE_TOTAL_MS:['600001','0','Infinity']})){
+   const value=process.env[key];for(const bad of invalid){process.env[key]=bad;assert.throws(()=>p.limits());}process.env[key]=value;
+  }
+  Object.assign(process.env,{COMPUTE_MAX_RUNS:'5',COMPUTE_MAX_CALLS:'6'});
+  const status=require('../../src/services/computation/status');
+  assert.equal(status.result({status:'completed',runs:12}).runs,12);
+  assert.equal(status.progress({status:'processing',computeState:{runs:12,calls:16}}).calls,16);
+ }finally{process.env=old;}
 });
 
 test('budget diagnostics expose numeric estimates only and cannot alter rejection',t=>{

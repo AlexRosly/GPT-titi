@@ -7,9 +7,19 @@ const { protocolError, NEGATIVE_LIMIT, availableExpression } = require('../chatD
 const guard = (turn, token) => ({ _id: turn._id, user: turn.user, attempt: turn.attempt,
   status: 'processing', leaseToken: token, leaseUntil: { $gt: new Date() }, reservationState: 'held', cancelRequestedAt: null });
 const cost = (usage, pricing) => Math.ceil((usage.promptTokens * pricing.inputPerM + usage.completionTokens * pricing.outputPerM) / 1e6 / pricing.tokenValueUsd);
+async function recordBudgetRejection(turn, token, diagnostic) {
+  // Outside a rejected reservation transaction: throwing inside it would roll
+  // this diagnostic back as well. Metadata must never change the stop decision.
+  try {
+    const saved = await ChatTurn.updateOne({...guard(turn, token), 'computeState.pending':false,
+      'computeState.documentJob.active':{$ne:true}}, {$set:{'computeState.budgetRejection':diagnostic}});
+    if (saved.matchedCount) turn.computeState = {...turn.computeState, budgetRejection:diagnostic};
+  } catch { /* The original budget error remains authoritative. */ }
+}
 async function begin(turn, token, messages, tools) {
   const budget = estimate(messages, tools, turn.pricing);
   const session = await mongoose.startSession();
+  let budgetRejection;
   try {
     await session.withTransaction(async () => {
       const current = await ChatTurn.findOne(guard(turn, token)).session(session);
@@ -20,7 +30,7 @@ async function begin(turn, token, messages, tools) {
       const spentUsd=(extraUsage.promptTokens*current.pricing.inputPerM+extraUsage.completionTokens*current.pricing.outputPerM)/1e6;
       const limitUsd=limits().usd;
       if (spentUsd + budget.usd > limitUsd) {
-        require('./budget').diagnoseRejection(current,'before_provider',budget,spentUsd,limitUsd);
+        budgetRejection = require('./budget').diagnoseRejection(current,'before_provider',budget,spentUsd,limitUsd);
         throw fail('COMPUTE_BUDGET_LIMIT');
       }
       const target = Math.max(current.reservedAppTokens, cost(state.usage, current.pricing) + budget.amount);
@@ -41,6 +51,9 @@ async function begin(turn, token, messages, tools) {
       turn.computeState = next;
     });
     ledger.notifyCommitted(); return budget;
+  } catch (error) {
+    if (error.fileError === 'COMPUTE_BUDGET_LIMIT' && budgetRejection) await recordBudgetRejection(turn, token, budgetRejection);
+    throw error;
   } finally { await session.endSession(); }
 }
 async function received(turn, token, usage) {
@@ -56,4 +69,4 @@ async function rejected(turn, token) {
   // A documented pre-generation HTTP rejection adds zero usage; prior calls remain billable.
   return received(turn, token, {prompt_tokens:0,completion_tokens:0,total_tokens:0});
 }
-module.exports = { guard, begin, received, rejected, cost };
+module.exports = { guard, begin, received, rejected, cost, recordBudgetRejection };

@@ -1,0 +1,98 @@
+{
+  "reportVersion": 1,
+  "generatedAt": "2026-11-12T18:08:02.826Z",
+  "readOnly": true,
+  "flags": {
+    "DOCUMENT_JOBS_ENABLED": "true",
+    "XLSX_EDIT_ENABLED": "true",
+    "COMPUTE_V2_ENABLED": "true",
+    "PRIVATE_FILES_ENABLED": "true",
+    "OFFICE_INPUT_ENABLED": "unset"
+  },
+  "limits": {
+    "COMPUTE_MAX_USD": 0.2,
+    "COMPUTE_MAX_RUNS": 5,
+    "COMPUTE_MAX_CALLS": 6,
+    "COMPUTE_TOTAL_MS": 180000,
+    "CHAT_V2_LEASE_MS": null
+  },
+  "searchedCandidates": 13,
+  "reports": [
+    {
+      "turnId": "fd87dccd-f97f-4eae-842f-be29453504c9",
+      "conversationId": "6af5d4c238c035411c845dbe",
+      "modelId": "gpt-5.5",
+      "attempt": 1,
+      "status": "failed",
+      "createdAt": "2026-11-12T15:01:28.614Z",
+      "updatedAt": "2026-11-12T15:01:42.987Z",
+      "processingStartedAt": "2026-11-12T15:01:28.731Z",
+      "leaseUntil": null,
+      "reservationState": "held",
+      "reservedAppTokens": 14656,
+      "needsReconciliation": true,
+      "providerStartedAt": "2026-11-12T15:01:39.311Z",
+      "cancelRequestedAt": null,
+      "errorCode": "PROCESS_INTERRUPTED",
+      "model": {
+        "enabled": true
+      },
+      "providerConfig": {
+        "apiMode": "chat_completions",
+        "reasoningEffort": null
+      },
+      "providerResponseIds": [],
+      "response": null,
+      "compute": {
+        "kind": "document",
+        "stage": "executing",
+        "calls": 1,
+        "runs": 2,
+        "pending": false,
+        "executionMs": 2765,
+        "usage": {
+          "promptTokens": 12789,
+          "completionTokens": 409,
+          "totalTokens": 13198
+        },
+        "lastActionError": null,
+        "documentJobActive": true
+      },
+      "savedResult": null,
+      "failureDiagnostic": null,
+      "files": [
+        {
+          "size": 3088603,
+          "status": "ready",
+          "xlsx": true,
+          "qaFixture": true
+        }
+      ],
+      "jobs": [
+        {
+          "_id": "6af5d4d538c035411c845e99",
+          "status": "cancelled",
+          "cursor": 0,
+          "total": 10000,
+          "chunks": 0,
+          "stagedBytes": 0,
+          "failures": 0,
+          "restarts": 1,
+          "createdAt": "2026-11-12T15:01:41.888Z",
+          "updatedAt": "2026-11-12T15:01:43.952Z",
+          "leaseUntil": null,
+          "errorCode": "DOCUMENT_TURN_GONE",
+          "finishedAt": "2026-11-12T15:01:43.952Z"
+        }
+      ],
+      "billing": [],
+      "operations": [
+        {
+          "_id": "reservation_hold",
+          "count": 2
+        }
+      ]
+    }
+  ],
+  "note": "A missing failureDiagnostic on an older failed turn is expected. This report makes no model calls and changes no data."
+}

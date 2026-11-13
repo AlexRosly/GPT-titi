@@ -53,10 +53,16 @@ test('diagnostic report reads an existing XLSX turn without mutations or provide
  const output=execFileSync(process.execPath,['scripts/diagnoseDocumentTurn.js','--turn-id',ctx.turn.turnId],
   {cwd:require('node:path').join(__dirname,'../..'),env:{...process.env,MONGO_URI:uri},encoding:'utf8',timeout:20000});
  const report=JSON.parse(output);assert.equal(report.readOnly,true);assert.equal(report.reports.length,1);
+ assert.equal(report.configurationSource,'diagnostic-process');
+ assert.deepEqual(report.reports[0].workerRuntime,require('../../src/services/chatDeliveryV2/runtime'));
  assert.equal(report.reports[0].turnId,ctx.turn.turnId);assert.equal(report.reports[0].files[0].xlsx,true);
  assert.equal(report.reports[0].jobs.length,1);assert.equal(report.reports[0].jobs[0].status,'queued');
  assert.doesNotMatch(output,/example\.test|mongodb:|Multiply B2|source\.xlsx/);
  assert.deepEqual((await models.ChatTurn.findById(ctx.turn._id)).toObject(),before);assert.equal(ctx.calls(),2);
+ // Drain this fixture after the read-only assertion so the next test's runOnce
+ // cannot accidentally claim our older queued job.
+ await queue.runOnce();await worker.recoverExpired();
+ assert.equal((await models.ChatTurn.findById(ctx.turn._id)).status,'completed');
 });
 for(const failure of ['budget','http','incomplete','eof'])test(`Responses ${failure} after XLSX inspection retains exact failure and settles only confirmed usage`,opts,async t=>{
  const ctx=await setup(t,'responses',failure);
@@ -67,6 +73,11 @@ for(const failure of ['budget','http','incomplete','eof'])test(`Responses ${fail
  assert.equal(ctx.turn.reservationState,uncertain?'held':'settled');
  const expected={budget:'COMPUTE_BUDGET_LIMIT',http:'PROVIDER_REQUEST_REJECTED',incomplete:'PROVIDER_RESPONSE_INCOMPLETE',eof:'PROVIDER_STREAM_INTERRUPTED'};
  assert.equal(ctx.turn.failureDiagnostic.code,expected[failure]);
+ if(uncertain){
+  assert.equal(ctx.turn.failureDiagnostic.terminal.source,'worker.failTurn');
+  assert.equal(ctx.turn.failureDiagnostic.terminal.recovery,false);
+  assert.deepEqual(ctx.turn.failureDiagnostic.terminal.runtime,require('../../src/services/chatDeliveryV2/runtime'));
+ }
  if(!uncertain){
   const msg=await models.ChatMessage.findById(ctx.turn.assistantMessage);
   assert.equal(msg.computation.status,'partial');assert.equal(msg.computation.reason,expected[failure]);assert.equal(msg.attachments.length,0);
@@ -77,6 +88,46 @@ for(const failure of ['budget','http','incomplete','eof'])test(`Responses ${fail
  assert.equal(await models.ChatBillingLedger.countDocuments({turnId:ctx.turn.turnId}),uncertain?0:1);
  assert.equal(ctx.calls(),failure==='budget'?1:2);
 });
+test('an active document job cannot be failed by the chat worker after handoff',opts,async t=>{
+ const ctx=await setup(t),before=ctx.turn.toObject();
+ await worker.failTurn(ctx.turn,null,require('../../src/services/chatDeliveryV2/protocol').errorFor('PROCESS_INTERRUPTED'),{expiredOnly:true});
+ assert.deepEqual((await models.ChatTurn.findById(ctx.turn._id)).toObject(),before);
+ assert.equal(await models.ChatBillingLedger.countDocuments({turnId:ctx.turn.turnId}),0);
+ await queue.runOnce();await worker.recoverExpired();await worker.recoverExpired();
+ const turn=await models.ChatTurn.findById(ctx.turn._id);
+ assert.equal(turn.status,'completed');assert.equal(turn.computeState.documentJob.report.processedRows,10000);
+ assert.equal(turn.computeState.documentJob.report.changed,10000);assert.equal(ctx.calls(),2);
+ assert.equal(await models.ChatBillingLedger.countDocuments({turnId:turn.turnId}),1);
+});
+
+for(const knownUsage of [false,true])test(`a stale recovery candidate cannot close an active document job (known usage: ${knownUsage})`,opts,async t=>{
+ const ctx=await setup(t),stale=ctx.turn.toObject();
+ // The initial scan is not the authority for the final write. Simulate a stale
+ // candidate with the same attempt/lease; the persisted handoff must win.
+ if(knownUsage)delete stale.computeState.documentJob;else stale.computeState=null;
+ const mock=t.mock.method(models.ChatTurn,'find',async()=>[stale]);
+ await worker.recoverExpired();mock.mock.restore();
+ const live=await models.ChatTurn.findById(ctx.turn._id);
+ assert.equal(live.status,'processing');assert.equal(live.providerResult,null);
+ assert.equal(live.computeState.documentJob.active,true);assert.equal(live.reservationState,'held');
+ assert.equal(await models.ChatBillingLedger.countDocuments({turnId:live.turnId}),0);
+ await queue.runOnce();await worker.recoverExpired();
+ assert.equal((await models.ChatTurn.findById(live._id)).status,'completed');assert.equal(ctx.calls(),2);
+ assert.equal(await models.ChatBillingLedger.countDocuments({turnId:live.turnId}),1);
+});
+
+test('completion cannot charge an active document job even if given a live chat lease',opts,async t=>{
+ const ctx=await setup(t),token=crypto.randomUUID();
+ await models.ChatTurn.updateOne({_id:ctx.turn._id},{$set:{leaseToken:token,leaseUntil:new Date(Date.now()+30000)}});
+ await assert.rejects(worker.commitCompletion(ctx.turn,token,'Premature completion',ctx.turn.computeState.usage),e=>e.staleLease===true);
+ assert.equal(await models.ChatBillingLedger.countDocuments({turnId:ctx.turn.turnId}),0);
+ assert.equal((await models.ChatTurn.findById(ctx.turn._id)).reservationState,'held');
+ await models.ChatTurn.updateOne({_id:ctx.turn._id},{$set:{leaseToken:null,leaseUntil:new Date(0)}});
+ await queue.runOnce();await worker.recoverExpired();
+ assert.equal((await models.ChatTurn.findById(ctx.turn._id)).status,'completed');assert.equal(ctx.calls(),2);
+ assert.equal(await models.ChatBillingLedger.countDocuments({turnId:ctx.turn.turnId}),1);
+});
+
 test('10000 rows: crash after durable chunk, two competing workers, restart and one final charge',opts,async t=>{
  const ctx=await setup(t),real=processXlsx.run;let failed=false;
  const mock=t.mock.method(processXlsx,'run',async(buffer,action,args,options)=>{

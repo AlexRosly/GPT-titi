@@ -14,6 +14,16 @@ const { errorFor } = require("./protocol");
 const { release } = require("./reservations");
 const { createScheduler } = require("./scheduler");
 const { messageDto } = require("./snapshot");
+const runtime = require('./runtime');
+
+// Handoff transfers ownership to the document queue. A stale recovery scan or
+// caller must not fail, complete, charge or reclaim that turn until publication.
+const noActiveDocumentJob = { 'computeState.documentJob.active': { $ne: true } };
+const recoveryGuard = turn => ({
+  _id: turn._id, attempt: turn.attempt, status: 'processing',
+  leaseToken: turn.leaseToken, leaseUntil: { $lte: new Date() },
+  ...noActiveDocumentJob,
+});
 
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -50,12 +60,14 @@ const claimTurn = async (turnId) => {
     {
       turnId,
       status: "queued",
+      ...noActiveDocumentJob,
     },
     {
       $set: {
         status: "processing",
         processingStartedAt: now,
         failureDiagnostic: null,
+        workerRuntime: runtime,
         leaseToken,
         leaseUntil: new Date(now.getTime() + LEASE_MS),
       },
@@ -69,12 +81,13 @@ const claimNextQueued = async () => {
   const leaseToken = crypto.randomUUID();
   const now = new Date();
   const turn = await ChatTurn.findOneAndUpdate(
-    { status: "queued" },
+    { status: "queued", ...noActiveDocumentJob },
     {
       $set: {
         status: "processing",
         processingStartedAt: now,
         failureDiagnostic: null,
+        workerRuntime: runtime,
         leaseToken,
         leaseUntil: new Date(now.getTime() + LEASE_MS),
       },
@@ -145,6 +158,7 @@ const failTurn = async (
         attempt: turn.attempt,
         status: "processing",
         leaseToken,
+        ...noActiveDocumentJob,
         ...(expiredOnly ? { leaseUntil: { $lte: new Date() } } : {}),
       }).session(session);
       if (!current || current.providerResult) return;
@@ -158,12 +172,18 @@ const failTurn = async (
         : errorObject;
       if (!uncertain) await release(current, session);
       updated = await ChatTurn.findOneAndUpdate(
-        { _id: current._id, leaseToken, attempt: current.attempt },
+        { _id: current._id, leaseToken, attempt: current.attempt, status: 'processing',
+          providerResult: null, ...noActiveDocumentJob,
+          ...(expiredOnly ? { leaseUntil: { $lte: new Date() } } : {}) },
         {
           $set: {
             status: "failed",
             error: terminalError,
             needsReconciliation: uncertain,
+            failureDiagnostic: {
+              ...current.failureDiagnostic,
+              terminal: { source: 'worker.failTurn', code: errorObject.code, recovery: expiredOnly, runtime },
+            },
             leaseToken: null,
             leaseUntil: null,
           },
@@ -175,6 +195,8 @@ const failTurn = async (
     await session.endSession();
   }
   if (updated) {
+    console.warn('CHAT_V2_TERMINAL_FAILURE', { turnId: updated.turnId, attempt: updated.attempt,
+      ...updated.failureDiagnostic.terminal, errorCode: updated.error?.code });
     if (updated.webPlan) console.info("WEB_V2_RESULT", {
       turnId: updated.turnId, attempt: updated.attempt, modelId: updated.modelId,
       status: updated.status, error: updated.error?.code,
@@ -186,7 +208,8 @@ const failTurn = async (
   return updated;
 };
 
-const completionCancellationGuard = { $or: [{cancelRequestedAt:null}, {'computeState.documentJob.active':false,'computeState.pending':false,'providerResult.computation.reason':'USER_CANCELLED'}] };
+const completionCancellationGuard = { ...noActiveDocumentJob,
+  $or: [{cancelRequestedAt:null}, {'computeState.documentJob.active':false,'computeState.pending':false,'providerResult.computation.reason':'USER_CANCELLED'}] };
 
 const commitCompletion = async (turn, leaseToken, assistantText, usage) => {
   // Render outside the transaction; Office/PDF work runs in a bounded worker thread.
@@ -350,6 +373,7 @@ const commitCompletion = async (turn, leaseToken, assistantText, usage) => {
           status: "processing",
           leaseToken,
           leaseUntil: { $gt: completedAt },
+          ...completionCancellationGuard,
         },
         {
           $set: {
@@ -793,7 +817,7 @@ const processTurn = async (claimed) => {
 const recoverExpired = async () => {
   const expired = await ChatTurn.find({
     status: "processing",
-    "computeState.documentJob.active": { $ne: true },
+    ...noActiveDocumentJob,
     leaseUntil: { $lte: new Date() },
   });
   for (const turn of expired) {
@@ -803,8 +827,7 @@ const recoverExpired = async () => {
     }
     const completedDocx = !turn.providerResult && require('../docx/continuation').completion(turn);
     if (completedDocx) {
-      const saved = await ChatTurn.updateOne({ _id: turn._id, status: 'processing', attempt: turn.attempt,
-        leaseToken: turn.leaseToken, leaseUntil: { $lte: new Date() }, providerResult: null, cancelRequestedAt: null },
+      const saved = await ChatTurn.updateOne({ ...recoveryGuard(turn), providerResult: null, cancelRequestedAt: null },
       { $set: { providerResult: completedDocx } });
       if (!saved.matchedCount) continue;
       turn.providerResult = completedDocx;
@@ -814,35 +837,28 @@ const recoverExpired = async () => {
       const data = { ...state.partialData, assistantText: (state.partialData?.assistantText || '') + '\n\n[Generation interrupted; only completed work is available.]',
         usage: state.usage, ...(turn.computeState ? { computation: { status: 'partial', kind: turn.computeState.kind, reason: 'PROCESS_INTERRUPTED',
           files: turn.computeState.files, runs: turn.computeState.runs, executionMs: turn.computeState.executionMs } } : {}) };
-      const saved = await ChatTurn.updateOne({ _id: turn._id, status: 'processing', attempt: turn.attempt,
-        leaseToken: turn.leaseToken, leaseUntil: { $lte: new Date() }, providerResult: null }, { $set: { providerResult: data } });
+      const saved = await ChatTurn.updateOne({ ...recoveryGuard(turn), providerResult: null }, { $set: { providerResult: data } });
       if (!saved.matchedCount) continue;
       turn.providerResult = data;
     }
     if (!turn.providerResult && turn.computeState && !turn.computeState.pending) {
       const data = require('../computation/agent').partial(turn, 'PROCESS_INTERRUPTED');
-      const saved = await ChatTurn.updateOne({_id:turn._id,status:'processing',attempt:turn.attempt,leaseToken:turn.leaseToken,leaseUntil:{$lte:new Date()},providerResult:null},{$set:{providerResult:data}});
+      const saved = await ChatTurn.updateOne({...recoveryGuard(turn),providerResult:null},{$set:{providerResult:data}});
       if (!saved.matchedCount) continue;
       turn.providerResult = data;
     }
     if (turn.webPlan?.mode === "browser" && !turn.providerResult && turn.browserState && !turn.browserState.pending && turn.providerStartedAt) {
       // Completed calls are accounted for. Do not replay browser actions after a crash.
       const data = require("../browser/agent").partial(turn, "PROCESS_INTERRUPTED");
-      const saved = await ChatTurn.updateOne({_id:turn._id,status:"processing",attempt:turn.attempt,
-        leaseToken:turn.leaseToken,leaseUntil:{$lte:new Date()},providerResult:null},{$set:{providerResult:data}});
+      const saved = await ChatTurn.updateOne({...recoveryGuard(turn),providerResult:null},{$set:{providerResult:data}});
       if (!saved.matchedCount) continue;
       turn.providerResult = data;
     }
     if (turn.providerResult) {
       const leaseToken = crypto.randomUUID();
       const current = await ChatTurn.findOneAndUpdate(
-        {
-          _id: turn._id,
-          status: "processing",
-          leaseToken: turn.leaseToken,
-          leaseUntil: { $lte: new Date() },
-        },
-        { $set: { leaseToken, leaseUntil: new Date(Date.now() + LEASE_MS) } },
+        recoveryGuard(turn),
+        { $set: { leaseToken, leaseUntil: new Date(Date.now() + LEASE_MS), workerRuntime: runtime } },
         { new: true },
       );
       if (!current) continue;
@@ -879,8 +895,7 @@ const recoverExpired = async () => {
     } else if (turn.webPlan && turn.webPlan.mode !== "browser" && !turn.providerStartedAt) {
       // No model call was started: keep completed page reads and let the normal
       // scheduler reclaim the job within its concurrency limit.
-      await ChatTurn.updateOne({ _id: turn._id, status: "processing", attempt: turn.attempt,
-        leaseToken: turn.leaseToken, leaseUntil: { $lte: new Date() }, providerStartedAt: null },
+      await ChatTurn.updateOne({ ...recoveryGuard(turn), providerStartedAt: null },
         { $set: { status: "queued", leaseToken: null, leaseUntil: null } });
     } else {
       await failTurn(turn, turn.leaseToken, errorFor("PROCESS_INTERRUPTED"), {
@@ -894,6 +909,9 @@ let scheduler = null;
 const wake = () => scheduler?.wake();
 const startWorker = async () => {
   if (scheduler) return () => scheduler?.stop();
+  console.info('CHAT_V2_WORKER_READY', { ...runtime,
+    flags: Object.fromEntries(['DOCUMENT_JOBS_ENABLED','XLSX_EDIT_ENABLED','COMPUTE_V2_ENABLED','PRIVATE_FILES_ENABLED']
+      .map(key => [key, process.env[key] === undefined ? 'unset' : process.env[key] === 'true'])) });
   scheduler = createScheduler({
     claim: claimNextQueued,
     process: processTurn,

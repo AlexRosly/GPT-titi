@@ -69,6 +69,7 @@ const ChatTurnSchema = new Schema(
     reconciliation: { type: Schema.Types.Mixed, default: null },
     needsReconciliation: { type: Boolean, default: false },
     failureDiagnostic: { type: Schema.Types.Mixed, default: null },
+    workerRuntime: { type: Schema.Types.Mixed, default: null },
     attempt: { type: Number, default: 1 },
     lastSeq: { type: Number, default: 0 },
     partialContent: { type: String, default: "" },

@@ -93,6 +93,8 @@ async function abandon(job,token){
   // A deleted/finished turn no longer needs a reply, but its staging quota does.
   await clean(saved,session);const r=await Job.updateOne(guard(job,token),{$set:{status:'cancelled',errorCode:'DOCUMENT_TURN_GONE',finishedAt:new Date(),stagedBytes:0,leaseToken:null,leaseUntil:null}},{session});if(!r.matchedCount)throw leaseError();
  });
+ console.warn('DOCUMENT_JOB_TURN_GONE',{jobId:String(job._id),turnId:job.turnId,attempt:job.attempt,
+  cursor:job.cursor,total:job.total,runtime:require('../chatDeliveryV2/runtime')});
 }
 const transient=code=>['DOCUMENT_JOB_TIMEOUT','DOCUMENT_WORKER_CRASH','DOCUMENT_JOB_INTERRUPTED'].includes(code);
 async function runOnce(){

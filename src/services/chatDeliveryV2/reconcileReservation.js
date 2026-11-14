@@ -26,7 +26,9 @@ module.exports = async ({ turnId, attempt, noCharge, usage, reason }) => {
       await ChatTurn.updateOne({ _id: turn._id, attempt }, { $set: {
         needsReconciliation: false,
         reconciliation: { reason, at: new Date(), noCharge: noCharge === true && !usage, uncertainCallNoCharge: noCharge === true, usage: usage || null },
-        error: errorFor("PROCESS_INTERRUPTED", usage
+        error: turn.cancelRequestedAt
+          ? require('./earlyCancellation').cancellationError(false)
+          : errorFor("PROCESS_INTERRUPTED", usage
           ? "Generation was interrupted. Its provider usage has been charged. Please send a new request."
           : "Generation was interrupted without a charge. You can retry.", !usage),
       } }, { session });

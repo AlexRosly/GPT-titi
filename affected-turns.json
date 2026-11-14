@@ -1,0 +1,22 @@
+{
+  "description": "Four failed document attempts in the diagnostic generated 2026-11-13T09:50:19.898Z; total held reserve 76860 TITI. The currently displayed budget-limited turn f4aaf01a-49ff-4b3f-a24b-ba8640a379a8 is already settled and is intentionally excluded.",
+  "expectedTotalReservedTokens": 76860,
+  "turns": [
+    {
+      "turnId": "b076e33d-32fa-4955-a361-4c3294006afc",
+      "attempt": 1
+    },
+    {
+      "turnId": "e2d90718-d82c-40aa-8828-60966c7ecd47",
+      "attempt": 1
+    },
+    {
+      "turnId": "140d0a72-0c11-4b8d-9899-8e728bff35b5",
+      "attempt": 1
+    },
+    {
+      "turnId": "fd87dccd-f97f-4eae-842f-be29453504c9",
+      "attempt": 1
+    }
+  ]
+}

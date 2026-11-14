@@ -1,0 +1,140 @@
+{
+  "reportVersion": 3,
+  "generatedAt": "2026-11-14T12:51:18.856Z",
+  "readOnly": true,
+  "configurationSource": "diagnostic-process",
+  "flags": {
+    "DOCUMENT_JOBS_ENABLED": "true",
+    "XLSX_EDIT_ENABLED": "true",
+    "COMPUTE_V2_ENABLED": "true",
+    "PRIVATE_FILES_ENABLED": "true",
+    "OFFICE_INPUT_ENABLED": "unset"
+  },
+  "limits": {
+    "COMPUTE_MAX_USD": 1,
+    "COMPUTE_MAX_RUNS": 12,
+    "COMPUTE_MAX_CALLS": 16,
+    "COMPUTE_TOTAL_MS": 300000,
+    "CHAT_V2_LEASE_MS": null
+  },
+  "searchedCandidates": 1,
+  "reports": [
+    {
+      "turnId": "9176e5bc-384a-49ea-822b-c7f48aabf481",
+      "conversationId": "6af84557bb88eaa6ba514a7d",
+      "modelId": "gpt-5.5",
+      "attempt": 1,
+      "status": "failed",
+      "createdAt": "2026-11-14T11:26:22.297Z",
+      "updatedAt": "2026-11-14T11:26:26.758Z",
+      "processingStartedAt": "2026-11-14T11:26:22.418Z",
+      "leaseUntil": null,
+      "reservationState": "held",
+      "reservedAppTokens": 2357,
+      "needsReconciliation": true,
+      "providerStartedAt": "2026-11-14T11:26:24.436Z",
+      "cancelRequestedAt": "2026-11-14T11:26:26.635Z",
+      "errorCode": "PROCESS_INTERRUPTED",
+      "model": {
+        "enabled": true
+      },
+      "providerConfig": {
+        "apiMode": "chat_completions",
+        "reasoningEffort": null
+      },
+      "workerRuntime": {
+        "revision": "document-testing-limits-v2",
+        "bootId": "f23875f9-fa8f-48b9-af09-34115f3b0883",
+        "loadedAt": "2026-11-13T19:09:08.920Z",
+        "pid": 1535393,
+        "pm2Id": 1,
+        "computeLimits": {
+          "runMs": 60000,
+          "totalMs": 300000,
+          "runs": 12,
+          "calls": 16,
+          "memoryMiB": 512,
+          "slots": 2,
+          "usd": 1,
+          "outputTokens": 2048,
+          "inputBytes": 26214400,
+          "outputBytes": 26214400,
+          "files": 10,
+          "codeBytes": 32768,
+          "textBytes": 16384,
+          "durationMs": 600000,
+          "tmpMiB": 256
+        }
+      },
+      "budgetRejection": null,
+      "assistantResult": null,
+      "providerResponseIds": [],
+      "response": null,
+      "compute": null,
+      "savedResult": null,
+      "failureDiagnostic": {
+        "version": 1,
+        "at": "2026-11-14T11:26:26.696Z",
+        "providerHttpStatus": null,
+        "responsePending": null,
+        "computePending": null,
+        "calls": null,
+        "runs": null,
+        "documentJobActive": false,
+        "code": "USER_CANCELLED",
+        "providerCode": null,
+        "requestId": null,
+        "providerResponseStatus": null,
+        "incompleteReason": null,
+        "stage": null,
+        "lastActionError": null,
+        "terminal": {
+          "source": "worker.failTurn",
+          "code": "USER_CANCELLED",
+          "recovery": false,
+          "runtime": {
+            "revision": "document-testing-limits-v2",
+            "bootId": "f23875f9-fa8f-48b9-af09-34115f3b0883",
+            "loadedAt": "2026-11-13T19:09:08.920Z",
+            "pid": 1535393,
+            "pm2Id": 1,
+            "computeLimits": {
+              "runMs": 60000,
+              "totalMs": 300000,
+              "runs": 12,
+              "calls": 16,
+              "memoryMiB": 512,
+              "slots": 2,
+              "usd": 1,
+              "outputTokens": 2048,
+              "inputBytes": 26214400,
+              "outputBytes": 26214400,
+              "files": 10,
+              "codeBytes": 32768,
+              "textBytes": 16384,
+              "durationMs": 600000,
+              "tmpMiB": 256
+            }
+          }
+        }
+      },
+      "files": [
+        {
+          "size": 3088603,
+          "status": "ready",
+          "xlsx": true,
+          "qaFixture": true
+        }
+      ],
+      "jobs": [],
+      "billing": [],
+      "operations": [
+        {
+          "_id": "reservation_hold",
+          "count": 1
+        }
+      ]
+    }
+  ],
+  "note": "flags and limits belong to this CLI process, not the live PM2 backend. workerRuntime and failureDiagnostic.terminal.runtime were saved by the worker that processed the turn. Missing metadata on older turns is expected. No model calls or writes."
+}

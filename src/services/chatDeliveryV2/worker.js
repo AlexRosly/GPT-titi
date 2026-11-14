@@ -15,6 +15,7 @@ const { release } = require("./reservations");
 const { createScheduler } = require("./scheduler");
 const { messageDto } = require("./snapshot");
 const runtime = require('./runtime');
+const earlyCancellation = require('./earlyCancellation');
 
 // Handoff transfers ownership to the document queue. A stale recovery scan or
 // caller must not fail, complete, charge or reclaim that turn until publication.
@@ -162,15 +163,19 @@ const failTurn = async (
         ...(expiredOnly ? { leaseUntil: { $lte: new Date() } } : {}),
       }).session(session);
       if (!current || current.providerResult) return;
-      const uncertain = Boolean(current.providerStartedAt) && !knownNoCharge;
-      const terminalError = uncertain
+      let uncertain = Boolean(current.providerStartedAt) && !knownNoCharge;
+      const cancelled = Boolean(current.cancelRequestedAt);
+      const settlement = cancelled && uncertain
+        ? await earlyCancellation.settleInitialCancellation(current, session) : null;
+      if (settlement) uncertain = false;
+      const terminalError = cancelled ? earlyCancellation.cancellationError(uncertain) : uncertain
         ? errorFor(
             "PROCESS_INTERRUPTED",
             "Generation was interrupted. Its token charge is being reconciled.",
             false,
           )
         : errorObject;
-      if (!uncertain) await release(current, session);
+      if (!uncertain && !settlement) await release(current, session);
       updated = await ChatTurn.findOneAndUpdate(
         { _id: current._id, leaseToken, attempt: current.attempt, status: 'processing',
           providerResult: null, ...noActiveDocumentJob,
@@ -180,9 +185,10 @@ const failTurn = async (
             status: "failed",
             error: terminalError,
             needsReconciliation: uncertain,
+            ...(settlement || {}),
             failureDiagnostic: {
               ...current.failureDiagnostic,
-              terminal: { source: 'worker.failTurn', code: errorObject.code, recovery: expiredOnly, runtime },
+              terminal: { source: 'worker.failTurn', code: cancelled ? 'USER_CANCELLED' : errorObject.code, recovery: expiredOnly, runtime },
             },
             leaseToken: null,
             leaseUntil: null,
@@ -637,11 +643,16 @@ const processTurn = async (claimed) => {
       computeCollector?.add(chunk);
       const delta = turn.outputFile ? null : chunk.choices?.[0]?.delta?.content;
       if (chunk.usage) {
-        usage = {
-          promptTokens: chunk.usage.prompt_tokens || 0,
-          completionTokens: chunk.usage.completion_tokens || 0,
-          totalTokens: chunk.usage.total_tokens || 0,
-        };
+        usage = earlyCancellation.readInitialUsage(chunk.usage);
+        if (usage) {
+          // Persist the final usage before any cancellable flush/tool boundary.
+          // Cancellation may already be requested; it must not erase billing evidence.
+          const saved = await ChatTurn.updateOne({ _id: turn._id, attempt: turn.attempt,
+            status: 'processing', leaseToken, leaseUntil: { $gt: new Date() },
+            reservationState: 'held', ...noActiveDocumentJob },
+          { $set: { initialProviderUsage: usage } });
+          if (!saved.matchedCount) throw Object.assign(new Error('Stale usage owner'), { staleLease: true });
+        }
       }
       if (!delta) continue;
       pending += delta;
@@ -670,6 +681,8 @@ const processTurn = async (claimed) => {
         lastFlush = Date.now();
       }
     }
+
+    controller.signal.throwIfAborted();
 
     if (pending && !exactCollector) {
       const chunkText = pending;

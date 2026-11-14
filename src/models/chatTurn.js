@@ -60,6 +60,7 @@ const ChatTurnSchema = new Schema(
     reservationState: { type: String, enum: ["none", "held", "released", "settled"], default: "none" },
     reservationClosedAt: { type: Date, default: null },
     pricing: { inputPerM: Number, outputPerM: Number, tokenValueUsd: Number },
+    initialProviderUsage: { type: Schema.Types.Mixed, default: null },
     providerStartedAt: { type: Date, default: null },
     providerResult: { type: Schema.Types.Mixed, default: null },
     providerConfig: { type: Schema.Types.Mixed, default: null },

@@ -1,17 +1,5 @@
 const fail = code => Object.assign(new Error(code), {fileError:code,status:422});
-function number(name, fallback, min, max, integer = true) {
-  const n=Number(process.env[name] ?? fallback);
-  if(!Number.isFinite(n)||n<min||n>max||(integer&&!Number.isSafeInteger(n))) throw fail('COMPUTE_CONFIGURATION_ERROR');
-  return n;
-}
-function limits() { return {
-  runMs:number('COMPUTE_RUN_MS',60000,1000,60000), totalMs:number('COMPUTE_TOTAL_MS',180000,1000,180000),
-  runs:number('COMPUTE_MAX_RUNS',5,1,5), calls:number('COMPUTE_MAX_CALLS',6,1,6),
-  memoryMiB:number('COMPUTE_MEMORY_MIB',512,256,1024), slots:number('COMPUTE_SERVER_SLOTS',2,1,2),
-  usd:number('COMPUTE_MAX_USD',0.20,0.001,0.20,false), outputTokens:2048,
-  inputBytes:25*1024**2, outputBytes:25*1024**2, files:10, codeBytes:32768, textBytes:16384,
-  durationMs:600000, tmpMiB:256,
-}; }
+const {limits}=require('./config');
 const enabled = model => process.env.COMPUTE_V2_ENABLED === 'true' && process.env.PRIVATE_FILES_ENABLED === 'true' && !!model && model.computationEnabled !== false;
 const tool = {type:'function',function:{name:'run_python',description:'Run Python for verified calculations, data analysis and file processing. No network or package installation. Libraries: pandas, numpy, openpyxl, matplotlib, Pillow. Read only selected fileIds from COMPUTATION_FILES; their paths are /work/input/<fileId>/<originalName>. Each run starts fresh; export intermediate results explicitly to reuse at /work/previous/<filename>. Write outputs to /work/output/<path>. exports.path is only the basename, e.g. plot.png, NOT the full filesystem path. Example: savefig("/work/output/plot.png") with exports [{"path":"plot.png","filename":"plot.png"}]. For TXT/CSV/JSON/SVG/code write UTF-8. For PDF/DOCX/XLSX write the document JSON manifest described in the Office rules, and export with the requested final extension; the server builds the real binary. PNG plots are supported. Do not use pandas.to_excel for XLSX exports; export {sheets:[{name,rows}]} as JSON. Export ZIP by writing a create_file ZIP JSON manifest. At most 10 exports, 512 KiB per text/manifest, 25 MiB total. No executable output is run. Never claim successful calculation or file creation without a successful tool result.',strict:true,parameters:{type:'object',additionalProperties:false,properties:{code:{type:'string'},fileIds:{type:'array',items:{type:'string'}},exports:{type:'array',items:{type:'object',additionalProperties:false,properties:{path:{type:'string'},filename:{type:'string'}},required:['path','filename']}}},required:['code','fileIds','exports']}}};
 function invalid(reason) {

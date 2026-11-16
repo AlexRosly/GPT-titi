@@ -26,7 +26,8 @@ async function run({ turn, token, model, call, available, transcript, initialUsa
     const extra = accounting.cost({ promptTokens: state.usage.promptTokens - initialUsage.promptTokens,
       completionTokens: state.usage.completionTokens - initialUsage.completionTokens }, turn.pricing) * turn.pricing.tokenValueUsd;
     if (extra + preview.usd > l.usd) {
-      require('./budget').diagnoseRejection(turn, 'before_python', preview, extra, l.usd);
+      const diagnostic = require('./budget').diagnoseRejection(turn, 'before_python', preview, extra, l.usd);
+      await accounting.recordBudgetRejection(turn, token, diagnostic);
       throw policy.fail('COMPUTE_BUDGET_LIMIT');
     }
   }

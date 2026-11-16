@@ -18,7 +18,10 @@ async function enqueue({turn,token,args,selection}){
    sourceChecksum:args.sourceChecksum,plan:args,selection,total:selection.scannedRows,deadline:new Date(Date.now()+86400000)}],{session});
   for(const ref of current.computeState.files||[])await require('../../models/managedFile').updateOne({_id:ref.fileId,user:turn.user,status:'ready',retention:'temporary'},{$set:{expiresAt:new Date(job.deadline.getTime()+3600000)}},{session});
   const state={...current.computeState,kind:'document',stage:'executing',lastActionFailed:false,lastActionError:null,documentJob:progress(job)};
-  const updated=await ChatTurn.updateOne(require('../computation/accounting').guard(turn,token),{$set:{computeState:state,leaseToken:null,leaseUntil:new Date(0)}},{session});
+  // An active background job is not an expired chat. A finite deadline also
+  // keeps legacy recovery scanners from immediately claiming the handed-off turn.
+  // Publication makes it eligible for chat finalization by setting epoch below.
+  const updated=await ChatTurn.updateOne(require('../computation/accounting').guard(turn,token),{$set:{computeState:state,leaseToken:null,leaseUntil:job.deadline}},{session});
   if(!updated.matchedCount)throw leaseError();turn.computeState=state;
   return {deferred:true,jobId:String(job._id)};
  });

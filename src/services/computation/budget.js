@@ -16,7 +16,7 @@ function estimate(messages,tools,pricing){
 function diagnoseRejection(turn,stage,budget,spentUsd,limitUsd){
  const numeric=value=>Number.isFinite(value)?value:null;
  const id=typeof turn.turnId==='string'&&/^[a-zA-Z0-9-]{1,64}$/.test(turn.turnId)?turn.turnId:null;
- try{console.warn('COMPUTE_BUDGET_REJECTED',{
+ const diagnostic={
   diagnosticVersion:2,turnId:id,attempt:numeric(turn.attempt),
   stage:stage==='before_python'?'before_python':'before_provider',
   limitUsd:numeric(limitUsd),spentUsd:numeric(spentUsd),
@@ -29,6 +29,8 @@ function diagnoseRejection(turn,stage,budget,spentUsd,limitUsd){
   docxMatching:numeric(turn.computeState?.docxLastInspection?.matching),
   docxHasMore:turn.computeState?.docxLastInspection?.hasMore === true,
   docxSampled:turn.computeState?.docxLastInspection?.sampled === true
- });}catch{/* Diagnostics are best-effort; retain the original rejection. */}
+ };
+ try{console.warn('COMPUTE_BUDGET_REJECTED',diagnostic);}catch{/* Diagnostics are best-effort; retain the original rejection. */}
+ return diagnostic;
 }
 module.exports={estimate,diagnoseRejection};

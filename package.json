@@ -57,7 +57,9 @@
     "test:docx:integration": "node --test test/docx/integration.test.js",
     "test:document-jobs": "node --test test/xlsx/*.test.js",
     "test:document-jobs:integration": "node scripts/testDocumentJobsIntegration.js",
-    "db:indexes:document-jobs": "node scripts/createDocumentJobIndexes.js"
+    "db:indexes:document-jobs": "node scripts/createDocumentJobIndexes.js",
+    "test:early-stop": "node --test test/chatDeliveryV2/earlyCancellation.test.js test/chatDeliveryV2/cancelTurn.test.js",
+    "test:early-stop:integration": "node --test --test-concurrency=1 test/chatDeliveryV2/earlyCancellation.integration.test.js"
   },
   "repository": {
     "type": "git",

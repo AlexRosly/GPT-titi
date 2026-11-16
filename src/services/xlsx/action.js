@@ -14,7 +14,10 @@ async function run({turn,token,model,call,available,signal,completionAllowed}){
   signal?.throwIfAborted();return require('../documentJobs/queue').enqueue({turn,token,args,selection});
  }
  const {buffer}=await store.read(turn.user,args.fileId);
- const {inspection}=await require('./process').run(buffer,'inspect',args,{signal,timeoutMs:60000});
+ const computeLimits=require('../computation/policy').limits();
+ const remainingMs=computeLimits.totalMs-(turn.computeState.executionMs||0);
+ if(remainingMs<=0)throw fail('COMPUTE_RUN_LIMIT');
+ const {inspection}=await require('./process').run(buffer,'inspect',args,{signal,timeoutMs:Math.min(60000,computeLimits.runMs,remainingMs)});
  const selections={...turn.computeState.xlsxSelections};
  if(inspection.selection){if(Object.keys(selections).length>=20&&!selections[inspection.selection.id])throw fail('XLSX_SELECTION_LIMIT');
   selections[inspection.selection.id]={...inspection.selection,fileId:args.fileId,scannedRows:inspection.coverage.scannedRows};}

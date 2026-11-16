@@ -1,22 +1,17 @@
 // controllers/chat/conversations/archiveConversation.js
-const { ChatConversation } = require("../../../models");
 
 const archiveConversation = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const chat = await ChatConversation.findOneAndUpdate(
-      { _id: id, user: req.user.id },
-      { archived: true },
-      { new: true },
-    );
-
-    if (!chat) {
-      return res.status(404).json({ error: "Conversation not found" });
-    }
-
-    res.status(200).json({ success: true });
+    const value = req.query?.deleteFiles;
+    if (value !== undefined && value !== "true" && value !== "false")
+      return res.status(400).json({ error: "INVALID_DELETE_FILES" });
+    const result = await require("../../../services/files/deleteConversationFiles")(
+      req.user.id, id, value === "true");
+    res.status(200).json(result);
   } catch (error) {
+    if (error.fileError) return res.status(error.status).json({ error: error.fileError, message: error.fileError === "CHAT_BUSY_STOP_BEFORE_DELETE" ? "Stop the active response and wait for it to finish before deleting this chat and its files." : "Conversation not found." });
     console.error("Error in controller archiveConversation:", error);
     res.status(500).json({
       status: 500,

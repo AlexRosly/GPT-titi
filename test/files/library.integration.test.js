@@ -114,3 +114,112 @@ integration('generated replay returns tombstone; quota limits do not evict exist
   const keep=await create();process.env.FILES_USER_COUNT='1';
   try{await assert.rejects(create(),{fileError:'FILE_QUOTA_EXCEEDED'});assert.equal((await store.read(user._id,String(keep._id))).buffer.length,keep.size);}finally{delete process.env.FILES_USER_COUNT;}
 });
+
+integration('delete chat with files removes shared uploads and generated outputs once, preserving other histories and owners', async()=>{
+  const removeChat=require('../../src/services/files/deleteConversationFiles');
+  const file=await create(); const generated=await create({source:'generated',name:'answer.txt'});
+  const foreign=await create({user:other._id}); const unrelated=await create();
+  const chat=await ChatConversation.create({user:user._id,title:'Delete me'});
+  const kept=await ChatConversation.create({user:user._id,title:'Keep history'});
+  await ChatMessage.create({user:user._id,conversation:chat._id,role:'user',content:'Cleared input',deleted:new Date(),attachments:[{fileId:file.id},{fileId:file.id},{fileId:foreign.id}]});
+  await ChatMessage.create({user:user._id,conversation:chat._id,role:'assistant',content:'Generated',attachments:[{fileId:generated.id}]});
+  const history=await ChatMessage.create({user:user._id,conversation:kept._id,role:'user',content:'Shared file',attachments:[{fileId:file.id}]});
+  const quota=await Quota.findById(user._id).lean();
+  assert.equal((await removeChat(user.id,chat.id,true)).deletedFiles,2);
+  assert.equal((await File.findById(file._id)).status,'deleted');
+  assert.equal((await File.findById(generated._id)).status,'deleted');
+  assert.equal((await File.findById(foreign._id)).status,'ready');
+  assert.equal((await File.findById(unrelated._id)).status,'ready');
+  assert.equal((await ChatMessage.findById(history._id)).content,'Shared file');
+  assert.equal((await ChatConversation.findById(kept._id)).archived,false);
+  assert.equal((await Quota.findById(user._id)).count,quota.count-2);
+  assert.equal((await Quota.findById(user._id)).bytes,quota.bytes-file.size-generated.size);
+  assert.equal((await removeChat(user.id,chat.id,true)).deletedFiles,0);
+  assert.equal((await Quota.findById(user._id)).count,quota.count-2);
+});
+integration('unchecked deletion and archive preserve files; foreign conversation cannot be deleted', async()=>{
+  const removeChat=require('../../src/services/files/deleteConversationFiles');
+  const file=await create(); const chat=await ChatConversation.create({user:user._id,title:'Keep files'});
+  await ChatMessage.create({user:user._id,conversation:chat._id,role:'user',content:'Input',attachments:[{fileId:file.id}]});
+  await assert.rejects(removeChat(other.id,chat.id,true),e=>e.fileError==='CONVERSATION_NOT_FOUND');
+  assert.equal((await ChatConversation.findById(chat._id)).archived,false);
+  await removeChat(user.id,chat.id,false);
+  assert.equal((await File.findById(file._id)).status,'ready');
+});
+integration('active turn rejects deletion atomically; completed turn-only attachment is deleted', async()=>{
+  const Turn=require('../../src/models/chatTurn');
+  const removeChat=require('../../src/services/files/deleteConversationFiles');
+  const file=await create(); const chat=await ChatConversation.create({user:user._id,title:'Busy'});
+  const turn=await Turn.create({user:user._id,conversation:chat._id,turnId:'delete-files-busy',clientMessageId:'delete-busy',requestHash:'hash',modelId:'test',message:'Input',userMessage:new mongoose.Types.ObjectId(),status:'processing',files:[{fileId:file.id}]});
+  try {
+    await assert.rejects(removeChat(user.id,chat.id,true),e=>e.fileError==='CHAT_BUSY_STOP_BEFORE_DELETE');
+    assert.equal((await ChatConversation.findById(chat._id)).archived,false);
+    assert.equal((await File.findById(file._id)).status,'ready');
+    await Turn.updateOne({_id:turn._id},{$set:{status:'completed'}});
+    assert.equal((await removeChat(user.id,chat.id,true)).deletedFiles,1);
+  } finally {await Turn.deleteOne({_id:turn._id});}
+});
+integration('a file deletion error rolls back chat archival, file bytes and quota together', async()=>{
+  const removeChat=require('../../src/services/files/deleteConversationFiles');
+  const file=await create(); const chat=await ChatConversation.create({user:user._id,title:'Rollback'});
+  await ChatMessage.create({user:user._id,conversation:chat._id,role:'user',content:'Input',attachments:[{fileId:file.id}]});
+  const before=await Quota.findById(user._id).lean(); const original=store.remove;
+  store.remove=async(...args)=>{await original(...args);throw Error('injected failure');};
+  try {await assert.rejects(removeChat(user.id,chat.id,true),/injected failure/);} finally {store.remove=original;}
+  assert.equal((await ChatConversation.findById(chat._id)).archived,false);
+  assert.equal((await File.findById(file._id)).status,'ready');
+  assert.equal((await Quota.findById(user._id)).bytes,before.bytes);
+  assert.equal((await store.read(user.id,file.id)).buffer.toString(),'private bytes');
+});
+
+integration('project deletion removes all member chats and deduplicates shared files, preserves outside history', async()=>{
+  const {Project}=require('../../src/models');
+  const removeProject=require('../../src/services/files/deleteProjectFiles');
+  const project=await Project.create({user:user._id,title:'Delete project'});
+  const file=await create(); const chats=[];
+  for(let i=0;i<2;i++){
+    const chat=await ChatConversation.create({user:user._id,title:'Member',project:project._id});chats.push(chat);
+    await ChatMessage.create({user:user._id,conversation:chat._id,role:'user',content:'Shared',attachments:[{fileId:file.id}]});
+  }
+  const outside=await ChatConversation.create({user:user._id,title:'Outside'});
+  await ChatMessage.create({user:user._id,conversation:outside._id,role:'user',content:'History',attachments:[{fileId:file.id}]});
+  await assert.rejects(removeProject(other.id,project.id,true,true),e=>e.fileError==='PROJECT_NOT_FOUND');
+  const result=await removeProject(user.id,project.id,true,true);
+  assert.equal(result.deletedChatIds.length,2);assert.equal(result.deletedFiles,1);
+  for(const chat of chats){const saved=await ChatConversation.findById(chat._id);assert.equal(saved.archived,true);assert.equal(saved.project,null);}
+  assert.equal((await ChatConversation.findById(outside._id)).archived,false);
+  assert.equal(await ChatMessage.countDocuments({conversation:outside._id}),1);
+  assert.equal((await Quota.findById(user._id)).count,0);
+  assert.equal((await removeProject(user.id,project.id,true,true)).deletedFiles,0);
+  await Project.deleteOne({_id:project._id});
+});
+integration('project keep-chats and keep-files choices preserve requested data; invalid combination rejected',async()=>{
+  const {Project}=require('../../src/models');const removeProject=require('../../src/services/files/deleteProjectFiles');
+  for(const deleteChats of [false,true]){
+    const project=await Project.create({user:user._id,title:'Options'});const file=await create();
+    const chat=await ChatConversation.create({user:user._id,title:'Member',project:project._id});
+    await ChatMessage.create({user:user._id,conversation:chat._id,role:'user',content:'Input',attachments:[{fileId:file.id}]});
+    await assert.rejects(removeProject(user.id,project.id,false,true),e=>e.fileError==='INVALID_DELETE_OPTIONS');
+    assert.equal((await Project.findById(project._id)).deleted,null);
+    await removeProject(user.id,project.id,deleteChats,false);
+    assert.equal((await File.findById(file._id)).status,'ready');
+    assert.equal((await ChatConversation.findById(chat._id)).archived,deleteChats);
+    assert.equal((await ChatConversation.findById(chat._id)).project,null);
+    await Project.deleteOne({_id:project._id});
+  }
+});
+integration('busy project member rolls back the entire project cascade',async()=>{
+  const {Project,ChatTurn}=require('../../src/models');const removeProject=require('../../src/services/files/deleteProjectFiles');
+  const project=await Project.create({user:user._id,title:'Atomic'});const file=await create();
+  const a=await ChatConversation.create({user:user._id,title:'A',project:project._id});
+  const b=await ChatConversation.create({user:user._id,title:'B',project:project._id});
+  await ChatMessage.create({user:user._id,conversation:a._id,role:'user',content:'Input',attachments:[{fileId:file.id}]});
+  const turn=await ChatTurn.create({user:user._id,conversation:b._id,turnId:'project-busy',clientMessageId:'project-busy',requestHash:'hash',modelId:'test',message:'Busy',userMessage:new mongoose.Types.ObjectId(),status:'processing'});
+  try {
+    await assert.rejects(removeProject(user.id,project.id,true,true),e=>e.fileError==='CHAT_BUSY_STOP_BEFORE_DELETE');
+    assert.equal((await Project.findById(project._id)).deleted,null);
+    assert.equal((await ChatConversation.findById(a._id)).archived,false);
+    assert.equal(String((await ChatConversation.findById(a._id)).project),project.id);
+    assert.equal((await File.findById(file._id)).status,'ready');
+  }finally{await ChatTurn.deleteOne({_id:turn._id});await Project.deleteOne({_id:project._id});}
+});

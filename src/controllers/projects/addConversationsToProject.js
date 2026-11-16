@@ -11,16 +11,15 @@ const addConversationsToProject = async (req, res) => {
       });
     }
 
-    const project = await Project.findOne({
+    const modified = await require("../../services/files/store").transaction(async session => {
+    const project = await Project.findOneAndUpdate({
       _id: projectId,
       user: req.user._id,
       deleted: null,
-    });
+    }, { $set: { lastActivityAt: new Date() } }, { new: true, session });
 
     if (!project) {
-      return res.status(404).json({
-        message: "Project not found",
-      });
+      throw require("../../services/files/validation").fail("PROJECT_NOT_FOUND", 404);
     }
 
     const result = await ChatConversation.updateMany(
@@ -43,17 +42,18 @@ const addConversationsToProject = async (req, res) => {
           project: project._id,
         },
       }],
-      { updatePipeline: true },
+      { updatePipeline: true, session },
     );
 
-    project.lastActivityAt = new Date();
-    await project.save();
+    return result.modifiedCount;
+    });
 
     res.json({
       success: true,
-      modified: result.modifiedCount,
+      modified,
     });
   } catch (err) {
+    if (err.fileError) return res.status(err.status).json({message:"Project not found"});
     console.error("Error in addConversationsToProject:", err);
 
     res.status(500).json({

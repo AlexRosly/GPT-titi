@@ -3,7 +3,8 @@ const { User } = require("../../models");
 const { verifyGoogleToken } = require("../../services");
 const { signAccessToken, signRefreshToken } = require("../../utils");
 const tokenLedger = require("../../services/tokenLedger");
-const bcrypt = require("bcrypt");
+const { randomUUID } = require("node:crypto");
+const { hashRefreshToken, setRefreshCookie } = require("../../utils/refreshSession");
 
 const createUser = async (req, res) => {
   const { idToken } = req.body;
@@ -30,26 +31,14 @@ const createUser = async (req, res) => {
       userId: user._id,
       role: user.role,
     });
-    const refreshToken = signRefreshToken({ userId: user._id });
-    // ⬇️ Храним refresh token (лучше хэш, но можно так на старте)
-    // user.refreshToken = refreshToken;
-    user.refreshToken = await bcrypt.hash(refreshToken, 10);
+    const refreshSessionId = randomUUID();
+    const refreshToken = signRefreshToken({ userId: user._id, sid: refreshSessionId });
+    user.refreshToken = await hashRefreshToken(refreshToken);
+    user.refreshSessionId = refreshSessionId;
+    user.previousRefreshToken = undefined;
+    user.previousRefreshTokenExpiresAt = undefined;
     await user.save();
-    // ⬇️ Устанавливаем cookie
-    // const isProd = process.env.NODE_ENV === "production";
-    // res.cookie("refreshToken", refreshToken, {
-    //   httpOnly: true,
-    //   secure: process.env.NODE_ENV === "production",
-    //   sameSite: "strict",
-    //   maxAge: 30 * 24 * 60 * 60 * 1000, // 30 дней
-    // });
-    res.cookie("refreshToken", refreshToken, {
-      httpOnly: true,
-      secure: true, // true только в prod
-      sameSite: "none",
-      // path: "/",
-      maxAge: 30 * 24 * 60 * 60 * 1000,
-    });
+    setRefreshCookie(res, refreshToken);
     // ⬇️ Ответ клиенту
     res.json({
       user: {

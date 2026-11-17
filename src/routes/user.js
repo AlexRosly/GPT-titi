@@ -7,7 +7,8 @@ const router = express.Router();
 
 router.post("/user", ctrl.createUser); //Google Login / Register
 router.post("/refresh", ctrl.refreshToken); // auth POST /auth/refresh
-router.get("/logout", ctrl.logout); //auth //
+router.post("/logout", ctrl.logout);
+router.get("/logout", ctrl.logout); // Compatibility with already deployed clients.
 router.get("/token-history/summary", auth, ctrl.getTokenHistorySummary);
 router.get("/token-history/days/:day/charges", auth, ctrl.getTokenHistoryDayCharges);
 router.get("/token-history", auth, ctrl.getTokenHistory);

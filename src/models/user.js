@@ -28,6 +28,9 @@ const UserSchema = Schema(
     nextDateClaimToken: { type: Date },
     // Sessions
     refreshToken: { type: String },
+    refreshSessionId: { type: String },
+    previousRefreshToken: { type: String },
+    previousRefreshTokenExpiresAt: { type: Date },
   },
   { versionKey: false, timestamps: true },
 );

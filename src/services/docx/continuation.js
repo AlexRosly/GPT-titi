@@ -52,6 +52,7 @@ function toolResult(call, result, next) {
     // Fixed hints only: never reflect raw arguments, document text or paths.
     const correction = {
       DOCUMENT_INVALID_QUERY:'Correct query and offset, then retry within this turn. query=null is a full view. An object requires mode rows/summary, start>=0, end=null or an integer greater than start, and contains=null or a nonempty literal string up to 256 characters. Use offset=0 for a new query or summary.',
+      DOCX_FINAL_EDIT_REQUIRED:'Use one final edit_docx call on the attached original with complete=true.',
       DOCX_SIGNATURE_FINAL_EDIT_REQUIRED:'Use one final edit_docx call on the attached original, including every requested signature line, with complete=true.',
       DOCX_INVALID_ACTION:'Correct the tool arguments to match its schema. Use an available fileId; inspect_docx accepts tables/document, explicit table IDs, cell IDs or paragraph IDs. Do not invent IDs or modify the file through another tool to bypass validation.',
       DOCX_TARGET_NOT_FOUND:'Use a target ID returned by inspection of this exact file. Inspect tables or document with query=null if the target is unknown.',

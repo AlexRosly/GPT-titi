@@ -1,16 +1,20 @@
 const { fail } = require('../computation/policy');
 const sandbox = require('../computation/session');
 
+const tableText = require('./tableText');
 const profile = 'signature-lines-v1';
-const errors = new Set(['COVERAGE', 'OTHER_CHANGES', 'UNSUPPORTED', 'LIMIT', 'LAYOUT', 'TIMEOUT', 'RENDER']
+const errors = new Set(['CELL_MISMATCH', 'COVERAGE', 'OTHER_CHANGES', 'UNSUPPORTED', 'LIMIT', 'LAYOUT', 'TIMEOUT', 'RENDER']
   .map(suffix => 'DOCX_QUALITY_' + suffix));
 
 // Initial opt-in covers explicitly counted full-row signature line requests on a single upload.
 // The count comes from the user and is checked independently against the original document.
 function plan(message, files) {
-  if (process.env.DOCX_SIGNATURE_QA_ENABLED !== 'true' || typeof message !== 'string' || files.length !== 1) return null;
+  if (typeof message !== 'string' || files.length !== 1) return null;
   const [file] = files;
   if (file.storage !== 'private' || !/\.docx$/i.test(file.originalName) || !file.fileId) return null;
+  const cellPlan = tableText.plan(message, file);
+  if (cellPlan) return cellPlan;
+  if (process.env.DOCX_SIGNATURE_QA_ENABLED !== 'true') return null;
   const text = message.normalize('NFKC').toLowerCase();
   if (!/(?:тільки|лише|only)/u.test(text) || !/(?:подовж|продовж|extend|lengthen)/u.test(text) ||
       !/(?:ліні[їюй]|lines?\b)/u.test(text) ||
@@ -23,6 +27,10 @@ function plan(message, files) {
 }
 
 function validReport(plan, report) {
+  if (plan?.profile === tableText.profile) {
+    return report?.profile === plan.profile && report.changedCells === 1 && report.changedPages === 1 &&
+      Number.isInteger(report.pages) && report.pages >= 1 && report.pages <= 40;
+  }
   return report?.profile === profile && plan?.profile === profile &&
     Number.isSafeInteger(report.signatures) && report.signatures > 0 && report.signatures === plan.expected &&
     Number.isSafeInteger(report.pages) && report.pages > 0 && report.pages <= 40 &&
@@ -35,7 +43,7 @@ async function verify(plan, source, result, signal, timeoutMs) {
   let response;
   try {
     response = await sandbox.runDocxQuality({source:source.toString('base64'), result:result.toString('base64'),
-      expected:plan.expected, timeoutMs}, signal);
+      profile:plan.profile, expected:plan.expected, cell:plan.cell, timeoutMs}, signal);
   } catch (error) {
     if (error.cleanupUnconfirmed || signal?.aborted) throw error;
     if (error.fileError === 'COMPUTE_TIMEOUT') throw fail('DOCX_QUALITY_TIMEOUT');
@@ -53,6 +61,7 @@ async function verify(plan, source, result, signal, timeoutMs) {
   let report;
   try { report = JSON.parse(response.text); } catch { throw fail('DOCX_QUALITY_RENDER'); }
   if (!validReport(plan, report)) throw fail('DOCX_QUALITY_RENDER');
+  if (plan.profile === tableText.profile) return {profile:plan.profile, changedCells:1, pages:report.pages, changedPages:1};
   return { profile, signatures: report.signatures, pages: report.pages, changedPages: report.changedPages };
 }
 
@@ -69,13 +78,17 @@ function publication(turn) {
       file && state.kind === 'document' && state.pending === false && !turn.responseState?.pending && !state.lastActionFailed && !turn.cancelRequestedAt &&
       data?.status !== 'partial' && validReport(plan, marker.quality)) {
     const {signatures, pages} = marker.quality;
-    return {assistantText: 'Edited DOCX attached. Verified ' + signatures + ' full-width signature lines. Compared all ' +
-      pages + ' rendered pages and checked the surrounding text and layout.',
+    const assistantText = plan.profile === tableText.profile
+      ? 'Edited DOCX attached. Verified the requested text in one table cell and checked the rest of the document. ' +
+        (pages === 1 ? 'Compared the rendered page.' : 'Compared all ' + pages + ' rendered pages.')
+      : 'Edited DOCX attached. Verified ' + signatures + ' full-width signature lines. Compared all ' +
+        pages + ' rendered pages and checked the surrounding text and layout.';
+    return {assistantText,
     computation: {status:'completed', kind:'document', files:[file], runs:state.runs, executionMs:state.executionMs}};
   }
   const reason = data?.reason || state.lastActionError || 'DOCX_QUALITY_UNVERIFIED';
   return {assistantText: reason === 'USER_CANCELLED' ? 'Document processing was cancelled.' :
-    'Document processing stopped before a verified signature-line edit could be delivered.',
+    'Document processing stopped before a verified DOCX could be delivered.',
   computation: {status:'partial', kind:'document', reason, files:[], runs:state.runs, executionMs:state.executionMs}};
 }
 

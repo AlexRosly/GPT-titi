@@ -53,6 +53,40 @@ class LayoutTests(unittest.TestCase):
 
 
 
+class TableTextLayoutTests(unittest.TestCase):
+    selector = {"oldText": "Draft", "newText": "Ready"}
+
+    def setUp(self):
+        self.before = Image.new("RGB", (200, 100), "white")
+        self.after = self.before.copy()
+        self.after.putpixel((85, 42), (0, 0, 0))
+        self.words = [("K2", ("5", "20", "12", "27")), ("Draft", ("40", "20", "64", "27"))]
+        self.new_words = [self.words[0], ("Ready", ("40", "20", "66", "27"))]
+
+    def compare(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(verify, "word_boxes", side_effect=[
+                [((100,50), self.words)], [((100,50), self.new_words)]]), patch.object(
+                verify, "raster", side_effect=[self.before, self.after]):
+            return verify.cell_visual(None, None, self.selector, Path(tmp))
+
+    def test_changed_glyphs(self):
+        self.assertEqual(self.compare()["changedCells"], 1)
+
+    def test_changed_pixel_elsewhere(self):
+        self.after.putpixel((2, 3), (0, 0, 0))
+        with self.assertRaisesRegex(verify.Failure, "LAYOUT"):
+            self.compare()
+
+    def test_neighbour_moved_or_new_value_invisible(self):
+        self.new_words[0] = ("K2", ("6", "20", "13", "27"))
+        with self.assertRaisesRegex(verify.Failure, "LAYOUT"):
+            self.compare()
+        self.new_words[0] = self.words[0]
+        self.after = self.before.copy()
+        with self.assertRaisesRegex(verify.Failure, "LAYOUT"):
+            self.compare()
+
+
 class RendererIntegrationTest(unittest.TestCase):
     def test_docx_to_pdf_text_and_raster_as_worker_user(self):
         # Tiny, complete OOXML package. Exercises Writer and both Poppler commands at build time.

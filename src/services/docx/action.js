@@ -1,13 +1,14 @@
 // Adapter to the existing V2 computation transaction/checkpoint path.
 const policy=require('./policy');
 const store=require('../files/store');
+const tableText=require('./tableText');
 const {fail}=require('../files/validation');
 async function run({turn,model,call,available,signal,completionAllowed}){
  if(!policy.enabled(model))throw fail('DOCX_EDIT_DISABLED');
  const args=policy.parse(call.function.name,call.function.arguments);
  if(turn.docxQualityPlan && args.fileId !== turn.docxQualityPlan.sourceFileId)throw fail('DOCX_QUALITY_SOURCE');
  if(turn.docxQualityPlan && call.function.name === policy.NAME_EDIT && (!completionAllowed || !args.complete)){
-  throw fail('DOCX_SIGNATURE_FINAL_EDIT_REQUIRED');
+  throw fail(turn.docxQualityPlan.profile === tableText.profile ? 'DOCX_FINAL_EDIT_REQUIRED' : 'DOCX_SIGNATURE_FINAL_EDIT_REQUIRED');
  }
  const prior=turn.computeState?.files||[];
  if(!available.some(f=>f.fileId===args.fileId)&&!prior.some(f=>f.fileId===args.fileId))throw fail('COMPUTE_FILE_FORBIDDEN');
@@ -18,6 +19,9 @@ async function run({turn,model,call,available,signal,completionAllowed}){
  if(call.function.name===policy.NAME_EDIT){
   const inspection=turn.computeState?.docxInspections?.[args.fileId];
   if(inspection!==args.sourceChecksum)throw fail('DOCX_INSPECTION_REQUIRED');
+  if(turn.docxQualityPlan?.profile === tableText.profile && turn.docxQualityPlan.filename) {
+   args.filename=require('../files/validation').safeName(turn.docxQualityPlan.filename);
+  }
   if(args.filename.normalize('NFC').toLowerCase()===metadata.originalName.normalize('NFC').toLowerCase())throw fail('DOCX_NEW_FILENAME_REQUIRED');
   const selected=args.operations.filter(o=>o.type==='selection_border');
   if(selected.length){
@@ -31,9 +35,17 @@ async function run({turn,model,call,available,signal,completionAllowed}){
  }
  const limits=require('../computation/policy').limits();
  const started=Date.now();
- const timeoutMs=Math.min(10000,limits.runMs,limits.totalMs-(turn.computeState?.executionMs||0));
- const output=await require('./process').run(buffer,call.function.name,args,signal,timeoutMs);
- signal?.throwIfAborted();
+ const remaining=() => Math.min(limits.runMs,limits.totalMs-(turn.computeState?.executionMs||0))-(Date.now()-started);
+ const processDocument=async workerArgs => {
+  signal?.throwIfAborted();
+  if(remaining()<=0 && turn.docxQualityPlan)throw fail('DOCX_QUALITY_TIMEOUT');
+  const output=await require('./process').run(buffer,call.function.name,workerArgs,signal,remaining());
+  signal?.throwIfAborted();
+  return output;
+ };
+ const output=call.function.name === policy.NAME_EDIT && turn.docxQualityPlan?.profile === tableText.profile
+  ? await tableText.editVerified(turn.docxQualityPlan,args,buffer,processDocument,remaining,signal)
+  : await processDocument(args);
  if(output.inspection)return {result:{ok:true,text:JSON.stringify(output.inspection),truncated:false},prepared:[],
   statePatch:{docxInspections:{...turn.computeState.docxInspections,[args.fileId]:output.inspection.checksum},
    docxLastInspection:{version:2,displayed:output.inspection.items.length,matching:output.inspection.total,
@@ -41,9 +53,8 @@ async function run({turn,model,call,available,signal,completionAllowed}){
    ...(output.inspection.selection?{docxSelections:{...turn.computeState.docxSelections,
     [output.inspection.selection.id]:{...output.inspection.selection,fileId:args.fileId}}}:{})}};
  const result=Buffer.from(output.buffer);
- if(turn.docxQualityPlan){
-  const remaining=Math.min(limits.runMs, limits.totalMs-(turn.computeState?.executionMs||0))-(Date.now()-started);
-  const quality=await require('./signatureQuality').verify(turn.docxQualityPlan,buffer,result,signal,remaining);
+ if(turn.docxQualityPlan && turn.docxQualityPlan.profile !== tableText.profile){
+  const quality=await require('./signatureQuality').verify(turn.docxQualityPlan,buffer,result,signal,remaining());
   signal?.throwIfAborted();
   output.report={...output.report,visualVerification:true,signatureQuality:quality};
  }

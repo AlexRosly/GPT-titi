@@ -75,13 +75,16 @@ async function run({ turn, token, model, call, available, transcript, initialUsa
       refs.push({ fileId: String(stored._id), name: stored.originalName, size: stored.size });
     }
     next.files = refs;
+    const editReport = prepared[0]?.documentEdit;
+    const verification = turn.docxQualityPlan?.profile === require('../docx/tableText').profile
+      ? editReport?.tableTextQuality : editReport?.signatureQuality;
     if (docx && completionAllowed && completed && result.ok && prepared.length === 1 &&
-        (turn.docxQualityPlan ? prepared[0].documentEdit?.signatureQuality : require('../docx/continuation').enabled())) {
+        (turn.docxQualityPlan ? verification : require('../docx/continuation').enabled())) {
       // Durable only with the verified output in this same quota transaction.
       next.docxCompletion = { version: 1, run: next.runs, fileId: refs.at(-1).fileId };
       if (turn.docxQualityPlan) {
         next.docxCompletion.sourceFileId = prepared[0].documentEdit.sourceFileId;
-        next.docxCompletion.quality = prepared[0].documentEdit.signatureQuality;
+        next.docxCompletion.quality = verification;
       }
     }
     signal?.throwIfAborted();

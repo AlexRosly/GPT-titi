@@ -248,3 +248,25 @@ test('protected recovery publishes the checked copy with its quality report', as
   await f.worker.recoverExpired();
   assert.deepEqual(f.counts(),{providerCalls:0,charges:1,releases:1});
 });
+
+for (const withFileReport of [true,false]) test('table cell recovery checks the actual file report: '+withFileReport, async t => {
+  const f=fixture(t), fileId='012345678901234567890123', sourceFileId='original';
+  const usage={promptTokens:12,completionTokens:4,totalTokens:16};
+  const quality={profile:'table-cell-text-v1',changedCells:1,pages:1,changedPages:1,repairAttempts:1};
+  f.doc.leaseUntil=new Date(0);
+  f.doc.docxQualityPlan={profile:quality.profile,sourceFileId};
+  f.doc.computeState={kind:'document',pending:false,usage,runs:2,files:[{fileId}],
+    docxCompletion:{version:1,run:2,fileId,sourceFileId,quality}};
+  t.mock.method(require('../../src/services/files/store'),'owned',async()=>({_id:fileId,status:'ready',
+    originalName:'checked.docx',resultKey:'turn-id:1:compute:2:0',
+    documentEdit:{sourceFileId,visualVerification:true,...(withFileReport ? {tableTextQuality:quality} : {})}}));
+  t.mock.method(require('../../src/models/managedFile'),'updateOne',async()=>({matchedCount:1}));
+  await f.worker.recoverExpired();
+  const {assistantMessage}=await snapshot(f.doc);
+  assert.equal(assistantMessage.computation.status,withFileReport ? 'completed' : 'partial');
+  assert.equal(assistantMessage.attachments.length,withFileReport ? 1 : 0);
+  if(withFileReport)assert.match(assistantMessage.content,/one table cell/);
+  else assert.equal(assistantMessage.computation.reason,'DOCX_QUALITY_UNVERIFIED');
+  await f.worker.recoverExpired();
+  assert.deepEqual(f.counts(),{providerCalls:0,charges:1,releases:1});
+});

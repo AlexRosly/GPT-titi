@@ -316,9 +316,11 @@ const commitCompletion = async (turn, leaseToken, assistantText, usage) => {
           if (!file.resultKey?.startsWith(`${turn.turnId}:${turn.attempt}:compute:`)) throw new Error('Invalid computation result reference');
           const ready = file.status === 'ready' && (!file.expiresAt || file.expiresAt > new Date());
           if (quality && (!ready || file.documentEdit?.sourceFileId !== current.docxQualityPlan.sourceFileId ||
-              file.documentEdit?.visualVerification !== true)) {
+              file.documentEdit?.visualVerification !== true ||
+              (current.docxQualityPlan.profile === require('../docx/tableText').profile &&
+               !require('../docx/tableText').matchesCheckpoint(file.documentEdit?.tableTextQuality, current.computeState.docxCompletion.quality)))) {
             computationResult = {...quality.computation, status:'partial', reason:'DOCX_QUALITY_UNVERIFIED', files:[]};
-            assistantText = 'The verified signature-line copy is unavailable.';
+            assistantText = 'The verified DOCX copy is unavailable.';
             break;
           }
           if (ready) {
@@ -533,7 +535,7 @@ const processTurn = async (claimed) => {
     if (turn.docxQualityPlan) {
       fileTools.tools = require('../docx/policy').tools;
       fileTools.parallel_tool_calls = false;
-      messages[0].content += ' Inspect the attached source then use edit_docx alone with complete=true. The server verifies all requested signature lines before delivery.';
+      messages[0].content += ' Inspect the attached source then use edit_docx alone with complete=true. The server verifies the requested edit against the original before delivery.';
     }
     if (turn.webPlan?.mode === "browser") {
       // Browser loop owns every provider boundary and accumulates actual usage.

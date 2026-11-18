@@ -2,6 +2,7 @@
 import base64
 import io
 import json
+import math
 import os
 import signal
 import subprocess
@@ -86,7 +87,7 @@ def targets(original):
     return rows
 
 
-def structure(source, result, expected):
+def document_pair(source, result):
     with ZipFile(io.BytesIO(source)) as a, ZipFile(io.BytesIO(result)) as b:
         def members(archive):
             return [i for i in archive.infolist() if not i.is_dir()]
@@ -98,7 +99,11 @@ def structure(source, result, expected):
                     sum(i.file_size for i in sizes) <= 40 * 1024**2, "LIMIT")
         for name in names - {MAIN}:
             require(a.read(name) == b.read(name), "OTHER_CHANGES")
-        orig, edited = xml(a.read(MAIN)), xml(b.read(MAIN))
+        return xml(a.read(MAIN)), xml(b.read(MAIN))
+
+
+def structure(source, result, expected):
+    orig, edited = document_pair(source, result)
     rows = targets(orig)
     require(expected is None or len(rows) == expected, "COVERAGE")
     left_rows, right_rows = list(orig.iter(W + "tr")), list(edited.iter(W + "tr"))
@@ -233,6 +238,103 @@ def visual(a, b, widths_list, root):
             "changedPages":changed_pages, "signatures":matched}
 
 
+
+def exact_one(values, code="UNSUPPORTED"):
+    require(len(values) == 1, code)
+    return values[0]
+
+
+def simple_cell_value(cell):
+    return "".join(n.text or "" for n in cell.iter(W + "t"))
+
+
+def cell_target(original, selector):
+    body = original.find(W + "body")
+    require(body is not None, "UNSUPPORTED")
+    tables = [node for node in body.findall(W + "tbl") if node.getprevious() is not None
+              and node.getprevious().tag == W + "p"
+              and simple_cell_value(node.getprevious()) == selector["title"]]
+    table = exact_one(tables)
+    require(all(el.tag in {W+"tblPr", W+"tblGrid", W+"tr"} for el in table), "UNSUPPORTED")
+    rows = table.findall(W + "tr")
+    require(len(rows) >= 2 and all(el.tag in {W+"tc", W+"trPr", W+"tblPrEx"}
+                                   for row in rows for el in row), "UNSUPPORTED")
+    require(all(next(table.iter(W + tag), None) is None for tag in
+                ("gridSpan", "vMerge", "hMerge", "gridBefore", "gridAfter", "sdt", "fldChar",
+                 "fldSimple", "drawing", "pict", "ins", "del")), "UNSUPPORTED")
+    require(len(list(table.iter(W + "tbl"))) == 1, "UNSUPPORTED")
+    headers = [simple_cell_value(c) for c in cells(rows[0])]
+    require(all(len(cells(r)) == len(headers) for r in rows), "UNSUPPORTED")
+    key = exact_one([i for i, h in enumerate(headers) if h.casefold() in ("код", "code", "id")])
+    column = exact_one([i for i, h in enumerate(headers) if h == selector["column"]])
+    require(key != column, "UNSUPPORTED")
+    row = exact_one([r for r in rows[1:] if simple_cell_value(cells(r)[key]) == selector["code"]], "COVERAGE")
+    cell = cells(row)[column]
+    require(all(n.tag in {W+"tcPr", W+"p"} for n in cell), "UNSUPPORTED")
+    para = exact_one(cell.findall(W + "p"))
+    require(all(n.tag in {W+"pPr", W+"r"} for n in para), "UNSUPPORTED")
+    run = exact_one(para.findall(W + "r"))
+    require(all(n.tag in {W+"rPr", W+"t"} for n in run), "UNSUPPORTED")
+    text = exact_one(run.findall(W + "t"))
+    require(text.text == selector["oldText"], "COVERAGE")
+    return text
+
+
+def cell_structure(orig, edited, selector):
+    require(isinstance(selector, dict) and all(isinstance(selector.get(k), str)
+            and 0 < len(selector[k]) <= 120 for k in ("title", "code", "column", "oldText", "newText"))
+            and selector["newText"] != selector["oldText"], "UNSUPPORTED")
+    target = cell_target(orig, selector)
+    result_node = edited.find(orig.getroottree().getelementpath(target))
+    require(result_node is not None and result_node.text == selector["newText"], "CELL_MISMATCH")
+    target.text = selector["newText"]
+    # The production engine sets xml:space=preserve only on the selected text node.
+    space = "{http://www.w3.org/XML/1998/namespace}space"
+    if result_node.get(space) == "preserve":
+        target.set(space, "preserve")
+    require(ET.tostring(orig, method="c14n") == ET.tostring(edited, method="c14n"), "OTHER_CHANGES")
+
+
+def replacement_box(before, after, selector):
+    old, new = selector["oldText"].split(), selector["newText"].split()
+    require(old and new and len(after)-len(before) == len(new)-len(old), "LAYOUT")
+    first = next((i for i, pair in enumerate(zip(before, after)) if pair[0] != pair[1]),
+                 min(len(before), len(after)))
+    matches = []
+    for i in range(max(0, first-len(old)), min(first+1, len(before)-len(old)+1)):
+        a, b = before[i:i+len(old)], after[i:i+len(new)]
+        if ([text for text, _ in a] == old and [text for text, _ in b] == new
+                and before[:i] == after[:i] and before[i+len(old):] == after[i+len(new):]):
+            matches.append([tuple(map(float, box)) for _, box in a+b])
+    boxes = exact_one(matches, "LAYOUT")
+    left, top, right, bottom = zip(*boxes)
+    require(max(top)-min(top) <= 0.5 and max(bottom)-min(bottom) <= 0.5, "LAYOUT")
+    # A word at the right edge can change length. Its start and baseline must stay in place.
+    require(abs(left[0] - left[len(old)]) <= 0.5, "LAYOUT")
+    return (math.floor(2*min(left))-2, math.floor(2*min(top))-2,
+            math.ceil(2*max(right))+2, math.ceil(2*max(bottom))+2)
+
+
+def cell_visual(a, b, selector, root):
+    before, after = word_boxes(a, root/"a.xml"), word_boxes(b, root/"b.xml")
+    require(len(before) == len(after), "LAYOUT")
+    changed = 0
+    for page, ((size, old_words), (new_size, new_words)) in enumerate(zip(before, after), 1):
+        require(size == new_size, "LAYOUT")
+        old_image, new_image = raster(a, root, page, "a"), raster(b, root, page, "b")
+        require(old_image.size == new_image.size, "LAYOUT")
+        diff = ImageChops.difference(old_image, new_image).getbbox()
+        if old_words == new_words:
+            require(diff is None, "LAYOUT")
+            continue
+        changed += 1
+        require(changed == 1 and diff is not None, "LAYOUT")
+        left, top, right, bottom = replacement_box(old_words, new_words, selector)
+        require(left <= diff[0] < diff[2] <= right and top <= diff[1] < diff[3] <= bottom, "LAYOUT")
+    require(changed == 1, "LAYOUT")
+    return {"profile": "table-cell-text-v1", "pages": len(before), "changedPages": 1, "changedCells": 1}
+
+
 def main():
     try:
         raw = sys.stdin.buffer.read(15*1024**2+1)
@@ -241,10 +343,18 @@ def main():
         signal.signal(signal.SIGALRM, lambda *_: require(False, "TIMEOUT"))
         signal.setitimer(signal.ITIMER_REAL, min(60, max(.001, request["timeoutMs"]/1000)))
         source, result = (base64.b64decode(request[k], validate=True) for k in ("source","result"))
-        widths_list = structure(source, result, request["expected"])
+        profile = request.get("profile", "signature-lines-v1")
+        if profile == "table-cell-text-v1":
+            verification = cell_visual
+            target = request.get("cell")
+            cell_structure(*document_pair(source, result), target)
+        else:
+            require(profile == "signature-lines-v1", "UNSUPPORTED")
+            verification = visual
+            target = structure(source, result, request["expected"])
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            data = visual(*render_pair(source, result, root), widths_list, root)
+            data = verification(*render_pair(source, result, root), target, root)
         out = {"ok":True, "text":json.dumps(data)}
     except RenderError as error:
         out = {"ok":False, "text":"DOCX_QUALITY_RENDER", "diagnostic":{"stage":error.stage}}

@@ -9,7 +9,9 @@ const {parentPort,workerData}=require('node:worker_threads');
   if(workerData.action==='inspect_docx')parentPort.postMessage({inspection:engine.inspect(doc,workerData.args.target,workerData.args.offset,workerData.args.query ?? null)});
   else{
    if(doc.checksum!==workerData.args.sourceChecksum)throw require('../files/validation').fail('DOCX_SOURCE_CHANGED');
-   const result=await engine.edit(doc,workerData.args.operations,workerData.args.selections);
+   const operations = workerData.args.repairCell
+     ? [require('./tableText').operation(doc,workerData.args.repairCell)] : workerData.args.operations;
+   const result=await engine.edit(doc,operations,workerData.args.selections);
    await office.validate(result.buffer,'docx');
    parentPort.postMessage(result);
   }

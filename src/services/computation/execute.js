@@ -17,6 +17,7 @@ async function run({ turn, token, model, call, available, transcript, initialUsa
   // before any file read. Return correctable argument errors to the model and
   // count the attempt against the existing run limit, rather than ending the
   // Chat Completions turn before it can correct its inspection request.
+  if (turn.docxQualityPlan && !docx) throw policy.fail('DOCX_QUALITY_UNVERIFIED');
   const action = document ? null : policy.parse(call.function.arguments);
   const state = turn.computeState;
   if (state.runs >= l.runs || state.executionMs >= l.totalMs) throw policy.fail('COMPUTE_RUN_LIMIT');
@@ -43,7 +44,7 @@ async function run({ turn, token, model, call, available, transcript, initialUsa
       if (output.deferred) return output;
       ({result,prepared,statePatch}=output);
     } else if (docx) {
-      ({result,prepared,statePatch,completed}=await require('../docx/action').run({turn,model,call,available,signal}));
+      ({result,prepared,statePatch,completed}=await require('../docx/action').run({turn,model,call,available,signal,completionAllowed}));
     } else {
       result = await require('./session').run({ code: action.code, files: inputs, exports: action.exports,
       timeoutMs: Math.min(l.runMs, l.totalMs - state.executionMs) }, signal);
@@ -74,9 +75,14 @@ async function run({ turn, token, model, call, available, transcript, initialUsa
       refs.push({ fileId: String(stored._id), name: stored.originalName, size: stored.size });
     }
     next.files = refs;
-    if (docx && require('../docx/continuation').enabled() && completionAllowed && completed && result.ok && prepared.length === 1) {
+    if (docx && completionAllowed && completed && result.ok && prepared.length === 1 &&
+        (turn.docxQualityPlan ? prepared[0].documentEdit?.signatureQuality : require('../docx/continuation').enabled())) {
       // Durable only with the verified output in this same quota transaction.
       next.docxCompletion = { version: 1, run: next.runs, fileId: refs.at(-1).fileId };
+      if (turn.docxQualityPlan) {
+        next.docxCompletion.sourceFileId = prepared[0].documentEdit.sourceFileId;
+        next.docxCompletion.quality = prepared[0].documentEdit.signatureQuality;
+      }
     }
     signal?.throwIfAborted();
     const update = await ChatTurn.updateOne(accounting.guard(turn, token), { $set: { computeState: next } }, { session });

@@ -126,6 +126,8 @@ const acceptTurn = async ({ userId, payload }) => {
           modelId,
           message,
           files: canonicalFiles,
+          docxQualityPlan: !webPlan && !outputFile && require('../docx/policy').enabled(model)
+            ? require('../docx/signatureQuality').plan(message, canonicalFiles) : null,
           outputFile,
           webPlan,
           reservedAppTokens: reservedAmount,

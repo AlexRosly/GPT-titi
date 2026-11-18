@@ -231,9 +231,9 @@ const commitCompletion = async (turn, leaseToken, assistantText, usage) => {
   if (!savedTurn) throw Object.assign(new Error(), { staleLease: true });
   let preparedFile, renderError;
   if (
-    savedTurn.outputFile ||
+    !savedTurn.docxQualityPlan && (savedTurn.outputFile ||
     savedTurn.providerResult?.artifact ||
-    savedTurn.providerResult?.artifactError
+    savedTurn.providerResult?.artifactError)
   ) {
     try {
       const data = savedTurn.providerResult;
@@ -268,12 +268,15 @@ const commitCompletion = async (turn, leaseToken, assistantText, usage) => {
       }).session(session);
       if (!current) throw Object.assign(new Error(), { staleLease: true });
 
+      const quality = require('../docx/signatureQuality').publication(current);
+      let computationResult = quality?.computation || current.providerResult?.computation;
+      if (quality) assistantText = quality.assistantText;
       let attachments = [],
         fileResult = null;
       if (
-        current.outputFile ||
+        !quality && (current.outputFile ||
         current.providerResult?.artifact ||
-        current.providerResult?.artifactError
+        current.providerResult?.artifactError)
       ) {
         try {
           const data = current.providerResult;
@@ -307,11 +310,18 @@ const commitCompletion = async (turn, leaseToken, assistantText, usage) => {
         }
       }
 
-      if (current.providerResult?.computation) {
-        for (const ref of current.providerResult.computation.files || []) {
+      if (computationResult) {
+        for (const ref of computationResult.files || []) {
           const file = await require('../files/store').owned(turn.user, ref.fileId, {session, includeDeleted:true});
           if (!file.resultKey?.startsWith(`${turn.turnId}:${turn.attempt}:compute:`)) throw new Error('Invalid computation result reference');
-          if (file.status === 'ready' && (!file.expiresAt || file.expiresAt > new Date())) {
+          const ready = file.status === 'ready' && (!file.expiresAt || file.expiresAt > new Date());
+          if (quality && (!ready || file.documentEdit?.sourceFileId !== current.docxQualityPlan.sourceFileId ||
+              file.documentEdit?.visualVerification !== true)) {
+            computationResult = {...quality.computation, status:'partial', reason:'DOCX_QUALITY_UNVERIFIED', files:[]};
+            assistantText = 'The verified signature-line copy is unavailable.';
+            break;
+          }
+          if (ready) {
             await require('../../models/managedFile').updateOne({_id:file._id,user:turn.user,status:'ready'},{$set:{expiresAt:null,retention:'library'}},{session});
             file.expiresAt = null;
             file.retention = 'library';
@@ -351,7 +361,7 @@ const commitCompletion = async (turn, leaseToken, assistantText, usage) => {
               content: assistantText,
               attachments,
               fileResult,
-              computation: require("../computation/status").result(current.providerResult?.computation),
+              computation: require("../computation/status").result(computationResult),
               webSources: require("../web/context").sources(current),
               modelId: turn.modelId,
               tokens: usage.completionTokens,
@@ -511,7 +521,7 @@ const processTurn = async (claimed) => {
       if (require('../docx/policy').enabled(fileModel)) messages[0].content += ' ' + require('../docx/policy').instructions;
     }
     const exact = require("../files/exactTranscription");
-    const exactFiles = turn.outputFile || turn.webPlan?.mode === "browser" ? [] : await exact.candidates(turn.user, history, fileModel);
+    const exactFiles = turn.docxQualityPlan || turn.outputFile || turn.webPlan?.mode === "browser" ? [] : await exact.candidates(turn.user, history, fileModel);
     const exactCollector = exactFiles.length ? exact.collector() : null;
     if (exactCollector) {
       const option = exact.options(exactFiles);
@@ -519,6 +529,11 @@ const processTurn = async (claimed) => {
       fileTools.tools = [...(fileTools.tools || []), option.tool];
       fileTools.tool_choice = "auto";
       fileTools.parallel_tool_calls = false;
+    }
+    if (turn.docxQualityPlan) {
+      fileTools.tools = require('../docx/policy').tools;
+      fileTools.parallel_tool_calls = false;
+      messages[0].content += ' Inspect the attached source then use edit_docx alone with complete=true. The server verifies all requested signature lines before delivery.';
     }
     if (turn.webPlan?.mode === "browser") {
       // Browser loop owns every provider boundary and accumulates actual usage.
@@ -585,6 +600,7 @@ const processTurn = async (claimed) => {
         messages, fileTools, computeFiles, exactFiles, client, signal: controller.signal, providerProgress,
         save: saveResponse, onResponseId, maxOutputTokens: webBudget?.outputTokens,
         onText: async delta => {
+          if (turn.docxQualityPlan) return;
           pendingText += delta;
           if (pendingText.length >= 256 || Date.now() - lastFlush >= BATCH_MS) await flush();
         } });
@@ -657,7 +673,7 @@ const processTurn = async (claimed) => {
       if (!delta) continue;
       pending += delta;
       emittedSince += delta.length;
-      if (!exactCollector && (Date.now() - lastFlush >= BATCH_MS || emittedSince >= 256)) {
+      if (!turn.docxQualityPlan && !exactCollector && (Date.now() - lastFlush >= BATCH_MS || emittedSince >= 256)) {
         const chunkText = pending;
         assistantText += chunkText;
         pending = "";
@@ -684,7 +700,7 @@ const processTurn = async (claimed) => {
 
     controller.signal.throwIfAborted();
 
-    if (pending && !exactCollector) {
+    if (pending && !turn.docxQualityPlan && !exactCollector) {
       const chunkText = pending;
       assistantText += chunkText;
       pending = "";

@@ -214,3 +214,37 @@ for(const responses of [false,true])test(`verified final DOCX checkpoint recover
   await f.worker.recoverExpired();
   assert.deepEqual(f.counts(),{providerCalls:0,charges:1,releases:1});
 });
+
+test('protected commit refuses a provider-only file, settles once and survives refresh', async t => {
+  const f=fixture(t),usage={promptTokens:12,completionTokens:4,totalTokens:16};
+  f.doc.leaseUntil=new Date(0);
+  f.doc.docxQualityPlan={profile:'signature-lines-v1',sourceFileId:'original',expected:7};
+  f.doc.providerResult={usage,assistantText:'Done',artifact:{filename:'wrong.docx'},computation:{status:'completed',files:[{fileId:'wrong'}]}};
+  t.mock.method(require('../../src/services/files/artifacts'),'renderOutput',()=>assert.fail('unexpected render'));
+  t.mock.method(require('../../src/services/files/store'),'owned',()=>assert.fail('unexpected promotion'));
+  await f.worker.recoverExpired();
+  const restored=await snapshot(f.doc);
+  assert.equal(restored.assistantMessage.computation.reason,'DOCX_QUALITY_UNVERIFIED');
+  assert.deepEqual(restored.assistantMessage.attachments,[]);
+  await f.worker.recoverExpired();
+  assert.deepEqual(f.counts(),{providerCalls:0,charges:1,releases:1});
+});
+
+test('protected recovery publishes the checked copy with its quality report', async t => {
+  const f=fixture(t),fileId='012345678901234567890123',sourceFileId='original';
+  const usage={promptTokens:12,completionTokens:4,totalTokens:16};
+  const quality={profile:'signature-lines-v1',signatures:7,pages:5,changedPages:2};
+  f.doc.leaseUntil=new Date(0);
+  f.doc.docxQualityPlan={profile:quality.profile,sourceFileId,expected:7};
+  f.doc.computeState={kind:'document',pending:false,usage,runs:2,files:[{fileId}],docxCompletion:{version:1,run:2,fileId,sourceFileId,quality}};
+  t.mock.method(require('../../src/services/files/store'),'owned',async()=>({_id:fileId,status:'ready',originalName:'checked.docx',
+    resultKey:'turn-id:1:compute:2:0',documentEdit:{sourceFileId,visualVerification:true,signatureQuality:quality}}));
+  t.mock.method(require('../../src/models/managedFile'),'updateOne',async()=>({matchedCount:1}));
+  await f.worker.recoverExpired();
+  const restored=await snapshot(f.doc);
+  assert.equal(restored.assistantMessage.computation.status,'completed');
+  assert.equal(restored.assistantMessage.attachments[0].fileId,fileId);
+  assert.match(restored.assistantMessage.content,/all 5 rendered pages/);
+  await f.worker.recoverExpired();
+  assert.deepEqual(f.counts(),{providerCalls:0,charges:1,releases:1});
+});

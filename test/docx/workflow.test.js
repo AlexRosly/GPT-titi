@@ -355,3 +355,33 @@ test('invalid DOCX argument attempts consume the existing run limit without read
  assert.equal(store.read.mock.callCount(),0);assert.equal(store.owned.mock.callCount(),0);assert.equal(f.stats().creates,0);
  assert.equal(f.turn.computeState.docxCompletion,undefined);assert.deepEqual(f.turn.computeState.usage,usage);
 });
+
+test('protected signature edit fails before file storage and ends without another model call', async t => {
+ const f=await setup(t);
+ f.turn.docxQualityPlan={profile:'signature-lines-v1',expected:7,sourceFileId:sourceId};
+ t.mock.method(require('../../src/services/computation/session'),'runDocxQuality',async()=>({ok:false,text:'DOCX_QUALITY_COVERAGE'}));
+ let calls=0;
+ const client={chat:{completions:{create:async()=>{
+  assert.equal(++calls,1);
+  return {choices:[{message:{tool_calls:[f.edit(true)]},finish_reason:'tool_calls'}],usage:providerUsage};
+ }}}};
+ const r=await agent.run(f.turn,'lease',{},[],f.inspection,usage,f.available,client,new AbortController().signal);
+ assert.equal(r.computation.reason,'DOCX_QUALITY_COVERAGE');
+ assert.equal(r.computation.status,'partial');
+ assert.equal(f.stats().creates,0);
+ assert.equal(r.usage.totalTokens,45);
+});
+
+test('protected signature edit persists quality evidence with the output and survives recovery', async t => {
+ const f=await setup(t);
+ f.turn.docxQualityPlan={profile:'signature-lines-v1',expected:1,sourceFileId:sourceId};
+ const quality={profile:'signature-lines-v1',signatures:1,pages:1,changedPages:1};
+ t.mock.method(require('../../src/services/computation/session'),'runDocxQuality', async()=>({ok:true,text:JSON.stringify(quality)}));
+ const client={chat:{completions:{create:async()=>({choices:[{message:{tool_calls:[f.edit(true)]},finish_reason:'tool_calls'}],usage:providerUsage})}}};
+ const r=await agent.run(f.turn,'lease',{},[],f.inspection,usage,f.available,client,new AbortController().signal);
+ assert.equal(r.computation.status,'completed');
+ assert.deepEqual(f.stats().saved.documentEdit.signatureQuality,quality);
+ const recovered=require('../../src/services/docx/continuation').completion(structuredClone(f.turn));
+ assert.deepEqual(recovered,r);
+ assert.equal(f.stats().creates,1);
+});

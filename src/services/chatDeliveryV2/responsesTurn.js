@@ -133,6 +133,9 @@ async function run({ turn, token, model, messages, fileTools, computeFiles, exac
               completionAllowed: calls.length === 1 && !turn.outputFile && !createdFile && exactText === null });
             if (executed.deferred) return executed;
             signal.throwIfAborted();
+            if (turn.docxQualityPlan && !executed.result.ok && executed.result.text.startsWith('DOCX_QUALITY_')) {
+              return require('../computation/agent').partial(turn, executed.result.text);
+            }
             const completed = docxContinuation.completion(turn);
             if (completed) return completed;
             transcript = docxContinuation.compact(transcript, executed.next);

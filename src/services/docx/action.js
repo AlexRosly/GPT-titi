@@ -2,9 +2,13 @@
 const policy=require('./policy');
 const store=require('../files/store');
 const {fail}=require('../files/validation');
-async function run({turn,model,call,available,signal}){
+async function run({turn,model,call,available,signal,completionAllowed}){
  if(!policy.enabled(model))throw fail('DOCX_EDIT_DISABLED');
  const args=policy.parse(call.function.name,call.function.arguments);
+ if(turn.docxQualityPlan && args.fileId !== turn.docxQualityPlan.sourceFileId)throw fail('DOCX_QUALITY_SOURCE');
+ if(turn.docxQualityPlan && call.function.name === policy.NAME_EDIT && (!completionAllowed || !args.complete)){
+  throw fail('DOCX_SIGNATURE_FINAL_EDIT_REQUIRED');
+ }
  const prior=turn.computeState?.files||[];
  if(!available.some(f=>f.fileId===args.fileId)&&!prior.some(f=>f.fileId===args.fileId))throw fail('COMPUTE_FILE_FORBIDDEN');
  const metadata=await store.owned(turn.user,args.fileId);
@@ -26,6 +30,7 @@ async function run({turn,model,call,available,signal}){
   }
  }
  const limits=require('../computation/policy').limits();
+ const started=Date.now();
  const timeoutMs=Math.min(10000,limits.runMs,limits.totalMs-(turn.computeState?.executionMs||0));
  const output=await require('./process').run(buffer,call.function.name,args,signal,timeoutMs);
  signal?.throwIfAborted();
@@ -36,6 +41,12 @@ async function run({turn,model,call,available,signal}){
    ...(output.inspection.selection?{docxSelections:{...turn.computeState.docxSelections,
     [output.inspection.selection.id]:{...output.inspection.selection,fileId:args.fileId}}}:{})}};
  const result=Buffer.from(output.buffer);
+ if(turn.docxQualityPlan){
+  const remaining=Math.min(limits.runMs, limits.totalMs-(turn.computeState?.executionMs||0))-(Date.now()-started);
+  const quality=await require('./signatureQuality').verify(turn.docxQualityPlan,buffer,result,signal,remaining);
+  signal?.throwIfAborted();
+  output.report={...output.report,visualVerification:true,signatureQuality:quality};
+ }
  return {result:{ok:true,text:JSON.stringify({verification:{...output.report,operations:undefined,operationCount:output.report.operations.length},filename:args.filename}),truncated:false},
   completed:args.complete===true && output.report.requestedPropertiesVerified===true && output.report.documentXmlOutsideTargetsUnchanged===true && output.report.otherPartsByteIdentical===true,
   prepared:[{name:args.filename,mimetype:require('../files/office').mimes.docx,buffer:result,documentEdit:{sourceFileId:args.fileId,...output.report}}],

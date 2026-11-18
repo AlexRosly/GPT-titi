@@ -52,6 +52,7 @@ function toolResult(call, result, next) {
     // Fixed hints only: never reflect raw arguments, document text or paths.
     const correction = {
       DOCUMENT_INVALID_QUERY:'Correct query and offset, then retry within this turn. query=null is a full view. An object requires mode rows/summary, start>=0, end=null or an integer greater than start, and contains=null or a nonempty literal string up to 256 characters. Use offset=0 for a new query or summary.',
+      DOCX_SIGNATURE_FINAL_EDIT_REQUIRED:'Use one final edit_docx call on the attached original, including every requested signature line, with complete=true.',
       DOCX_INVALID_ACTION:'Correct the tool arguments to match its schema. Use an available fileId; inspect_docx accepts tables/document, explicit table IDs, cell IDs or paragraph IDs. Do not invent IDs or modify the file through another tool to bypass validation.',
       DOCX_TARGET_NOT_FOUND:'Use a target ID returned by inspection of this exact file. Inspect tables or document with query=null if the target is unknown.',
       DOCX_INSPECTION_LIMIT:'The requested view is too wide. Inspect a smaller explicit target or its paragraph IDs; do not assume omitted content is empty.',
@@ -69,6 +70,10 @@ function completion(turn) {
       !state.usage || ![state.usage.promptTokens, state.usage.completionTokens, state.usage.totalTokens].every(n => Number.isSafeInteger(n) && n >= 0) ||
       state.lastActionFailed || marker.run !== state.runs ||
       !state.files?.some(f => f.fileId === marker.fileId)) return null;
+  if (turn.docxQualityPlan) {
+    const checked = require('./signatureQuality').publication(turn);
+    return checked.computation.status === 'completed' ? {...checked, usage:state.usage} : null;
+  }
   return {
     assistantText: 'Edited DOCX attached. Structural checks passed; visual layout was not checked.',
     usage: state.usage,

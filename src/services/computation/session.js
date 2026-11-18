@@ -2,14 +2,14 @@ const {spawn}=require('node:child_process');
 const crypto=require('node:crypto');
 const {limits,fail}=require('./policy');
 const env=()=>Object.fromEntries(['PATH','HOME','DOCKER_HOST','DOCKER_CONTEXT','XDG_RUNTIME_DIR'].filter(k=>process.env[k]!==undefined).map(k=>[k,process.env[k]]));
-function args(name,l){return ['run','--pull=never','--rm','-i','--name',name,'--init','--network=none','--read-only','--user=10001:10001','--tmpfs',`/work:rw,nosuid,nodev,noexec,size=${l.tmpMiB}m,uid=10001,gid=10001,mode=0700`,'--shm-size=1m',`--memory=${l.memoryMiB}m`,`--memory-swap=${l.memoryMiB}m`,'--cpus=1','--pids-limit=64','--ulimit=core=0:0','--ulimit=nofile=128:128','--ulimit=fsize=268435456:268435456','--cap-drop=ALL','--security-opt=no-new-privileges','--log-driver=none','gptiti-compute:26'];}
-async function run(request,signal,dependencies={}) {
+function args(name,l,image='gptiti-compute:26'){return ['run','--pull=never','--rm','-i','--name',name,'--init','--network=none','--read-only','--user=10001:10001','--tmpfs',`/work:rw,nosuid,nodev,noexec,size=${l.tmpMiB}m,uid=10001,gid=10001,mode=0700`,'--shm-size=1m',`--memory=${l.memoryMiB}m`,`--memory-swap=${l.memoryMiB}m`,'--cpus=1','--pids-limit=64','--ulimit=core=0:0','--ulimit=nofile=128:128','--ulimit=fsize=268435456:268435456','--cap-drop=ALL','--security-opt=no-new-privileges','--log-driver=none',image];}
+async function runInImage(image,request,signal,dependencies={}) {
   const spawnProcess=dependencies.spawn||spawn,l=limits(),name='gptiti-compute-'+crypto.randomUUID();
   if(signal?.aborted)throw fail('COMPUTE_ABORTED');
   const wire=JSON.stringify({...request,memoryMiB:l.memoryMiB});if(Buffer.byteLength(wire)>38*1024**2)throw fail('COMPUTE_FILE_LIMIT');
   return new Promise((resolve,reject)=>{
     let finished=false,bytes=0,exitCode=null;const chunks=[];
-    const child=spawnProcess('docker',args(name,l),{stdio:['pipe','pipe','ignore'],env:env()});
+    const child=spawnProcess('docker',args(name,l,image),{stdio:['pipe','pipe','ignore'],env:env()});
     const finish=(error,result)=>{
       if(finished)return;finished=true;clearTimeout(timer);signal?.removeEventListener('abort',abort);
       child.stdin.destroy();child.kill('SIGKILL');
@@ -34,4 +34,6 @@ async function run(request,signal,dependencies={}) {
     child.stdin.end(wire);
   });
 }
-module.exports={run,args};
+const run = (request,signal,dependencies) => runInImage('gptiti-compute:26',request,signal,dependencies);
+const runDocxQuality = (request,signal) => runInImage('gptiti-docx-quality:1',request,signal);
+module.exports={run,args,runDocxQuality};

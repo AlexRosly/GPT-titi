@@ -20,12 +20,13 @@ async function run(turn,token,model,messages,firstCall,usage,available,client,pa
    if(executed.deferred)return executed;
    const {result,next}=executed;
    controller.signal.throwIfAborted();
+   if(turn.docxQualityPlan && !result.ok && result.text.startsWith('DOCX_QUALITY_'))return partial(turn,result.text);
    const completed=docxContinuation.completion(turn);
    if(completed)return completed;
    transcript=docxContinuation.compact(transcript,next);
    transcript.push({role:'assistant',content:null,tool_calls:[call]},{role:'tool',tool_call_id:call.id,content:JSON.stringify(docxContinuation.toolResult(call,result,next))});
    if(controller.signal.aborted||Date.now()>deadline-1000)throw policy.fail('COMPUTE_TIMEOUT');
-   const options=next.runs<l.runs&&next.executionMs<l.totalMs&&next.calls<l.calls-1?{tools:policy.toolsFor(model),tool_choice:'auto',parallel_tool_calls:false}:{};
+   const options=next.runs<l.runs&&next.executionMs<l.totalMs&&next.calls<l.calls-1?{tools:turn.docxQualityPlan?require('../docx/policy').tools:policy.toolsFor(model),tool_choice:'auto',parallel_tool_calls:false}:{};
    await accounting.begin(turn,token,transcript,options.tools);
    let response;
    try{response=await client.chat.completions.create({model:turn.modelId,messages:transcript,stream:false,max_completion_tokens:l.outputTokens,...options},{signal:controller.signal,timeout:Math.min(45000,deadline-Date.now())});}

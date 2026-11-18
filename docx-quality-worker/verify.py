@@ -124,9 +124,21 @@ def structure(source, result, expected):
     return [width for _, width in rows]
 
 
+class RenderError(Exception):
+    def __init__(self, command_name, exit_code=None):
+        super().__init__(command_name)
+        self.stage = command_name
+        self.exit_code = exit_code
+
+
 def command(args, env=None):
-    subprocess.run(args, env=env, check=True, stdin=subprocess.DEVNULL,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        subprocess.run(args, env=env, check=True, stdin=subprocess.DEVNULL,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except subprocess.CalledProcessError as exc:
+        raise RenderError(args[0], exc.returncode) from exc
+    except OSError as exc:
+        raise RenderError(args[0]) from exc
 
 
 def render_pair(source, result, root):
@@ -140,7 +152,8 @@ def render_pair(source, result, root):
              "--headless", "--nologo", "--norestore", "--convert-to", "pdf",
              "--outdir", str(root), *map(str, files)], env)
     pdfs = [p.with_suffix(".pdf") for p in files]
-    require(all(p.is_file() and p.stat().st_size > 0 for p in pdfs), "RENDER")
+    if not all(p.is_file() and p.stat().st_size > 0 for p in pdfs):
+        raise RenderError("soffice_output")
     return pdfs
 
 
@@ -233,6 +246,10 @@ def main():
             root = Path(tmp)
             data = visual(*render_pair(source, result, root), widths_list, root)
         out = {"ok":True, "text":json.dumps(data)}
+    except RenderError as error:
+        out = {"ok":False, "text":"DOCX_QUALITY_RENDER", "diagnostic":{"stage":error.stage}}
+        if error.exit_code is not None:
+            out["diagnostic"]["exitCode"] = error.exit_code
     except Failure as error:
         out = {"ok":False, "text":str(error)}
     except Exception:

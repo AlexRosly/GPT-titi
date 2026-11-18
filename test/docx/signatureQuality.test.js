@@ -63,3 +63,24 @@ test('renderer response must attest to the requested count and valid page totals
     await assert.rejects(execute(),{fileError:'DOCX_QUALITY_RENDER'});
   }
 });
+
+test('only the document renderer gets a private writable IPC directory at /tmp', () => {
+  const limits = require('../../src/services/computation/policy').limits();
+  const argv = sandbox.args('probe',limits,'gptiti-docx-quality:1');
+  const mounts = argv.flatMap((s,i) => s === '--tmpfs' ? [argv[i+1]] : []);
+  assert.deepEqual(mounts, [
+    '/work:rw,nosuid,nodev,noexec,size='+limits.tmpMiB+'m,uid=10001,gid=10001,mode=0700',
+    '/tmp:rw,nosuid,nodev,noexec,size=16m,uid=10001,gid=10001,mode=0700',
+  ]);
+  for (const flag of ['--read-only','--network=none','--user=10001:10001']) assert.ok(argv.includes(flag));
+  assert.equal(sandbox.args('probe',limits).some(s => s.startsWith('/tmp:')),false);
+});
+
+test('smoke errors expose only known tool stages and bounded exit codes', async t => {
+  const mock = t.mock.method(sandbox,'runDocxQuality', async () => ({ok:false,text:'DOCX_QUALITY_RENDER',
+    diagnostic:{stage:'soffice',exitCode:1}}));
+  const call = () => qa.verify(plan,Buffer.from('a'),Buffer.from('b'),undefined,1000);
+  await assert.rejects(call(),{fileError:'DOCX_QUALITY_RENDER',qualityStage:'soffice',qualityExitCode:1});
+  mock.mock.mockImplementation(async () => ({ok:false,text:'DOCX_QUALITY_RENDER',diagnostic:{stage:'/work/user-document',exitCode:5000}}));
+  await assert.rejects(call(), e => e.fileError === 'DOCX_QUALITY_RENDER' && !('qualityStage' in e) && !('qualityExitCode' in e));
+});

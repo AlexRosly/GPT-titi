@@ -2,7 +2,18 @@ const {spawn}=require('node:child_process');
 const crypto=require('node:crypto');
 const {limits,fail}=require('./policy');
 const env=()=>Object.fromEntries(['PATH','HOME','DOCKER_HOST','DOCKER_CONTEXT','XDG_RUNTIME_DIR'].filter(k=>process.env[k]!==undefined).map(k=>[k,process.env[k]]));
-function args(name,l,image='gptiti-compute:26'){return ['run','--pull=never','--rm','-i','--name',name,'--init','--network=none','--read-only','--user=10001:10001','--tmpfs',`/work:rw,nosuid,nodev,noexec,size=${l.tmpMiB}m,uid=10001,gid=10001,mode=0700`,'--shm-size=1m',`--memory=${l.memoryMiB}m`,`--memory-swap=${l.memoryMiB}m`,'--cpus=1','--pids-limit=64','--ulimit=core=0:0','--ulimit=nofile=128:128','--ulimit=fsize=268435456:268435456','--cap-drop=ALL','--security-opt=no-new-privileges','--log-driver=none',image];}
+const DOCX_QUALITY_IMAGE = 'gptiti-docx-quality:1';
+function args(name, l, image = 'gptiti-compute:26') {
+  const work = `/work:rw,nosuid,nodev,noexec,size=${l.tmpMiB}m,uid=10001,gid=10001,mode=0700`;
+  // Writer's Unix-domain IPC uses /tmp even when its profile and TMPDIR are under /work.
+  const ipcTmp = image === DOCX_QUALITY_IMAGE
+    ? ['--tmpfs', '/tmp:rw,nosuid,nodev,noexec,size=16m,uid=10001,gid=10001,mode=0700'] : [];
+  return ['run','--pull=never','--rm','-i','--name',name,'--init','--network=none','--read-only',
+    '--user=10001:10001','--tmpfs',work,...ipcTmp,'--shm-size=1m',
+    `--memory=${l.memoryMiB}m`,`--memory-swap=${l.memoryMiB}m`,'--cpus=1','--pids-limit=64',
+    '--ulimit=core=0:0','--ulimit=nofile=128:128','--ulimit=fsize=268435456:268435456',
+    '--cap-drop=ALL','--security-opt=no-new-privileges','--log-driver=none',image];
+}
 async function runInImage(image,request,signal,dependencies={}) {
   const spawnProcess=dependencies.spawn||spawn,l=limits(),name='gptiti-compute-'+crypto.randomUUID();
   if(signal?.aborted)throw fail('COMPUTE_ABORTED');
@@ -35,5 +46,5 @@ async function runInImage(image,request,signal,dependencies={}) {
   });
 }
 const run = (request,signal,dependencies) => runInImage('gptiti-compute:26',request,signal,dependencies);
-const runDocxQuality = (request,signal) => runInImage('gptiti-docx-quality:1',request,signal);
+const runDocxQuality = (request,signal) => runInImage(DOCX_QUALITY_IMAGE,request,signal);
 module.exports={run,args,runDocxQuality};

@@ -1,7 +1,9 @@
+import io
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from zipfile import ZipFile
 
 from PIL import Image, ImageDraw
 
@@ -48,6 +50,35 @@ class LayoutTests(unittest.TestCase):
     def test_extra_page(self):
         with self.assertRaisesRegex(verify.Failure, 'LAYOUT'):
             self.compare(boxes=self.boxes * 2)
+
+
+
+class RendererIntegrationTest(unittest.TestCase):
+    def test_docx_to_pdf_text_and_raster_as_worker_user(self):
+        # Tiny, complete OOXML package. Exercises Writer and both Poppler commands at build time.
+        data = io.BytesIO()
+        with ZipFile(data, "w") as package:
+            package.writestr("[Content_Types].xml",
+                '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+                '<Override PartName="/word/document.xml" '
+                'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>')
+            package.writestr("_rels/.rels",
+                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                '<Relationship Id="r1" Target="word/document.xml" '
+                'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"/></Relationships>')
+            package.writestr("word/document.xml",
+                '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                '<w:body><w:p><w:r><w:t>RendererProbe</w:t></w:r></w:p></w:body></w:document>')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pdfs = verify.render_pair(data.getvalue(), data.getvalue(), root)
+            for index, pdf in enumerate(pdfs):
+                pages = verify.word_boxes(pdf, root / f"words{index}.xml")
+                self.assertEqual(len(pages), 1)
+                self.assertEqual([word for word, _ in pages[0][1]], ["RendererProbe"])
+                image = verify.raster(pdf, root, 1, f"page{index}")
+                self.assertLess(image.convert("L").getextrema()[0], 128)
 
 
 if __name__ == "__main__":

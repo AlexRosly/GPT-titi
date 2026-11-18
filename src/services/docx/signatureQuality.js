@@ -38,9 +38,18 @@ async function verify(plan, source, result, signal, timeoutMs) {
       expected:plan.expected, timeoutMs}, signal);
   } catch (error) {
     if (error.cleanupUnconfirmed || signal?.aborted) throw error;
-    throw fail(error.fileError === 'COMPUTE_TIMEOUT' ? 'DOCX_QUALITY_TIMEOUT' : 'DOCX_QUALITY_RENDER');
+    if (error.fileError === 'COMPUTE_TIMEOUT') throw fail('DOCX_QUALITY_TIMEOUT');
+    throw Object.assign(fail('DOCX_QUALITY_RENDER'), {qualityStage:'sandbox'});
   }
-  if (!response.ok) throw fail(errors.has(response.text) ? response.text : 'DOCX_QUALITY_RENDER');
+  if (!response.ok) {
+    const error = fail(errors.has(response.text) ? response.text : 'DOCX_QUALITY_RENDER');
+    const detail = response.diagnostic;
+    if (error.fileError === 'DOCX_QUALITY_RENDER' && ['soffice','soffice_output','pdftotext','pdftoppm'].includes(detail?.stage)) {
+      error.qualityStage = detail.stage;
+      if (Number.isInteger(detail.exitCode) && detail.exitCode >= -127 && detail.exitCode <= 255) error.qualityExitCode = detail.exitCode;
+    }
+    throw error;
+  }
   let report;
   try { report = JSON.parse(response.text); } catch { throw fail('DOCX_QUALITY_RENDER'); }
   if (!validReport(plan, report)) throw fail('DOCX_QUALITY_RENDER');

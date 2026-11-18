@@ -72,5 +72,11 @@ async function main() {
   console.log('Pass. Six-of-seven and unrelated text change rejected.');
 }
 
-if (require.main === module) main().catch(e => {console.error(e.fileError || e.message); process.exitCode=1;});
+if (require.main === module) main().catch(error => {
+  const fields = [error.fileError || error.message];
+  if (error.qualityStage) fields.push('stage=' + error.qualityStage);
+  if (error.qualityExitCode !== undefined) fields.push('exit=' + error.qualityExitCode);
+  console.error(fields.join(' '));
+  process.exitCode = 1;
+});
 module.exports = {cases};

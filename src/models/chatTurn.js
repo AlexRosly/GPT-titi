@@ -45,6 +45,7 @@ const ChatTurnSchema = new Schema(
     webPlan: { type: Schema.Types.Mixed, default: null },
     webState: { type: Schema.Types.Mixed, default: null },
     webBudget: { type: Schema.Types.Mixed, default: null },
+    pdfCellPlan: { type: Schema.Types.Mixed, default: null },
     docxQualityPlan: { type: Schema.Types.Mixed, default: null },
     computeState: { type: Schema.Types.Mixed, default: null },
     browserState: { type: Schema.Types.Mixed, default: null },

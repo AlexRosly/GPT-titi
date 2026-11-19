@@ -42,7 +42,7 @@ const acceptTurn = async ({ userId, payload }) => {
   }).select("_id").lean();
   if (!conversation) throw protocolError("CONVERSATION_NOT_FOUND");
 
-  const model = await ChatModels.findOne({ modelId, enabled: true }).select("modelId inputPerM outputPerM apiMode reasoningEffort zipInputEnabled zipOutputEnabled browserInputEnabled webInputEnabled fileOutputEnabled textInputEnabled officeInputEnabled pdfInputEnabled ocrInputEnabled limits").lean();
+  const model = await ChatModels.findOne({ modelId, enabled: true }).select("modelId inputPerM outputPerM apiMode reasoningEffort computationEnabled zipInputEnabled zipOutputEnabled browserInputEnabled webInputEnabled fileOutputEnabled textInputEnabled officeInputEnabled pdfInputEnabled ocrInputEnabled limits").lean();
   if (!model) throw protocolError("MODEL_NOT_AVAILABLE");
 
   if (!require("../files/config").enabled() && !files.some(f => f?.storage === "private")) await validateFilesOwnership(userId, files);
@@ -126,6 +126,7 @@ const acceptTurn = async ({ userId, payload }) => {
           modelId,
           message,
           files: canonicalFiles,
+          pdfCellPlan: !webPlan && !outputFile ? require('../pdfCell').plan(message, canonicalFiles, model) : null,
           docxQualityPlan: !webPlan && !outputFile && require('../docx/policy').enabled(model)
             ? require('../docx/signatureQuality').plan(message, canonicalFiles) : null,
           outputFile,

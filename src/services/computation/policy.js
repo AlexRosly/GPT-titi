@@ -35,7 +35,7 @@ function diagnose(error, turn, stage) {
 }
 function collector(){let name='',args='',id='',bad=false,reason;return {
   add(chunk){const c=chunk.choices?.[0];if(c?.finish_reason)reason=c.finish_reason;for(const t of c?.delta?.tool_calls||[]){if(t.index!==0)bad=true;name+=t.function?.name||'';id+=t.id||'';if(!bad){args+=t.function?.arguments||'';if(Buffer.byteLength(args)>65536){bad=true;args='';}}}},
-  finish(){if(name!=='run_python'&&!require('../docx/policy').isTool(name)&&!require('../xlsx/policy').isTool(name)&&!require('../docxBatch/policy').isTool(name))return null;if(bad||reason!=='tool_calls'||!id)throw invalid('STREAM_INCOMPLETE_OR_MULTIPLE');return {id,type:'function',function:{name,arguments:args}};}
+  finish(){if(name!==require('../pdfCell').name&&name!=='run_python'&&!require('../docx/policy').isTool(name)&&!require('../xlsx/policy').isTool(name)&&!require('../docxBatch/policy').isTool(name))return null;if(bad||reason!=='tool_calls'||!id)throw invalid('STREAM_INCOMPLETE_OR_MULTIPLE');return {id,type:'function',function:{name,arguments:args}};}
 };}
 function availability(model, turn = {}) {
   if (process.env.COMPUTE_V2_ENABLED !== 'true') return 'COMPUTE_DISABLED';
@@ -61,5 +61,5 @@ function instructions(model) {
   ].join(' ');
 }
 const toolsFor = model => [tool, ...(require('../docxBatch/policy').enabled(model) ? require('../docxBatch/policy').tools : []), ...(require('../docx/policy').enabled(model) ? require('../docx/policy').tools : []), ...(require('../xlsx/policy').enabled(model) ? require('../xlsx/policy').tools : [])];
-const accepts = (name, model) => name === 'run_python' || require('../docxBatch/policy').enabled(model) && require('../docxBatch/policy').isTool(name) || require('../docx/policy').enabled(model) && require('../docx/policy').isTool(name) || require('../xlsx/policy').enabled(model) && require('../xlsx/policy').isTool(name);
+const accepts = (name, model) => (name === require('../pdfCell').name && require('../pdfCell').enabled(model)) || name === 'run_python' || require('../docxBatch/policy').enabled(model) && require('../docxBatch/policy').isTool(name) || require('../docx/policy').enabled(model) && require('../docx/policy').isTool(name) || require('../xlsx/policy').enabled(model) && require('../xlsx/policy').isTool(name);
 module.exports={fail,limits,enabled,tool,parse,collector,availability,instructions,diagnose,toolsFor,accepts};

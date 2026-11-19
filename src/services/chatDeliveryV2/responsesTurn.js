@@ -136,7 +136,8 @@ async function run({ turn, token, model, messages, fileTools, computeFiles, exac
             if (turn.docxQualityPlan && !executed.result.ok && executed.result.text.startsWith('DOCX_QUALITY_')) {
               return require('../computation/agent').partial(turn, executed.result.text);
             }
-            const completed = docxContinuation.completion(turn);
+            if (turn.pdfCellPlan && !executed.result.ok) return require('../computation/agent').partial(turn, executed.result.text);
+            const completed = require('../pdfCell').completion(turn) || docxContinuation.completion(turn);
             if (completed) return completed;
             transcript = docxContinuation.compact(transcript, executed.next);
             result = docxContinuation.toolResult(call, executed.result, executed.next);

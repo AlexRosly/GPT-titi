@@ -21,7 +21,8 @@ async function run(turn,token,model,messages,firstCall,usage,available,client,pa
    const {result,next}=executed;
    controller.signal.throwIfAborted();
    if(turn.docxQualityPlan && !result.ok && result.text.startsWith('DOCX_QUALITY_'))return partial(turn,result.text);
-   const completed=docxContinuation.completion(turn);
+   if(turn.pdfCellPlan && !result.ok)return partial(turn,result.text);
+   const completed=require('../pdfCell').completion(turn) || docxContinuation.completion(turn);
    if(completed)return completed;
    transcript=docxContinuation.compact(transcript,next);
    transcript.push({role:'assistant',content:null,tool_calls:[call]},{role:'tool',tool_call_id:call.id,content:JSON.stringify(docxContinuation.toolResult(call,result,next))});

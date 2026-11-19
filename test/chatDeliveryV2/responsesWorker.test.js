@@ -270,3 +270,79 @@ for (const withFileReport of [true,false]) test('table cell recovery checks the 
   await f.worker.recoverExpired();
   assert.deepEqual(f.counts(),{providerCalls:0,charges:1,releases:1});
 });
+
+for (const apiMode of ['chat_completions','responses']) test('verified PDF in '+apiMode+' uses one provider call and publishes one copy', async t => {
+  const selected = {modelId:'pdf-cell-test',apiMode,reasoningEffort:'low'};
+  const f = fixture(t, selected);
+  for (const key of ['PDF_CELL_EDIT_ENABLED','PRIVATE_FILES_ENABLED','COMPUTE_V2_ENABLED']) {
+    const previous=process.env[key]; process.env[key]='true';
+    t.after(()=>{ if(previous===undefined) delete process.env[key]; else process.env[key]=previous; });
+  }
+  const fs = require('node:fs'), path = require('node:path'), crypto = require('node:crypto');
+  const hash = data=>crypto.createHash('sha256').update(data).digest('hex');
+  const read = name=>fs.readFileSync(path.join(__dirname,'../pdfCell',name));
+  const source=read('source.pdf'), output=read('date_reference.pdf');
+  const original={_id:'0123456789abcdef01234567',originalName:'source.pdf',size:source.length,
+    checksum:hash(source),mimetype:'application/pdf',status:'ready'};
+  const pdf = require('../../src/services/pdfCell');
+  const message='У PDF на сторінці 2 у рядку «QA-202» у колонці «Дата» заміни «13.11.2026» на «07.11.2026». Поверни копію з назвою copy.pdf.';
+  f.doc.pdfCellPlan=pdf.plan(message,[{...original,fileId:original._id,storage:'private'}],selected);
+  assert.ok(f.doc.pdfCellPlan);
+  let generated, calls=0;
+  const store=require('../../src/services/files/store');
+  t.mock.method(models.ChatModels,'findOne',()=>({select:()=>({lean:async()=>selected})}));
+  t.mock.method(require('../../src/services/computation/policy'),'availability',()=> 'AVAILABLE');
+  t.mock.method(require('../../src/services/computation/files'),'candidates',async()=>[{fileId:original._id,name:original.originalName}]);
+  t.mock.method(require('../../src/services/computation/leases'),'acquire',async()=>async()=>{});
+  t.mock.method(store,'owned',async(_,id)=>id===original._id?original:generated);
+  t.mock.method(store,'read',async()=>({buffer:source,file:original}));
+  t.mock.method(store,'transaction',async fn=>fn({}));
+  t.mock.method(store,'create',async item=>{
+    assert.deepEqual(item.buffer,output);
+    assert.equal(generated,undefined);
+    generated={...item,_id:'111111111111111111111111', originalName:item.name,size:item.buffer.length,checksum:hash(item.buffer),status:'ready'};
+    return generated;
+  });
+  t.mock.method(require('../../src/models/managedFile'),'updateOne',async()=>({matchedCount:1}));
+  t.mock.method(require('../../src/services/computation/session'),'runPdfCell',async req=>{
+    assert.equal(req.source,source.toString('base64'));assert.deepEqual(req.cell,f.doc.pdfCellPlan.cell);
+    return {ok:true,text:JSON.stringify({changedCells:1,changedPages:1,page:2,pages:2}),exports:[output.toString('base64')]};
+  });
+  const terminal = {input_tokens:12,output_tokens:4,total_tokens:16};
+  const call = {id:'call-1',type:'function',function:{name:pdf.name,arguments:'{}'}};
+  if(apiMode==='responses') t.mock.method(Responses.prototype,'create',async function*(req){
+    calls++;assert.deepEqual(req.tools.map(x=>x.name),[pdf.name]);assert.equal(req.tool_choice.name,pdf.name);
+    yield {type:'response.completed',response:{id:'resp-qa',status:'completed',usage:terminal,
+      output:[{id:'fc-1',type:'function_call',status:'completed',call_id:call.id,...call.function}]}};
+  });
+  else t.mock.method(Completions.prototype,'create',async function*(req){
+    calls++;assert.deepEqual(req.tools.map(x=>x.function.name),[pdf.name]);assert.equal(req.tool_choice.function.name,pdf.name);
+    yield {choices:[{delta:{tool_calls:[{...call,index:0}]},finish_reason:'tool_calls'}],
+      usage:{prompt_tokens:12,completion_tokens:4,total_tokens:16}};
+  });
+  await f.worker.processTurn({turn:f.doc,leaseToken:'lease'});
+  await f.worker.recoverExpired();
+  const result=await snapshot(f.doc);
+  assert.equal(result.status,'completed');assert.equal(result.assistantMessage.computation.status,'completed');
+  assert.equal(result.assistantMessage.attachments.length,1);assert.equal(generated.retention,'library');
+  assert.equal(calls,1);assert.equal(f.counts().charges,1);assert.equal(f.counts().releases,1);
+  assert.equal(pdf.matchesFile(f.doc,generated),true);
+  assert.equal(pdf.matchesFile(f.doc,{...generated,checksum:original.checksum}),false);
+  assert.equal(pdf.completion({...f.doc,cancelRequestedAt:new Date()}),null);
+});
+
+test('protected PDF turn refuses a provider-generated substitute when restoring a saved response', async t=>{
+  const f=fixture(t);
+  f.doc.leaseUntil=new Date(0);
+  f.doc.pdfCellPlan={profile:'pdf-table-number-v1',fileId:'original',filename:'copy.pdf',
+    cell:{page_number:2,row_key:'QA-202',column:'Дата',old:'13.11.2026',new:'07.11.2026'}};
+  f.doc.providerResult={assistantText:'Done',usage:{promptTokens:12,completionTokens:4,totalTokens:16},
+    artifact:{filename:'copy.pdf',content:'{"title":"Copy","blocks":[]}',summary:'Success!'}};
+  t.mock.method(require('../../src/services/files/store'),'create',()=>assert.fail('unexpected file'));
+  await f.worker.recoverExpired();
+  const result=await snapshot(f.doc);
+  assert.equal(result.assistantMessage.computation.reason,'PDF_CELL_UNVERIFIED');
+  assert.deepEqual(result.assistantMessage.attachments,[]);
+  await f.worker.recoverExpired();
+  assert.deepEqual(f.counts(),{providerCalls:0,charges:1,releases:1});
+});

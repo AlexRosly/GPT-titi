@@ -47,4 +47,5 @@ async function runInImage(image,request,signal,dependencies={}) {
 }
 const run = (request,signal,dependencies) => runInImage('gptiti-compute:26',request,signal,dependencies);
 const runDocxQuality = (request,signal) => runInImage(DOCX_QUALITY_IMAGE,request,signal);
-module.exports={run,args,runDocxQuality};
+const runPdfCell = (request,signal) => runInImage('gptiti-pdf-cell:1',request,signal);
+module.exports={run,args,runDocxQuality,runPdfCell};

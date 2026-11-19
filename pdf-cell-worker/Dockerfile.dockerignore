@@ -1,0 +1,9 @@
+**
+!pdf-cell-worker/
+!pdf-cell-worker/requirements.txt
+!pdf-cell-worker/cell.py
+!pdf-cell-worker/worker.py
+!pdf-cell-worker/test_cell.py
+!test/
+!test/pdfCell/
+!test/pdfCell/source.pdf

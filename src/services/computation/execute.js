@@ -12,7 +12,9 @@ async function run({ turn, token, model, call, available, transcript, initialUsa
   const docx = require('../docx/policy').isTool(call.function.name);
   const xlsx = require('../xlsx/policy').isTool(call.function.name);
   const batch = require('../docxBatch/policy').isTool(call.function.name);
-  const document = docx || xlsx || batch;
+  const pdf = call.function.name === require('../pdfCell').name;
+  const document = docx || xlsx || batch || pdf;
+  if (turn.pdfCellPlan && !pdf) throw policy.fail('PDF_CELL_UNVERIFIED');
   if (!policy.accepts(call.function.name, model)) throw policy.fail('COMPUTE_INVALID_ACTION');
   // DOCX arguments are validated by action.run inside the guarded try below,
   // before any file read. Return correctable argument errors to the model and
@@ -40,7 +42,9 @@ async function run({ turn, token, model, call, available, transcript, initialUsa
   await save({ ...state, runs: state.runs + 1, stage: 'executing', ...(document ? {kind:'document'} : {}) });
   let result, prepared = [], statePatch = {}, completed = false;
   try {
-    if (xlsx || batch) {
+    if (pdf) {
+      ({result, prepared, statePatch} = await require('../pdfCell').run({turn,model,call,available,signal,completionAllowed}));
+    } else if (xlsx || batch) {
       const action = batch ? require('../docxBatch/action') : require('../xlsx/action');
       const output = await action.run({turn,token,model,call,available,signal,completionAllowed});
       if (output.deferred) return output;
@@ -77,6 +81,7 @@ async function run({ turn, token, model, call, available, transcript, initialUsa
       refs.push({ fileId: String(stored._id), name: stored.originalName, size: stored.size });
     }
     next.files = refs;
+    if (pdf && result.ok && prepared.length === 1) next.pdfCellFileId = refs.at(-1).fileId;
     const editReport = prepared[0]?.documentEdit;
     const verification = turn.docxQualityPlan?.profile === require('../docx/tableText').profile
       ? editReport?.tableTextQuality : editReport?.signatureQuality;

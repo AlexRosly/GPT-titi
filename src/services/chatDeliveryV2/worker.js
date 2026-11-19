@@ -231,7 +231,7 @@ const commitCompletion = async (turn, leaseToken, assistantText, usage) => {
   if (!savedTurn) throw Object.assign(new Error(), { staleLease: true });
   let preparedFile, renderError;
   if (
-    !savedTurn.docxQualityPlan && (savedTurn.outputFile ||
+    !savedTurn.pdfCellPlan && !savedTurn.docxQualityPlan && (savedTurn.outputFile ||
     savedTurn.providerResult?.artifact ||
     savedTurn.providerResult?.artifactError)
   ) {
@@ -268,7 +268,7 @@ const commitCompletion = async (turn, leaseToken, assistantText, usage) => {
       }).session(session);
       if (!current) throw Object.assign(new Error(), { staleLease: true });
 
-      const quality = require('../docx/signatureQuality').publication(current);
+      const quality = require('../pdfCell').publication(current) || require('../docx/signatureQuality').publication(current);
       let computationResult = quality?.computation || current.providerResult?.computation;
       if (quality) assistantText = quality.assistantText;
       let attachments = [],
@@ -315,7 +315,12 @@ const commitCompletion = async (turn, leaseToken, assistantText, usage) => {
           const file = await require('../files/store').owned(turn.user, ref.fileId, {session, includeDeleted:true});
           if (!file.resultKey?.startsWith(`${turn.turnId}:${turn.attempt}:compute:`)) throw new Error('Invalid computation result reference');
           const ready = file.status === 'ready' && (!file.expiresAt || file.expiresAt > new Date());
-          if (quality && (!ready || file.documentEdit?.sourceFileId !== current.docxQualityPlan.sourceFileId ||
+          if (current.pdfCellPlan && (!ready || !require('../pdfCell').matchesFile(current, file))) {
+            computationResult = {...quality.computation, status:'partial', reason:'PDF_CELL_UNVERIFIED', files:[]};
+            assistantText = 'The verified PDF copy is unavailable.';
+            break;
+          }
+          if (current.docxQualityPlan && (!ready || file.documentEdit?.sourceFileId !== current.docxQualityPlan.sourceFileId ||
               file.documentEdit?.visualVerification !== true ||
               (current.docxQualityPlan.profile === require('../docx/tableText').profile &&
                !require('../docx/tableText').matchesCheckpoint(file.documentEdit?.tableTextQuality, current.computeState.docxCompletion.quality)))) {
@@ -519,12 +524,15 @@ const processTurn = async (claimed) => {
       fileTools.tool_choice = 'auto'; fileTools.parallel_tool_calls = false;
       messages[0].content += ' ' + computation.instructions(fileModel) + ' Office exports follow: ' + require('../files/office').instructions;
       messages[0].content += '\nCOMPUTATION_FILES: ' + JSON.stringify(computeFiles);
+      if (!turn.pdfCellPlan && require('../pdfCell').enabled(fileModel) && computeFiles.some(f => /\.pdf$/i.test(f.name))) {
+        messages[0].content += ' A create_file manifest makes a new PDF. For edits to an existing PDF, only claim an edited copy if a source-edit tool produced one. If necessary ask for a physical page, row key, column, exact old and new value. For a numeric cell the supported Ukrainian pilot request is: У PDF на сторінці 2 у рядку «QA-202» у колонці «Дата» заміни «13.11.2026» на «07.11.2026». Поверни копію з назвою result.pdf.';
+      }
       if (require('../docxBatch/policy').enabled(fileModel)) messages[0].content += ' ' + require('../docxBatch/policy').instructions;
       if (require('../xlsx/policy').enabled(fileModel)) messages[0].content += ' ' + require('../xlsx/policy').instructions;
       if (require('../docx/policy').enabled(fileModel)) messages[0].content += ' ' + require('../docx/policy').instructions;
     }
     const exact = require("../files/exactTranscription");
-    const exactFiles = turn.docxQualityPlan || turn.outputFile || turn.webPlan?.mode === "browser" ? [] : await exact.candidates(turn.user, history, fileModel);
+    const exactFiles = turn.pdfCellPlan || turn.docxQualityPlan || turn.outputFile || turn.webPlan?.mode === "browser" ? [] : await exact.candidates(turn.user, history, fileModel);
     const exactCollector = exactFiles.length ? exact.collector() : null;
     if (exactCollector) {
       const option = exact.options(exactFiles);
@@ -533,7 +541,14 @@ const processTurn = async (claimed) => {
       fileTools.tool_choice = "auto";
       fileTools.parallel_tool_calls = false;
     }
-    if (turn.docxQualityPlan) {
+    if (turn.pdfCellPlan) {
+      const pdf = require('../pdfCell');
+      if (!computeEnabled || !pdf.enabled(fileModel)) throw require('../files/validation').fail('PDF_CELL_UNAVAILABLE');
+      fileTools.tools = [pdf.tool];
+      fileTools.tool_choice = {type:'function',function:{name:pdf.name}};
+      fileTools.parallel_tool_calls = false;
+      messages[0].content += ' Use edit_pdf_table_cell once. The server obtains the target and replacement from the user request.';
+    } else if (turn.docxQualityPlan) {
       fileTools.tools = require('../docx/policy').tools;
       fileTools.parallel_tool_calls = false;
       messages[0].content += ' Inspect the attached source then use edit_docx alone with complete=true. The server verifies the requested edit against the original before delivery.';
@@ -603,7 +618,7 @@ const processTurn = async (claimed) => {
         messages, fileTools, computeFiles, exactFiles, client, signal: controller.signal, providerProgress,
         save: saveResponse, onResponseId, maxOutputTokens: webBudget?.outputTokens,
         onText: async delta => {
-          if (turn.docxQualityPlan) return;
+          if (turn.pdfCellPlan || turn.docxQualityPlan) return;
           pendingText += delta;
           if (pendingText.length >= 256 || Date.now() - lastFlush >= BATCH_MS) await flush();
         } });
@@ -676,7 +691,7 @@ const processTurn = async (claimed) => {
       if (!delta) continue;
       pending += delta;
       emittedSince += delta.length;
-      if (!turn.docxQualityPlan && !exactCollector && (Date.now() - lastFlush >= BATCH_MS || emittedSince >= 256)) {
+      if (!turn.pdfCellPlan && !turn.docxQualityPlan && !exactCollector && (Date.now() - lastFlush >= BATCH_MS || emittedSince >= 256)) {
         const chunkText = pending;
         assistantText += chunkText;
         pending = "";
@@ -703,7 +718,7 @@ const processTurn = async (claimed) => {
 
     controller.signal.throwIfAborted();
 
-    if (pending && !turn.docxQualityPlan && !exactCollector) {
+    if (pending && !turn.pdfCellPlan && !turn.docxQualityPlan && !exactCollector) {
       const chunkText = pending;
       assistantText += chunkText;
       pending = "";
@@ -857,12 +872,12 @@ const recoverExpired = async () => {
       await failTurn(turn, turn.leaseToken, errorFor('USER_CANCELLED'), { expiredOnly: true });
       continue;
     }
-    const completedDocx = !turn.providerResult && require('../docx/continuation').completion(turn);
-    if (completedDocx) {
+    const completedDocument = !turn.providerResult && (require('../pdfCell').completion(turn) || require('../docx/continuation').completion(turn));
+    if (completedDocument) {
       const saved = await ChatTurn.updateOne({ ...recoveryGuard(turn), providerResult: null, cancelRequestedAt: null },
-      { $set: { providerResult: completedDocx } });
+      { $set: { providerResult: completedDocument } });
       if (!saved.matchedCount) continue;
-      turn.providerResult = completedDocx;
+      turn.providerResult = completedDocument;
     }
     if (!turn.providerResult && turn.responseState && !turn.responseState.pending) {
       const state = turn.responseState;

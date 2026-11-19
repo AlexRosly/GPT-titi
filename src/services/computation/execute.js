@@ -11,7 +11,8 @@ async function run({ turn, token, model, call, available, transcript, initialUsa
   const l = policy.limits();
   const docx = require('../docx/policy').isTool(call.function.name);
   const xlsx = require('../xlsx/policy').isTool(call.function.name);
-  const document = docx || xlsx;
+  const batch = require('../docxBatch/policy').isTool(call.function.name);
+  const document = docx || xlsx || batch;
   if (!policy.accepts(call.function.name, model)) throw policy.fail('COMPUTE_INVALID_ACTION');
   // DOCX arguments are validated by action.run inside the guarded try below,
   // before any file read. Return correctable argument errors to the model and
@@ -39,8 +40,9 @@ async function run({ turn, token, model, call, available, transcript, initialUsa
   await save({ ...state, runs: state.runs + 1, stage: 'executing', ...(document ? {kind:'document'} : {}) });
   let result, prepared = [], statePatch = {}, completed = false;
   try {
-    if (xlsx) {
-      const output = await require('../xlsx/action').run({turn,token,model,call,available,signal,completionAllowed});
+    if (xlsx || batch) {
+      const action = batch ? require('../docxBatch/action') : require('../xlsx/action');
+      const output = await action.run({turn,token,model,call,available,signal,completionAllowed});
       if (output.deferred) return output;
       ({result,prepared,statePatch}=output);
     } else if (docx) {

@@ -43,7 +43,7 @@ async function main() {
       const ids=(turn.files||[]).map(f=>String(f.fileId||f._id||'')).filter(v=>/^[a-f0-9]{24}$/i.test(v)).map(v=>new ObjectId(v));
       const files=await db.collection('managedfiles').find({_id:{$in:ids}},{projection:{originalName:1,size:1,status:1,mimetype:1}}).maxTimeMS(10000).toArray();
       if(recent&&!files.some(f=>/\.xlsx$/i.test(f.originalName||'')))continue;
-      const jobs=await db.collection('documentjobs').find({turnId:turn.turnId,attempt:turn.attempt},{projection:{status:1,cursor:1,total:1,chunks:1,restarts:1,failures:1,stagedBytes:1,errorCode:1,createdAt:1,updatedAt:1,leaseUntil:1,finishedAt:1,deadline:1}}).limit(2).maxTimeMS(10000).toArray();
+      const jobs=await db.collection('documentjobs').find({turnId:turn.turnId,attempt:turn.attempt},{projection:{adapter:1,resumedFrom:1,status:1,cursor:1,total:1,chunks:1,restarts:1,failures:1,stagedBytes:1,errorCode:1,createdAt:1,updatedAt:1,leaseUntil:1,finishedAt:1,deadline:1}}).limit(2).maxTimeMS(10000).toArray();
       const model=await db.collection('chatmodels').findOne({modelId:turn.modelId},{projection:{_id:0,enabled:1,apiMode:1,reasoningEffort:1,computationEnabled:1,officeInputEnabled:1,fileOutputEnabled:1}});
       const billing=await db.collection('chatbillingledgers').find({turnId:turn.turnId},{projection:{_id:0,appTokensSpent:1,totalTokens:1,createdAt:1}}).limit(3).maxTimeMS(10000).toArray();
       const operations=await db.collection('tokenoperations').aggregate([{$match:{'context.turnId':turn.turnId}},{$group:{_id:'$kind',count:{$sum:1}}}],{maxTimeMS:10000}).toArray();
@@ -70,7 +70,7 @@ async function main() {
         jobs,billing,operations});
       if(reports.length===10)break;
     }
-    const booleans=Object.fromEntries(['DOCUMENT_JOBS_ENABLED','XLSX_EDIT_ENABLED','COMPUTE_V2_ENABLED','PRIVATE_FILES_ENABLED','OFFICE_INPUT_ENABLED'].map(k=>[k,process.env[k]===undefined?'unset':process.env[k]==='true'?'true':process.env[k]==='false'?'false':'non-boolean']));
+    const booleans=Object.fromEntries(['DOCUMENT_JOBS_ENABLED','DOCX_BATCH_ENABLED','XLSX_EDIT_ENABLED','COMPUTE_V2_ENABLED','PRIVATE_FILES_ENABLED','OFFICE_INPUT_ENABLED'].map(k=>[k,process.env[k]===undefined?'unset':process.env[k]==='true'?'true':process.env[k]==='false'?'false':'non-boolean']));
     const limits=Object.fromEntries(['COMPUTE_MAX_USD','COMPUTE_MAX_RUNS','COMPUTE_MAX_CALLS','COMPUTE_TOTAL_MS','CHAT_V2_LEASE_MS'].map(k=>[k,process.env[k]===undefined?null:num(Number(process.env[k]))]));
     console.log(JSON.stringify({reportVersion:4,generatedAt:new Date(),readOnly:true,configurationSource:'diagnostic-process',flags:booleans,limits,
       searchedCandidates:candidates.length,reports,note:'flags and limits belong to this CLI process, not the live PM2 backend. workerRuntime and failureDiagnostic.terminal.runtime were saved by the worker that processed the turn. Missing metadata on older turns is expected. No model calls or writes.'},null,2));

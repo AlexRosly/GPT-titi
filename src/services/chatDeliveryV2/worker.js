@@ -519,6 +519,7 @@ const processTurn = async (claimed) => {
       fileTools.tool_choice = 'auto'; fileTools.parallel_tool_calls = false;
       messages[0].content += ' ' + computation.instructions(fileModel) + ' Office exports follow: ' + require('../files/office').instructions;
       messages[0].content += '\nCOMPUTATION_FILES: ' + JSON.stringify(computeFiles);
+      if (require('../docxBatch/policy').enabled(fileModel)) messages[0].content += ' ' + require('../docxBatch/policy').instructions;
       if (require('../xlsx/policy').enabled(fileModel)) messages[0].content += ' ' + require('../xlsx/policy').instructions;
       if (require('../docx/policy').enabled(fileModel)) messages[0].content += ' ' + require('../docx/policy').instructions;
     }

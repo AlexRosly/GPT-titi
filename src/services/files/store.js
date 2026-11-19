@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const crypto = require('node:crypto');
+const path = require('node:path');
 const File = require('../../models/managedFile');
 const Quota = require('../../models/fileQuota');
 const Chunk = require('../../models/fileChunk');
@@ -33,7 +34,7 @@ const create = async ({ user, name, mimetype, buffer, generatedPreview = null, d
     if (existing) return existing; // Tombstones prevent recreating a deleted result on replay.
   }
   await Quota.updateOne({ _id: user }, { $setOnInsert: { bytes: 0, count: 0 } }, { upsert: true, session });
-  const reserved = await Quota.updateOne({ _id: user, bytes: { $lte: config.quotaBytes() - buffer.length }, count: { $lt: config.quotaCount() } },
+  const reserved = await Quota.updateOne({ _id: user, bytes: { $lte: config.quotaBytes() - buffer.length } },
     { $inc: { bytes: buffer.length, count: 1 } }, { session });
   if (!reserved.modifiedCount) throw fail('FILE_QUOTA_EXCEEDED', 413);
   const [file] = await File.create([{ user, originalName: name, mimetype, size: buffer.length,
@@ -47,12 +48,11 @@ const create = async ({ user, name, mimetype, buffer, generatedPreview = null, d
 };
 // The descriptor is private and remains open across transaction retries. Always read
 // with explicit offsets; a retried transaction must restart at byte zero.
-const createUpload = async ({ user, upload, signal }) => transaction(async session => {
+const persistUpload = async ({ user, upload, signal }, session) => {
   const { name, mimetype, size, checksum, handle } = upload;
   if (!Number.isSafeInteger(size) || size < 1 || size > require('./limits').uploadLimit(name)) throw fail('FILE_TOO_LARGE', 413);
   signal?.throwIfAborted();
-  await Quota.updateOne({ _id: user }, { $setOnInsert: { bytes: 0, count: 0 } }, { upsert: true, session });
-  const reserved = await Quota.updateOne({ _id: user, bytes: { $lte: config.quotaBytes() - size }, count: { $lt: config.quotaCount() } },
+  const reserved = await Quota.updateOne({ _id: user, bytes: { $lte: config.quotaBytes() - size } },
     { $inc: { bytes: size, count: 1 } }, { session });
   if (!reserved.modifiedCount) throw fail('FILE_QUOTA_EXCEEDED', 413);
   const [file] = await File.create([{ user, originalName: name, mimetype, size, checksum,
@@ -74,7 +74,39 @@ const createUpload = async ({ user, upload, signal }) => transaction(async sessi
   if (hash.digest('hex') !== checksum) throw fail('FILE_UNAVAILABLE', 503);
   signal?.throwIfAborted();
   return file;
+};
+
+const ensureUploadQuota = (user, session) => Quota.updateOne({ _id: user },
+  { $setOnInsert: { bytes: 0, count: 0 } }, { upsert: true, session });
+const createUpload = args => transaction(async session => {
+  await ensureUploadQuota(args.user, session);
+  return persistUpload(args, session);
 });
+
+// Explicit Files-page uploads only. Chat uploads retain independent file IDs.
+// The checksum comes from the validated private spool, never from the client.
+const uploadToLibrary = async args => {
+  const { user, upload, signal } = args;
+  signal?.throwIfAborted();
+  const ext = path.extname(upload.name).slice(1).toLowerCase();
+  if (!/^[a-z0-9]+$/.test(ext)) throw fail('UNSUPPORTED_FILE_TYPE', 415);
+  const suffix = ['jpg', 'jpeg'].includes(ext) ? /\.jpe?g$/i : new RegExp('\\.' + ext + '$', 'i');
+  // Bootstrap separately: first-time concurrent transactions must contend on an
+  // existing quota document rather than racing an insert of the same _id.
+  await ensureUploadQuota(user, null);
+  return transaction(async session => {
+    signal?.throwIfAborted();
+    const existing = await File.findOne({ user, checksum: upload.checksum, size: upload.size,
+      source: 'upload', status: 'ready', retention: { $ne: 'temporary' }, expiresAt: null,
+      originalName: suffix }).sort({ _id: 1 })
+      .select('_id originalName mimetype size source status version createdAt retention expiresAt').session(session).lean();
+    if (existing) return { outcome: 'existing', file: existing };
+    // Any two successful inserts must write the same owner's quota row. A
+    // conflict retries this entire transaction, including the duplicate lookup.
+    return { outcome: 'added', file: await persistUpload(args, session) };
+  });
+};
+
 const owned = async (user, id, { session, includeDeleted = false } = {}) => {
   if (!idOK(String(id))) throw fail('FILE_NOT_FOUND', 404);
   const f = await File.findOne({ _id: id, user }).session(session || null);
@@ -111,4 +143,4 @@ const cleanup = async () => {
     if (current.status === 'ready' && current.retention !== 'library' && current.expiresAt && current.expiresAt <= new Date()) await remove(f.user, String(f._id), session);
   });
 };
-module.exports = { createUpload, create, owned, read, remove, removeTemporary, cleanup, transaction, dto, idOK };
+module.exports = { createUpload, uploadToLibrary, create, owned, read, remove, removeTemporary, cleanup, transaction, dto, idOK };

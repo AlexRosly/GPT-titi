@@ -24,11 +24,16 @@ router.get('/limits', handle(async (req, res) => {
     if (!model) return res.status(404).json({ error: 'MODEL_NOT_AVAILABLE' });
   }
   res.set({ 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
-  res.json(require('../services/files/limits').effective(model));
+  res.json(require('../services/files/limits').effective(model, req.query.libraryVersion === '2'));
 }));
 router.post('/', require('../services/files/streamUpload').receive(async (req, res) => {
   const file = await store.createUpload({ user: req.user._id, upload: req.file, signal: req.uploadSignal });
   res.status(201).json({ success: true, file: store.dto(file) });
+}));
+// Separate from POST /files: the chat composer never opts into library reuse.
+router.post('/library-upload', require('../services/files/streamUpload').receive(async (req, res) => {
+  const { outcome, file } = await store.uploadToLibrary({ user: req.user._id, upload: req.file, signal: req.uploadSignal });
+  res.status(outcome === 'added' ? 201 : 200).json({ success: true, outcome, file: store.dto(file) });
 }));
 // Opt-in asynchronous protocol. Existing /prepare contract stays unchanged.
 const queue = require('../services/files/preparationQueue');
@@ -84,6 +89,9 @@ router.post('/:id/prepare', express.json({ limit: '1kb' }), handle(async (req, r
   }
 }));
 router.get('/', handle(async (req, res) => {
+  if (req.query.view === 'library') {
+    return res.json(await require('../services/files/libraryList').page(req.user._id, req.query));
+  }
   const File = require('../models/managedFile');
   const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
   const filter = { user: req.user._id, status: 'ready', retention: { $ne: 'temporary' }, expiresAt: null };
@@ -94,7 +102,7 @@ router.get('/', handle(async (req, res) => {
   const files = await File.find(filter).sort({ _id: -1 }).limit(limit).lean();
   const quota = await require('../models/fileQuota').findById(req.user._id).lean();
   res.json({ files: files.map(store.dto), nextCursor: files.length === limit ? String(files.at(-1)._id) : null,
-    quota: { bytes: quota?.bytes || 0, count: quota?.count || 0, maxBytes: config.quotaBytes(), maxCount: config.quotaCount() } });
+    quota: { bytes: quota?.bytes || 0, count: quota?.count || 0, maxBytes: config.quotaBytes(), maxCount: config.quotaBytes() } });
 }));
 router.get('/:id', handle(async (req, res) => res.json({ file: store.dto(await store.owned(req.user._id, req.params.id, { includeDeleted: true })) })));
 router.get('/:id/download', handle(async (req, res) => {

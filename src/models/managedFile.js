@@ -21,4 +21,11 @@ const schema = new Schema({
 }, { timestamps: true, versionKey: false });
 schema.index({ user: 1, resultKey: 1 }, { unique: true, partialFilterExpression: { resultKey: { $type: 'string' } } });
 schema.index({ status: 1, expiresAt: 1 });
+// Owner-scoped keyset scans, including stable ordering for equal sizes/names.
+schema.index({ user: 1, status: 1, _id: -1 });
+schema.index({ user: 1, status: 1, size: -1, _id: -1 });
+schema.index({ user: 1, status: 1, originalName: 1, _id: 1 }, { collation: { locale: 'en', strength: 2 } });
+// Non-unique: previous copies and direct chat uploads must remain independent.
+schema.index({ user: 1, checksum: 1, size: 1, _id: 1 },
+  { partialFilterExpression: { source: 'upload', status: 'ready' } });
 module.exports = model('ManagedFile', schema);

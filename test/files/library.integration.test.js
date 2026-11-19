@@ -111,8 +111,127 @@ integration('deletion while OCR runs fences the job, prevents cache resurrection
 integration('generated replay returns tombstone; quota limits do not evict existing library files',async()=>{
   const f=await create({source:'generated',resultKey:'one-output'});await store.remove(user._id,String(f._id));
   const replay=await create({source:'generated',resultKey:'one-output'});assert.equal(replay.status,'deleted');assert.equal(await Chunk.countDocuments(),0);
-  const keep=await create();process.env.FILES_USER_COUNT='1';
-  try{await assert.rejects(create(),{fileError:'FILE_QUOTA_EXCEEDED'});assert.equal((await store.read(user._id,String(keep._id))).buffer.length,keep.size);}finally{delete process.env.FILES_USER_COUNT;}
+  const keep=await create();const prev=process.env.FILES_USER_BYTES;process.env.FILES_USER_BYTES=String(keep.size);
+  try{await assert.rejects(create(),{fileError:'FILE_QUOTA_EXCEEDED'});assert.equal((await store.read(user._id,String(keep._id))).buffer.length,keep.size);}finally{if(prev===undefined)delete process.env.FILES_USER_BYTES;else process.env.FILES_USER_BYTES=prev;}
+});
+
+integration('501st upload and generated files use only bytes, with atomic admission and refunds', async t => {
+  const prior = process.env.FILES_USER_COUNT;
+  process.env.FILES_USER_COUNT='500'; // Existing deployments need no env edit.
+  t.after(()=>{ if(prior===undefined) delete process.env.FILES_USER_COUNT; else process.env.FILES_USER_COUNT=prior; });
+  const cap=require('../../src/services/files/config').quotaBytes();
+  await Quota.create({_id:user._id, count:500, bytes:cap-2});
+  const upload=async()=>{const form=new FormData();form.append('file',new Blob(['x']),'x.txt');
+    return fetch(root+'/files',{method:'POST',headers:ownHeaders,body:form});};
+  assert.equal((await upload()).status,201);
+  const writes=await Promise.allSettled([1,2].map(()=>create({source:'generated',buffer:Buffer.from('y')})));
+  assert.equal(writes.filter(w=>w.status==='fulfilled').length,1);
+  assert.equal(writes.find(w=>w.status==='rejected').reason.fileError,'FILE_QUOTA_EXCEEDED');
+  const full=await upload();assert.equal(full.status,413);assert.equal((await full.json()).error,'FILE_QUOTA_EXCEEDED');
+  const quota=await Quota.findById(user._id);assert.equal(quota.count,502);assert.equal(quota.bytes,cap);
+  await store.remove(user._id,String(writes.find(w=>w.status==='fulfilled').value._id));
+  assert.equal((await upload()).status,201);
+  assert.equal((await list()).quota.maxCount,cap); // numeric compatibility for older clients
+  const limits=await (await fetch(root+'/files/limits?libraryVersion=2',{headers:ownHeaders})).json();
+  assert.equal(limits.storage.maxCount,null);assert.equal(limits.storage.maxBytes,cap);
+  assert.equal(limits.message.maxAttachments,10);
+});
+
+integration('paged library: whole-owner filters, stable ties, literal search, no missing or duplicate pages', async()=>{
+  for (const [name,size,source] of [['same.PDF',4,'upload'],['SAME.pdf',4,'generated'],['note[1].txt',7,'upload'],['small.xlsx',1,'upload']])
+    await create({name,buffer:Buffer.alloc(size,1),source});
+  await create({user:other._id,name:'same.pdf'});
+  await create({name:'same.pdf',source:'generated',retention:'temporary'});
+  const read=async(params)=>fetch(root+'/files?'+new URLSearchParams({view:'library',limit:1,...params}),{headers:ownHeaders});
+  for (const sort of ['newest','oldest','name','size']) {
+    const full=await (await read({sort,limit:40})).json();
+    assert.equal(full.listVersion,2);assert.equal(full.quota.maxCount,null);
+    assert.equal(full.files.length,4);assert.equal(full.nextCursor,null);
+    let cursor,ids=[];
+    do {const res=await read({sort,...(cursor?{cursor}:{})});assert.equal(res.status,200);
+      const p=await res.json();ids.push(...p.files.map(f=>f.fileId));cursor=p.nextCursor;
+      assert.ok(ids.length<=4);
+    } while(cursor);
+    assert.deepEqual(ids,full.files.map(f=>f.fileId));assert.equal(new Set(ids).size,4);
+  }
+  let p=await (await read({q:'same',category:'Documents',source:'generated'})).json();
+  assert.deepEqual(p.files.map(f=>f.originalName),['SAME.pdf']);
+  p=await (await read({q:'[1]',category:'Text & code'})).json();
+  assert.deepEqual(p.files.map(f=>f.originalName),['note[1].txt']);
+  p=await (await read({q:'.*'})).json();assert.equal(p.files.length,0);
+  const first=await (await read({sort:'name'})).json();await store.remove(user._id,first.files[0].fileId);
+  const next=await (await read({sort:'name',cursor:first.nextCursor})).json();assert.equal(next.files.length,1);
+  for (const opts of [{q:'\0'},{cursor:'x'},{limit:101},{sort:'bad'},{sort:'size',cursor:first.nextCursor}])
+    assert.equal((await read(opts)).status,400);
+});
+
+// Files-page deduplication is intentionally opt-in; POST /files is the chat path.
+async function postUpload(name, bytes, { headers = ownHeaders, library = true } = {}) {
+  const form = new FormData();
+  form.append('file', new Blob([bytes]), name);
+  const r = await fetch(root + (library ? '/files/library-upload' : '/files'), { method: 'POST', headers, body: form });
+  return { status: r.status, data: await r.json() };
+}
+
+integration('two concurrent Files uploads race for the last bytes: one ID, one charge; repeats work at full capacity', async t => {
+  const prev = process.env.FILES_USER_BYTES;
+  process.env.FILES_USER_BYTES = '5';
+  t.after(() => { if (prev === undefined) delete process.env.FILES_USER_BYTES; else process.env.FILES_USER_BYTES = prev; });
+  const pair = await Promise.all([postUpload('original.txt', 'hello'), postUpload('renamed.TXT', 'hello')]);
+  assert.deepEqual(pair.map(x => x.status).sort(), [200, 201], JSON.stringify(pair));
+  const winner = pair.find(x => x.data.outcome === 'added').data.file;
+  for (const { data } of pair) {
+    assert.equal(data.file.fileId, winner.fileId);
+    assert.equal(data.file.originalName, winner.originalName);
+  }
+  const retry = await postUpload('retry.txt', 'hello');
+  assert.equal(retry.status, 200); assert.equal(retry.data.outcome, 'existing');
+  const full = await postUpload('original.txt', 'other');
+  assert.equal(full.status, 413); assert.equal(full.data.error, 'FILE_QUOTA_EXCEEDED');
+  const quota = await Quota.findById(user._id).lean();
+  assert.equal(quota.bytes, 5); assert.equal(quota.count, 1);
+  assert.equal(await File.countDocuments(), 1); assert.equal(await Chunk.countDocuments(), 1);
+  assert.equal((await store.read(user._id, winner.fileId)).buffer.toString(), 'hello');
+});
+
+integration('compare server bytes and format, scoped to active uploads of this owner; never resurrect a deleted file', async () => {
+  const input = 'abc';
+  await create({ name:'original.txt', buffer:Buffer.from(input), source:'generated' });
+  await create({ name:'temp.txt', buffer:Buffer.from(input), source:'generated', retention:'temporary' });
+  await create({ name:'expired.txt', buffer:Buffer.from(input) }).then(f=>File.updateOne({_id:f._id},{$set:{expiresAt:new Date(1)}}));
+  const a = await postUpload('original.txt', input);
+  const b = await postUpload('original.txt', 'xyz');
+  const c = await postUpload('table.csv', input);
+  const foreign = await postUpload('original.txt', input, { headers:otherHeaders });
+  for (const result of [a,b,c,foreign]) assert.equal(result.status,201);
+  assert.equal(new Set([a,b,c,foreign].map(x=>x.data.file.fileId)).size,4);
+  const retry = await postUpload('renamed.TXT', input);
+  assert.equal(retry.data.file.fileId, a.data.file.fileId); assert.equal(retry.data.file.originalName,'original.txt');
+  const jpeg = Buffer.from([255,216,255,219]);
+  const jpg = await postUpload('photo.jpg',jpeg);
+  const alias = await postUpload('copy.JPEG',jpeg);
+  assert.equal(jpg.status,201); assert.equal(alias.status,200); assert.equal(jpg.data.file.fileId,alias.data.file.fileId);
+  await store.remove(user._id,a.data.file.fileId);
+  const fresh = await postUpload('restored.txt', input);
+  assert.equal(fresh.status,201); assert.notEqual(fresh.data.file.fileId,a.data.file.fileId);
+  assert.equal((await File.findById(a.data.file.fileId)).status,'deleted');
+});
+
+integration('existing duplicates and direct chat uploads keep their IDs and quota; Files reuses oldest active upload', async () => {
+  const a = await postUpload('old.txt','same',{library:false});
+  const b = await postUpload('second.txt','same',{library:false});
+  assert.equal(a.status,201); assert.equal(b.status,201);
+  assert.notEqual(a.data.file.fileId,b.data.file.fileId);
+  const reused = await postUpload('third.txt','same');
+  assert.equal(reused.status,200); assert.equal(reused.data.file.fileId,a.data.file.fileId);
+  const c = await postUpload('old.txt','same',{library:false});
+  assert.equal(c.status,201); assert.notEqual(c.data.file.fileId,a.data.file.fileId);
+  assert.equal(await File.countDocuments({status:'ready'}),3);
+  assert.equal((await Quota.findById(user._id)).bytes,12);
+  await store.remove(user._id,a.data.file.fileId);
+  const next = await postUpload('fourth.txt','same');
+  assert.equal(next.data.file.fileId,b.data.file.fileId);
+  for (const f of [b,c]) assert.equal((await store.read(user._id,f.data.file.fileId)).buffer.toString(),'same');
 });
 
 integration('delete chat with files removes shared uploads and generated outputs once, preserving other histories and owners', async()=>{

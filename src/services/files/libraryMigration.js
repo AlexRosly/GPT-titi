@@ -54,7 +54,7 @@ async function migrate({ apply = false, repairQuota = false, now = new Date() } 
     if (owner.quotaMismatch && !repairQuota) {
       owner.blocked = true; report.problems.push({ user: key, code: 'QUOTA_MISMATCH', expectedBytes: owner.bytes, expectedCount: owner.count });
     }
-    if (owner.bytes > config.quotaBytes() || owner.count > config.quotaCount()) report.overQuotaUsers++;
+    if (owner.bytes > config.quotaBytes()) report.overQuotaUsers++;
   }
   // Validate the complete inventory before writing anything. Re-run after fixing problems.
   if (report.problems.length) return report;

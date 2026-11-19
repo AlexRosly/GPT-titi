@@ -15,7 +15,6 @@ The legacy FileModels schema is not migrated: the active legacy Cloudinary uploa
 PRIVATE_FILES_ENABLED=false
 FILES_MAX_BYTES=26214400
 FILES_USER_BYTES=262144000
-FILES_USER_COUNT=500
 FILE_OUTPUT_MODELS=
 ```
 
@@ -23,7 +22,7 @@ The switch defaults to false. New file routes return 404 while disabled, existin
 
 `FILE_OUTPUT_MODELS` is a comma-separated allowlist of enabled model IDs verified to support Chat Completions function calls. Set it to `*` to allow every enabled chat model to attempt file generation; only do this in development unless every configured provider/model has been verified to support function calls. File generation is enabled only for requests with `outputFile`. Plain text chats are unchanged.
 
-Limits: 25 MiB maximum single upload; at most 10 attachments, 25 MiB combined in one new turn; 512 KiB generated UTF-8 content; 250 MiB/500 files per user by default. Memory uploads and bounded downloads are used. HTTP file routes have a per-user 120/min limiter (per process; existing deployment is one process). These are configurable operating defaults, not provider guarantees.
+Limits: 25 MiB maximum single upload; at most 10 attachments, 25 MiB combined in one new turn; 512 KiB generated UTF-8 content; 2 GB per user by default, with no separate file-count limit. Memory uploads and bounded downloads are used. HTTP file routes have a per-user 120/min limiter (per process; existing deployment is one process). These are configurable operating defaults, not provider guarantees.
 
 Ready unattached uploads expire in 24h. Binding a supported upload to a message clears expiry in the acceptance transaction. Generated files do not expire automatically. Hourly cleanup processes up to 100 expired items per run. Explicit deletion removes chunks and refunds quota transactionally; the metadata tombstone remains to prevent replay resurrection.
 
@@ -32,6 +31,8 @@ Ready unattached uploads expire in 24h. Binding a supported upload to a message 
 All paths have prefix `/gpt-titi/api`. Same bearer token as existing API. Active account required.
 
 - `POST /files` or `POST /upload`: multipart field `file`; response 201 `{success:true,file}`.
+- `POST /files/library-upload`: Files-page-only multipart upload. Returns 201 `{success:true,outcome:"added",file}` or 200 `{success:true,outcome:"existing",file}`. Validated SHA-256, byte size and format identify a ready, non-expiring upload in the same owner's library. Renames preserve the oldest matching upload's ID and filename; changed content or format remains independent. Existing duplicate records are not rewritten or removed. Chat uploads continue to use `POST /files` and generated results keep their own IDs.
+- `GET /files?view=library&limit=40&q=…&source=…&category=…&sort=…&cursor=…`: owner-scoped keyset pagination, listVersion 2, count for information, maxCount:null. New clients request /files/limits?libraryVersion=2. FILES_USER_BYTES controls the byte ceiling; FILES_USER_COUNT is ignored. Older clients still get a numeric compatibility field equal to maxBytes (each stored file costs at least one byte); this is not a separate admission check.
 - `GET /files?limit=20&before=<id>`: owner-only page and `{quota:{bytes,count,maxBytes,maxCount}}`.
 - `GET /files/:id`: current metadata, including deleted tombstones.
 - `GET /files/:id/download`: owner-only attachment download, octet-stream, no-store, nosniff.

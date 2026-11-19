@@ -10,9 +10,10 @@ const profile = 'pdf-table-number-v1';
 const enabled = model => process.env.PDF_CELL_EDIT_ENABLED === 'true' && require('../computation/policy').enabled(model)
   && require('../files/pdfInput').enabled(model) && require('../files/artifacts').outputEnabled(model);
 const quoted = '[«“"]([^»”"«“\\r\\n]{1,100})[»”"]';
+const preservation = /(?:(?:Зміни\s+(?:тільки|лише)\s+цю\s+клітинку|Збережи\s+решту\s+тексту\s+й\s+оформлення)\.\s*)*/u;
 const pattern = new RegExp('^(?:У |В )?(?:прикріпленому )?PDF на сторінці ([1-9][0-9]{0,5}) (?:у|в) рядку '+quoted+
   ' (?:у|в) колонці '+quoted+' заміни '+quoted+' на '+quoted+
-  '\\.\\s*(?:Збережи решту тексту й оформлення\\.\\s*)?Поверни (?:відредаговану )?копію з назвою ([\\p{L}\\p{N}_-][\\p{L}\\p{N}_.-]*\\.pdf)\\.?$', 'iu');
+  '\\.\\s*'+preservation.source+'Поверни (?:відредаговану )?копію з назвою ([\\p{L}\\p{N}_-][\\p{L}\\p{N}_.-]*\\.pdf)\\.?$', 'iu');
 const sha = value => createHash('sha256').update(value).digest('hex');
 
 function plan(message, files, model) {

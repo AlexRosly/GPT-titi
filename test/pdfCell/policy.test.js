@@ -18,6 +18,26 @@ test('request selector binds one physical page, row, column, old value and new f
   finally { process.env.PDF_CELL_EDIT_ENABLED='true'; }
 });
 
+const amountPrompt = 'У прикріпленому PDF на сторінці 2 у рядку «QA-202» у колонці «Сума, грн» заміни «760,18» на «7606,18». Зміни тільки цю клітинку. Поверни копію з назвою QA_PDF_amount_result.pdf.';
+
+test('the live amount request selects the verified PDF editor with or without a preservation instruction', () => {
+  const expected = {
+    profile:'pdf-table-number-v1', fileId:file.fileId, filename:'QA_PDF_amount_result.pdf',
+    cell:{page_number:2, row_key:'QA-202', column:'Сума, грн', old:'760,18', new:'7606,18'},
+  };
+  for (const instruction of ['', 'Зміни тільки цю клітинку.', 'Зміни лише цю клітинку.',
+    'Збережи решту тексту й оформлення.', 'Зміни тільки цю клітинку. Збережи решту тексту й оформлення.']) {
+    assert.deepEqual(pdf.plan(amountPrompt.replace('Зміни тільки цю клітинку.', instruction), [file], {}), expected);
+  }
+});
+
+test('a single-cell qualifier cannot hide another requested edit', () => {
+  for (const instruction of ['Зміни тільки цю клітинку і рядок «QA-203».',
+    'Зміни тільки цю клітинку. Видали першу сторінку.']) {
+    assert.equal(pdf.plan(amountPrompt.replace('Зміни тільки цю клітинку.', instruction), [file], {}), null);
+  }
+});
+
 test('unverified candidates and provider-created artifacts cannot complete a protected turn', () => {
   const turn = {pdfCellPlan:pdf.plan(prompt,[file],{}), providerResult:{artifact:{filename:'fake.pdf'}}};
   assert.deepEqual(pdf.publication(turn).computation.files,[]);

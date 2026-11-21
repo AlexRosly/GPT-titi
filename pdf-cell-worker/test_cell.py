@@ -5,7 +5,8 @@ from pathlib import Path
 
 from pypdf import PdfWriter
 from pypdf.generic import DictionaryObject, NameObject
-from cell import Rejected, edit, open_source, rewritten, source_bytes, slot, verify
+from cell import Rejected, edit, open_source, rewritten, source_bytes, slot, Change, edit_batch, resolve_changes, verify, verify_result
+import pdfplumber
 
 
 SOURCE = Path(sys.argv.pop(1)).read_bytes()
@@ -27,6 +28,54 @@ class CellTests(unittest.TestCase):
             result, report = edit(SOURCE, *target)
             self.assertNotEqual(result, SOURCE)
             self.assertEqual(report, {'page': 2, 'pages': 2, 'changedPages': 1, 'changedCells': 1})
+
+    def test_three_requested_cells_on_two_pages_and_same_page_count(self):
+        date = Change(*DATE).__dict__
+        amount = dict(date, column='Сума, грн', old='760,18', new='7606,18')
+        for cells, expected_pages in [([date, amount], 1), ([date, amount, dict(date, page_number=1, row_key='QA-102')], 2)]:
+            result, report = edit_batch(SOURCE, cells)
+            self.assertEqual(report['changedCells'], len(cells))
+            self.assertEqual(report['changedPages'], expected_pages)
+            self.assertEqual(report['verifiedCells'], [Change(**c).receipt() for c in cells])
+            self.assertNotEqual(result, SOURCE)
+
+    def test_all_targets_are_resolved_on_original(self):
+        date = Change(*DATE).__dict__
+        for last, code in [(date, 'DUPLICATE_TARGET'), (dict(date, row_key='absent'), 'NOT_FOUND'),
+                           (dict(date, old=date['new'], new='01.01.2020'), 'VALUE_MISMATCH')]:
+            with self.assertRaisesRegex(Rejected, code) as caught:
+                edit_batch(SOURCE, [date, last])
+            self.assertEqual(caught.exception.failed_index, 1)
+
+    def test_multi_verifier_rejects_omission_and_mark_between_cells(self):
+        first = Change(2, 'QA-201', *DATE[2:])
+        last = Change(2, 'QA-204', *DATE[2:])
+        with pdfplumber.open(io.BytesIO(SOURCE)) as doc:
+            targets = resolve_changes(open_source(SOURCE), doc, [first,last])
+        partial, _ = edit(SOURCE, **first.__dict__)
+        with self.assertRaises(Rejected):
+            verify_result(SOURCE, partial, targets)
+        good, _ = edit_batch(SOURCE, [first.__dict__,last.__dict__])
+        writer = PdfWriter()
+        writer.clone_document_from_reader(open_source(good))
+        page = writer.pages[1]
+        stream = page.get_contents()
+        box1, box2 = [box for _, box in targets[1]]
+        x, y = box1[0]+5, float(page.mediabox.height) - (box1[3]+box2[1])/2
+        stream.set_data(stream.get_data()+f'\nq 0 g {x} {y} 2 2 re f Q\n'.encode())
+        page.replace_contents(stream)
+        data = io.BytesIO()
+        writer.write(data)
+        with self.assertRaisesRegex(Rejected, 'PDF_CELL_VISUAL_CHECK'):
+            verify_result(SOURCE, data.getvalue(), targets)
+
+    def test_worker_refuses_overflow_and_incomplete_batch(self):
+        from worker import process
+        import base64
+        date = Change(*DATE).__dict__
+        for cells in [[date], [date]*65, [date, dict(date, column='Сума, грн', old='760,18', new='9'*24)]]:
+            with self.assertRaises(Rejected):
+                process({'source':base64.b64encode(SOURCE), 'cells':cells})
 
     def test_wrong_page_value_column(self):
         for args, code in [((1,*DATE[1:]), 'PDF_CELL_NOT_FOUND'),

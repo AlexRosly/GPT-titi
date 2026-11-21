@@ -51,3 +51,34 @@ test('a model cannot replace a selector or read a source outside the current tur
   await assert.rejects(run('{"row":"override"}',[file]),{fileError:'PDF_CELL_INVALID_ACTION'});
   await assert.rejects(run('{}',[]),{fileError:'COMPUTE_FILE_FORBIDDEN'});
 });
+
+const batch = require('./batchFixture');
+const {covers, key} = require('../../src/services/pdfCell/plan');
+
+test('all addressed instructions belong to one plan and saved single-cell keys remain compatible', () => {
+  const batchPlan = pdf.plan(batch.prompt, [file], {});
+  assert.deepEqual(batchPlan.cells, batch.cells);
+  assert.equal(batchPlan.filename, 'QA_PDF_multi_result.pdf');
+  assert.equal(pdf.plan(batch.prompt.replace('внеси такі зміни.\n', ''), [file], {}).cells.length, 3);
+  assert.equal(pdf.plan(batch.prompt.replace('На сторінці 2', '2) На сторінці 2'), [file], {}).cells.length, 3);
+  const original = pdf.plan(prompt, [file], {});
+  const legacyFields = ['pdf-table-number-v1',file.fileId,'QA_PDF_date_result.pdf',2,'QA-202','Дата','13.11.2026','07.11.2026'];
+  assert.equal(key(original), require('node:crypto').createHash('sha256').update(JSON.stringify(legacyFields)).digest('hex'));
+  assert.ok(covers(batchPlan, batch.report));
+  for (const report of [{...batch.report, changedPages:1}, {...batch.report, pages:1}, {...batch.report, changedCells:2},
+    {...batch.report, verifiedCells:batch.report.verifiedCells.slice(1)}, {...batch.report, verifiedCells:batch.report.verifiedCells.toReversed()}]) {
+    assert.equal(covers(batchPlan, report), false);
+  }
+  assert.equal(covers({...batchPlan, cells:batch.cells.map(c => ({...c, old:'1'}))}, batch.report), false);
+});
+
+test('a malformed or oversized explicit list stays on the protected path', () => {
+  for (const msg of [batch.prompt.replace('заміни', 'знайди'), batch.prompt+' Видали таблицю.',
+    batch.prompt.replace('На сторінці 2', 'Додай ще одну правку. На сторінці 2')]) {
+    const plan = pdf.plan(msg, [file], {});
+    assert.equal(plan.error, 'PDF_CELL_BATCH_SYNTAX');
+    assert.deepEqual(pdf.publication({pdfCellPlan:plan}).computation.files, []);
+  }
+  const [intro,line,,,end] = batch.prompt.split('\n');
+  assert.equal(pdf.plan([intro,...Array(65).fill(line),end].join('\n'), [file], {}).error, 'PDF_CELL_BATCH_SIZE');
+});

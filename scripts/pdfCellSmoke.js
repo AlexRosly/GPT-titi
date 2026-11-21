@@ -20,7 +20,25 @@ async function smoke(run = require('../src/services/computation/session').runPdf
   }
   const missing=await run({source:source.toString('base64'),cell:{...cell,row_key:'QA-999'},timeoutMs:60000});
   assert.equal(missing.ok,false);assert.equal(missing.text,'PDF_CELL_NOT_FOUND');assert.deepEqual(missing.exports,[]);
-  console.log('PDF cell smoke passed: date, longer amount and missing row.');
+  const batch = require('../test/pdfCell/batchFixture');
+  const runBatch = cells => run({source:source.toString('base64'), cells, timeoutMs:60000});
+  const multi = await runBatch(batch.cells);
+  assert.ok(multi.ok,multi.text);
+  assert.equal(multi.exports.length,1);
+  assert.deepEqual(JSON.parse(multi.text),batch.report);
+  let expected = before;
+  for (const op of batch.cells) {
+    const start = expected.indexOf(op.row_key), end = expected.indexOf('QA-',start+op.row_key.length);
+    assert.ok(start>=0 && end>start);
+    const row = expected.slice(start,end);
+    assert.ok(row.includes(op.old));
+    expected = expected.slice(0,start)+row.replace(op.old,op.new)+expected.slice(end);
+  }
+  assert.equal(await extract(Buffer.from(multi.exports[0],'base64')),expected);
+  const incomplete = await runBatch([...batch.cells.slice(0,-1),{...batch.cells.at(-1),row_key:'QA-999'}]);
+  assert.equal(incomplete.text,'PDF_CELL_NOT_FOUND');assert.equal(incomplete.ok,false);
+  assert.equal(incomplete.failedIndex,2);assert.deepEqual(incomplete.exports,[]);
+  console.log('PDF smoke passed: single-cell edits, three verified cells on two pages, and atomic failure.');
 }
 if (require.main===module) smoke().catch(error=>{console.error(error.fileError||error.message);process.exitCode=1;});
 module.exports={smoke};

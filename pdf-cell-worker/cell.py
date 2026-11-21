@@ -1,6 +1,11 @@
-"""Edit a single numeric text object in a ruled, digital PDF table."""
+"""Edit selected numeric text objects in a ruled, digital PDF table."""
 
+from collections import defaultdict
+from contextlib import closing
+from dataclasses import dataclass
+import hashlib
 import io
+import json
 import math
 import re
 
@@ -38,10 +43,15 @@ def open_source(data):
     return reader
 
 
-def locate(page, row_key, column, old):
+def tables_on(page):
+    return [(table, table.extract()) for table in page.find_tables()]
+
+
+def locate(page, row_key, column, old, *, tables=None):
+    if tables is None:
+        tables = tables_on(page)
     matches = []
-    for table in page.find_tables():
-        values = table.extract()
+    for table, values in tables:
         if not values or column not in values[0]:
             continue
         require(values[0].count(column) == 1, 'PDF_CELL_AMBIGUOUS')
@@ -88,13 +98,21 @@ def rewritten(reader, index, ids, value, only_page=False):
     else:
         writer.clone_document_from_reader(reader)
         page = writer.pages[index]
+    replace_operands(page, {i: value for i in ids})
+    return write_pdf(writer)
+
+
+def replace_operands(page, changes):
     stream = page.get_contents()
     ops = stream.operations
-    for i in ids:
-        args, operator = ops[i]
+    for index, value in changes.items():
+        args, operator = ops[index]
         slot(args, operator)[0] = ByteStringObject(value)
     stream.operations = ops
     page.replace_contents(stream)
+
+
+def write_pdf(writer):
     data = io.BytesIO()
     writer.write(data)
     return data.getvalue()
@@ -126,79 +144,155 @@ def char_style(c):
     return c['fontname'], c['size'], c['non_stroking_color'], c['stroking_color'], tuple(c['matrix'][:4])
 
 
-def verify(source, result, index, row_key, column, old, new):
+@dataclass(frozen=True)
+class Change:
+    page_number: int
+    row_key: str
+    column: str
+    old: str
+    new: str
+
+    def validate(self, page_count):
+        require(type(self.page_number) is int and 1 <= self.page_number <= page_count, 'PDF_CELL_PAGE')
+        require(all(isinstance(x, str) and 0 < len(x) <= 100 for x in (self.row_key, self.column)), 'PDF_CELL_SELECTOR')
+        require(self.old != self.new and all(
+            isinstance(x, str) and re.fullmatch(r'[0-9.,/-]{1,24}', x) and re.search(r'[0-9]', x)
+            for x in (self.old, self.new)), 'PDF_CELL_NUMERIC_VALUE')
+
+    def receipt(self):
+        values = [self.page_number, self.row_key, self.column, self.old, self.new]
+        encoded = json.dumps(values, ensure_ascii=False, separators=(',', ':')).encode()
+        return hashlib.sha256(encoded).hexdigest()
+
+
+def overlaps(a, b):
+    return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+
+def resolve_changes(reader, doc, changes):
+    targets = defaultdict(list)
+    tables = {}
+    for ordinal, change in enumerate(changes):
+        try:
+            change.validate(len(reader.pages))
+            index = change.page_number - 1
+            page = doc.pages[index]
+            require(bool(page.chars), 'PDF_CELL_TEXT_LAYER_REQUIRED')
+            if index not in tables:
+                tables[index] = tables_on(page)
+            box = locate(page, change.row_key, change.column, change.old, tables=tables[index])
+            require(not any(overlaps(box, prev) for _, prev in targets[index]), 'PDF_CELL_DUPLICATE_TARGET')
+            require(not any(overlaps(box, (img['x0'], img['top'], img['x1'], img['bottom']))
+                            for img in page.images), 'PDF_CELL_TEXT_LAYER_REQUIRED')
+            require(target_text(page, box) == change.old, 'PDF_CELL_UNSUPPORTED')
+            targets[index].append((change, box))
+        except Rejected as error:
+            error.failed_index = ordinal
+            raise
+    return targets
+
+
+def verify_text(a, b, targets):
+    require(a.bbox == b.bbox, 'PDF_CELL_LAYOUT')
+    def untouched(page):
+        return [(c['text'], c['x0'], c['x1'], c['top'], c['bottom'], char_style(c))
+                for c in page.chars if not any(char_in(c, box) for _, box in targets)]
+    require(untouched(a) == untouched(b), 'PDF_CELL_OTHER_CHANGES')
+    tables = tables_on(b) if targets else []
+    ink_regions = []
+    for change, box in targets:
+        require(locate(b, change.row_key, change.column, change.new, tables=tables) == box, 'PDF_CELL_LAYOUT')
+        old_chars = [c for c in a.chars if char_in(c, box)]
+        new_chars = [c for c in b.chars if char_in(c, box)]
+        require(target_text(a, box) == change.old and target_text(b, box) == change.new, 'PDF_CELL_VERIFY')
+        sample = old_chars[0]
+        require(all(char_style(c) == char_style(sample) and c['top'] == sample['top']
+                    for c in old_chars + new_chars) and new_chars[0]['x0'] == sample['x0'], 'PDF_CELL_STYLE')
+        require(all(box[0]+1 <= c['x0'] <= c['x1'] <= box[2]-1 and
+                    box[1]+1 <= c['top'] <= c['bottom'] <= box[3]-1 for c in new_chars), 'PDF_CELL_FIT')
+        # Allow a one-point rasterization margin around the old and new glyphs,
+        # clipped to the cell interior so a border change remains detectable.
+        chars = old_chars + new_chars
+        ink_regions.append((max(math.ceil(box[0]*2)+1, math.floor(min(c['x0'] for c in chars)*2)-2),
+                            max(math.ceil(box[1]*2)+1, math.floor(min(c['top'] for c in chars)*2)-2),
+                            min(math.floor(box[2]*2)-1, math.ceil(max(c['x1'] for c in chars)*2)+2),
+                            min(math.floor(box[3]*2)-1, math.ceil(max(c['bottom'] for c in chars)*2)+2)))
+    return ink_regions
+
+
+def render_and_read(page, targets, original):
+    if targets:
+        with closing(page.get_textpage()) as text:
+            height = page.get_height()
+            for change, box in targets:
+                value = text.get_text_bounded(box[0], height-box[3], box[2], height-box[1])
+                require(value.strip() == (change.old if original else change.new), 'PDF_CELL_VERIFY')
+    image = page.render(scale=2)
+    try:
+        return image.to_pil().convert('RGB')
+    finally:
+        image.close()
+
+
+def verify_result(source, result, targets):
     open_source(result)
+    ink_regions = {}
     with pdfplumber.open(io.BytesIO(source)) as before, pdfplumber.open(io.BytesIO(result)) as after:
         require(len(before.pages) == len(after.pages), 'PDF_CELL_OTHER_CHANGES')
-        box = locate(before.pages[index], row_key, column, old)
-        require(locate(after.pages[index], row_key, column, new) == box, 'PDF_CELL_LAYOUT')
-        for i, (a, b) in enumerate(zip(before.pages, after.pages)):
-            require(a.bbox == b.bbox, 'PDF_CELL_LAYOUT')
-            def untouched(page):
-                return [(c['text'], c['x0'], c['x1'], c['top'], c['bottom'], char_style(c))
-                        for c in page.chars if i != index or not char_in(c, box)]
-            require(untouched(a) == untouched(b), 'PDF_CELL_OTHER_CHANGES')
-            if i != index:
-                continue
-            a_chars = [c for c in a.chars if char_in(c, box)]
-            b_chars = [c for c in b.chars if char_in(c, box)]
-            require(target_text(a, box) == old and target_text(b, box) == new, 'PDF_CELL_VERIFY')
-            sample = a_chars[0]
-            require(all(char_style(c) == char_style(sample) and c['top'] == sample['top']
-                        for c in a_chars + b_chars) and b_chars[0]['x0'] == sample['x0'], 'PDF_CELL_STYLE')
-            require(all(box[0]+1 <= c['x0'] <= c['x1'] <= box[2]-1 and
-                        box[1]+1 <= c['top'] <= c['bottom'] <= box[3]-1 for c in b_chars), 'PDF_CELL_FIT')
+        for index, (a, b) in enumerate(zip(before.pages, after.pages)):
+            ink_regions[index] = verify_text(a, b, targets.get(index, []))
 
     with pdfium.PdfDocument(source) as before, pdfium.PdfDocument(result) as after:
-        for i in range(len(before)):
-            p, q = before[i], after[i]
-            try:
-                if i == index:
-                    # PDFium is independent of the parser used to locate the table.
-                    for page, expected in ((p, old), (q, new)):
-                        height = page.get_height()
-                        text = page.get_textpage()
-                        try:
-                            value = text.get_text_bounded(box[0], height-box[3], box[2], height-box[1])
-                            require(value.strip() == expected, 'PDF_CELL_VERIFY')
-                        finally:
-                            text.close()
-                left, right = p.render(scale=2), q.render(scale=2)
-                try:
-                    image_a = left.to_pil().convert('RGB')
-                    image_b = right.to_pil().convert('RGB')
-                    require(image_a.size == image_b.size, 'PDF_CELL_LAYOUT')
-                    bounds = ImageChops.difference(image_a, image_b).getbbox()
-                finally:
-                    left.close()
-                    right.close()
-            finally:
-                p.close()
-                q.close()
-            if i != index:
-                require(bounds is None, 'PDF_CELL_OTHER_CHANGES')
-            else:
-                require(bounds and math.ceil(box[0]*2)+1 <= bounds[0] < bounds[2] <= math.floor(box[2]*2)-1
-                        and math.ceil(box[1]*2)+1 <= bounds[1] < bounds[3] <= math.floor(box[3]*2)-1,
-                        'PDF_CELL_VISUAL_CHECK')
-        return {'pages': len(before), 'page': index+1, 'changedCells': 1, 'changedPages': 1}
+        for index in range(len(before)):
+            selected = targets.get(index, [])
+            with closing(before[index]) as p, closing(after[index]) as q:
+                left = render_and_read(p, selected, True)
+                right = render_and_read(q, selected, False)
+            require(left.size == right.size, 'PDF_CELL_LAYOUT')
+            diff = ImageChops.difference(left, right)
+            for region in ink_regions[index]:
+                require(diff.crop(region).getbbox() is not None, 'PDF_CELL_VISUAL_CHECK')
+                diff.paste((0, 0, 0), region)
+            require(not diff.getbbox(), 'PDF_CELL_VISUAL_CHECK' if selected else 'PDF_CELL_OTHER_CHANGES')
+        return len(before)
+
+
+def verify(source, result, index, row_key, column, old, new):
+    change = Change(index + 1, row_key, column, old, new)
+    with pdfplumber.open(io.BytesIO(source)) as doc:
+        targets = resolve_changes(open_source(source), doc, [change])
+    pages = verify_result(source, result, targets)
+    return {'page': index + 1, 'pages': pages, 'changedPages': 1, 'changedCells': 1}
+
+
+def edit_changes(source, changes, *, batch):
+    reader = open_source(source)
+    with pdfplumber.open(io.BytesIO(source)) as doc:
+        targets = resolve_changes(reader, doc, changes)
+    writer = PdfWriter()
+    writer.clone_document_from_reader(reader)
+    for index, selected in targets.items():
+        replacements = {}
+        for change, box in selected:
+            operator = target_operator(reader, index, box, change.old)
+            require(operator not in replacements, 'PDF_CELL_DUPLICATE_TARGET')
+            replacements[operator] = change.new.encode('ascii')
+        replace_operands(writer.pages[index], replacements)
+    result = write_pdf(writer)
+    pages = verify_result(source, result, targets)
+    report = {'pages': pages, 'changedPages': len(targets), 'changedCells': len(changes)}
+    if batch:
+        report['verifiedCells'] = [change.receipt() for change in changes]
+    else:
+        report['page'] = changes[0].page_number
+    return result, report
+
+
+def edit_batch(source, cells):
+    require(isinstance(cells, list) and 2 <= len(cells) <= 64, 'PDF_CELL_BATCH_SIZE')
+    require(all(isinstance(c, dict) and set(c) == set(Change.__dataclass_fields__) for c in cells), 'PDF_CELL_SELECTOR')
+    return edit_changes(source, [Change(**c) for c in cells], batch=True)
 
 
 def edit(source, page_number, row_key, column, old, new):
-    require(all(isinstance(x, str) and 0 < len(x) <= 100 for x in (row_key, column)), 'PDF_CELL_SELECTOR')
-    require(all(isinstance(x, str) and re.fullmatch(r'[0-9.,/-]{1,24}', x) for x in (old, new))
-            and all(re.search(r'[0-9]', x) for x in (old, new)) and old != new, 'PDF_CELL_NUMERIC_VALUE')
-    reader = open_source(source)
-    require(type(page_number) is int and 1 <= page_number <= len(reader.pages), 'PDF_CELL_PAGE')
-    index = page_number - 1
-    with pdfplumber.open(io.BytesIO(source)) as doc:
-        page = doc.pages[index]
-        require(bool(page.chars), 'PDF_CELL_TEXT_LAYER_REQUIRED')
-        box = locate(page, row_key, column, old)
-        require(not any(img['x0'] < box[2] and img['x1'] > box[0] and
-                        img['top'] < box[3] and img['bottom'] > box[1] for img in page.images),
-                'PDF_CELL_TEXT_LAYER_REQUIRED')
-        require(target_text(page, box) == old, 'PDF_CELL_UNSUPPORTED')
-    operator = target_operator(reader, index, box, old)
-    result = rewritten(reader, index, [operator], new.encode('ascii'))
-    return result, verify(source, result, index, row_key, column, old, new)
+    return edit_changes(source, [Change(page_number, row_key, column, old, new)], batch=False)

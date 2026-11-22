@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { ChatModels } = require('../../src/models');
 const getChatModels = require('../../src/controllers/user/getChatModels');
-const { additions, retained } = require('../../src/config/modelCatalog202611');
+const { responsesModels: additions, retained } = require('../../src/config/modelCatalog202611');
 
 async function request(t, records) {
   let status, body;

@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { ResponsesSession, configuration } = require('../../src/services/chatDeliveryV2/responsesProvider');
-const { additions } = require('../../src/config/modelCatalog202611');
+const { responsesModels: additions } = require('../../src/config/modelCatalog202611');
 const done = (id, output = [], status = 'completed') => ({ id, status, output, usage: { input_tokens: 10, output_tokens: 3, total_tokens: 13 } });
 const message = text => ({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text, annotations: [] }] });
 const call = (id, name = 'sample') => ({ type: 'function_call', id: 'fc_' + id, call_id: id, name, arguments: '{"ok":true}', status: 'completed' });

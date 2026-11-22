@@ -35,3 +35,38 @@ test('catalog fails before writes when duplicate IDs or already-enabled new entr
 test('legacy models default to the existing API path', () => {
   assert.equal(new ChatModels({ modelId: 'gpt-5.4' }).apiMode, 'chat_completions');
 });
+
+const gpt62 = require('../../src/config/modelCatalog20261122');
+test('GPT-6.2 seeding inserts only the two requested disabled drafts, without prices or changes to active models', () => {
+  const active = catalog.responsesModels.filter(model => !model.modelId.startsWith('gpt-6.2-'))
+    .map(model => ({ ...model, enabled: true }));
+  const operations = gpt62.plan([...active, ...catalog.retained.map(modelId => ({ modelId, enabled: true }))]);
+  assert.deepEqual(operations.map(op => op.updateOne.filter.modelId), ['gpt-6.2-astra', 'gpt-6.2-sol']);
+  for (const op of operations) {
+    assert.equal(op.updateOne.update.$set, undefined);
+    const values = op.updateOne.update.$setOnInsert;
+    assert.equal(values.enabled, false);
+    assert.equal(values.default, false);
+    assert.equal(values.apiMode, 'responses');
+    assert.equal(values.reasoningEffort, 'medium');
+    assert.equal(values.inputPerM, undefined);
+    assert.equal(values.outputPerM, undefined);
+    assert.equal(new ChatModels(values).enabled, false);
+    assert.ok(catalog.chatModelIds.includes(values.modelId));
+  }
+});
+
+test('repeated GPT-6.2 seed preserves draft configuration and only inserts missing records', () => {
+  const existing = { ...gpt62.additions[0], enabled: false, inputPerM: 8, outputPerM: 40, reasoningEffort: 'high' };
+  const original = structuredClone(existing);
+  assert.deepEqual(gpt62.plan([existing]).map(op => op.updateOne.filter.modelId), ['gpt-6.2-sol']);
+  assert.deepEqual(existing, original);
+  assert.deepEqual(gpt62.plan([existing, { ...gpt62.additions[1], enabled: false }]), []);
+});
+
+test('GPT-6.2 seed rejects duplicate IDs or an enabled target before any mutation', () => {
+  const model = { ...gpt62.additions[0], enabled: false };
+  assert.throws(() => gpt62.plan([model, { ...model }]), /Duplicate/);
+  assert.throws(() => gpt62.plan([{ ...model, enabled: true }]), /not explicitly disabled/);
+  assert.throws(() => gpt62.plan([{ modelId: model.modelId }]), /not explicitly disabled/);
+});

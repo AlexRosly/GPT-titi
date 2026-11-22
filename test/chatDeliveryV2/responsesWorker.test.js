@@ -8,7 +8,7 @@ const models = require('../../src/models');
 const reservations = require('../../src/services/chatDeliveryV2/reservations');
 const charge = require('../../src/services/finalizeCharge');
 const { snapshot } = require('../../src/services/chatDeliveryV2/snapshot');
-const { additions } = require('../../src/config/modelCatalog202611');
+const { responsesModels: additions } = require('../../src/config/modelCatalog202611');
 
 function fixture(t, selected = additions[0]) {
   const doc = { _id: 'turn', turnId: 'turn-id', user: 'owner', conversation: 'conversation-id',

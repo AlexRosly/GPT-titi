@@ -1,7 +1,7 @@
 // Availability is non-billable by default. --live additionally makes paid probe calls.
 const fs = require('node:fs');
 const OpenAI = require('openai');
-const { additions } = require('../src/config/modelCatalog202611');
+const { responsesModels: additions } = require('../src/config/modelCatalog202611');
 const { ResponsesSession } = require('../src/services/chatDeliveryV2/responsesProvider');
 const option = name => process.argv.find(value => value.startsWith(`--${name}=`))?.slice(name.length + 3);
 require('dotenv').config({ path: option('env-file') || '.env' });

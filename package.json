@@ -62,7 +62,7 @@
     "docx:quality:smoke": "node scripts/docxQualitySmoke.js",
     "test:docx": "node --test test/docx/engine.test.js test/docx/workflow.test.js test/docx/continuation.test.js test/docx/inspection.test.js test/docx/queryTarget.test.js test/docx/signatureQuality.test.js test/docx/tableTextQuality.test.js",
     "test:docx:integration": "node --test test/docx/integration.test.js",
-    "pdf:cell:build": "docker build -f pdf-cell-worker/Dockerfile -t gptiti-pdf-cell:2 .",
+    "pdf:cell:build": "docker build -f pdf-cell-worker/Dockerfile -t gptiti-pdf-cell:3 .",
     "pdf:cell:smoke": "node scripts/pdfCellSmoke.js",
     "test:pdf:cell": "node --test test/pdfCell/policy.test.js test/chatDeliveryV2/responsesWorker.test.js",
     "test:docx:large": "node --test test/docxBatch/batch.test.js",

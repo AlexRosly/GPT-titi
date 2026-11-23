@@ -6,9 +6,12 @@ from cell import Rejected, edit, edit_batch
 
 def process(request):
     source = base64.b64decode(request['source'], validate=True)
-    if ('cells' in request) == ('cell' in request):
+    if sum(key in request for key in ('cell', 'cells', 'text')) != 1:
         raise Rejected('PDF_CELL_SELECTOR')
-    if 'cells' in request:
+    if 'text' in request:
+        from text_edit import edit_text
+        data, report = edit_text(source, request['text'])
+    elif 'cells' in request:
         data, report = edit_batch(source, request['cells'])
     else:
         data, report = edit(source, **request['cell'])

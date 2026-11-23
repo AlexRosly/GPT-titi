@@ -12,7 +12,7 @@ async function run({ turn, token, model, call, available, transcript, initialUsa
   const docx = require('../docx/policy').isTool(call.function.name);
   const xlsx = require('../xlsx/policy').isTool(call.function.name);
   const batch = require('../docxBatch/policy').isTool(call.function.name);
-  const pdf = call.function.name === require('../pdfCell').name;
+  const pdf = require('../pdfCell').isTool(call.function.name);
   const document = docx || xlsx || batch || pdf;
   if (turn.pdfCellPlan && !pdf) throw policy.fail('PDF_CELL_UNVERIFIED');
   if (!policy.accepts(call.function.name, model)) throw policy.fail('COMPUTE_INVALID_ACTION');

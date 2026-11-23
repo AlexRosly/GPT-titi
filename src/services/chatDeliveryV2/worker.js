@@ -525,7 +525,7 @@ const processTurn = async (claimed) => {
       messages[0].content += ' ' + computation.instructions(fileModel) + ' Office exports follow: ' + require('../files/office').instructions;
       messages[0].content += '\nCOMPUTATION_FILES: ' + JSON.stringify(computeFiles);
       if (!turn.pdfCellPlan && require('../pdfCell').enabled(fileModel) && computeFiles.some(f => /\.pdf$/i.test(f.name))) {
-        messages[0].content += ' A create_file manifest makes a new PDF. For edits to an existing PDF, only claim an edited copy if a source-edit tool produced one. If necessary ask for a physical page, row key, column, exact old and new value. For a numeric cell the supported Ukrainian pilot request is: У PDF на сторінці 2 у рядку «QA-202» у колонці «Дата» заміни «13.11.2026» на «07.11.2026». Поверни копію з назвою result.pdf. For several edits repeat the sentence starting with На сторінці for each target, then request one named copy.';
+        messages[0].content += ' A create_file manifest makes a new PDF. For edits to an existing PDF, only claim an edited copy if a source-edit tool produced one. For prose, ask for the exact old and new text and, if needed, the page, named section or party. Example: У розділі «Умови оплати» заміни «10 днів» на «15 днів». A filename is optional for text edits. For table cells ask for a physical page, row key, column, exact old and new value. For a numeric cell the supported Ukrainian pilot request is: У PDF на сторінці 2 у рядку «QA-202» у колонці «Дата» заміни «13.11.2026» на «07.11.2026». Поверни копію з назвою result.pdf. For several edits repeat the sentence starting with На сторінці for each target, then request one named copy.';
       }
       if (require('../docxBatch/policy').enabled(fileModel)) messages[0].content += ' ' + require('../docxBatch/policy').instructions;
       if (require('../xlsx/policy').enabled(fileModel)) messages[0].content += ' ' + require('../xlsx/policy').instructions;
@@ -544,10 +544,11 @@ const processTurn = async (claimed) => {
     if (turn.pdfCellPlan) {
       const pdf = require('../pdfCell');
       if (!computeEnabled || !pdf.enabled(fileModel)) throw require('../files/validation').fail('PDF_CELL_UNAVAILABLE');
-      fileTools.tools = [pdf.tool];
-      fileTools.tool_choice = {type:'function',function:{name:pdf.name}};
+      const selectedTool = pdf.toolFor(turn.pdfCellPlan);
+      fileTools.tools = [selectedTool];
+      fileTools.tool_choice = {type:'function',function:{name:selectedTool.function.name}};
       fileTools.parallel_tool_calls = false;
-      messages[0].content += ' Use edit_pdf_table_cell once. The server obtains every target and replacement from the user request and verifies the complete copy.';
+      messages[0].content += ' Use the selected PDF editing tool once. The server obtains every target and replacement from the user request and verifies the complete copy.';
     } else if (turn.docxQualityPlan) {
       fileTools.tools = require('../docx/policy').tools;
       fileTools.parallel_tool_calls = false;

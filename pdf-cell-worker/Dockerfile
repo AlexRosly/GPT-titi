@@ -3,9 +3,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 WORKDIR /opt/pdf-cell
 COPY pdf-cell-worker/requirements.txt .
 RUN python -m pip install --no-cache-dir --only-binary=:all: -r requirements.txt
-COPY pdf-cell-worker/cell.py pdf-cell-worker/worker.py pdf-cell-worker/test_cell.py ./
-COPY test/pdfCell/source.pdf ./source.pdf
+COPY pdf-cell-worker/cell.py pdf-cell-worker/text_edit.py pdf-cell-worker/worker.py pdf-cell-worker/test_cell.py pdf-cell-worker/test_text.py ./
+COPY test/pdfCell/source.pdf test/pdfCell/text_source.pdf ./
 USER 10001:10001
-RUN python test_cell.py source.pdf
+RUN python test_cell.py source.pdf && python test_text.py text_source.pdf
 WORKDIR /work
 ENTRYPOINT ["python", "/opt/pdf-cell/worker.py"]

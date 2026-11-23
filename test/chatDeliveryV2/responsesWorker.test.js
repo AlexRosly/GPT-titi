@@ -272,8 +272,9 @@ for (const withFileReport of [true,false]) test('table cell recovery checks the 
 });
 
 const pdfBatch = require('../pdfCell/batchFixture');
+const pdfText = require('../pdfCell/textFixture');
 for (const apiMode of ['chat_completions','responses']) {
-for (const scenario of ['single','multiple','missing','partial-report']) test('PDF '+scenario+' in '+apiMode, async t => {
+for (const scenario of ['single','multiple','missing','partial-report','text','text-missing']) test('PDF '+scenario+' in '+apiMode, async t => {
   const selected = {modelId:'pdf-cell-test',apiMode,reasoningEffort:'low'};
   const f = fixture(t, selected);
   for (const key of ['PDF_CELL_EDIT_ENABLED','PRIVATE_FILES_ENABLED','COMPUTE_V2_ENABLED']) {
@@ -283,11 +284,13 @@ for (const scenario of ['single','multiple','missing','partial-report']) test('P
   const fs = require('node:fs'), path = require('node:path'), crypto = require('node:crypto');
   const hash = data=>crypto.createHash('sha256').update(data).digest('hex');
   const read = name=>fs.readFileSync(path.join(__dirname,'../pdfCell',name));
-  const source=read('source.pdf'), output=read(scenario==='single' ? 'date_reference.pdf' : 'multiple_reference.pdf');
+  const isText = scenario.startsWith('text');
+  const source=read(isText ? 'text_source.pdf' : 'source.pdf');
+  const output=read(isText ? 'text_reference.pdf' : scenario==='single' ? 'date_reference.pdf' : 'multiple_reference.pdf');
   const original={_id:'0123456789abcdef01234567',originalName:'source.pdf',size:source.length,
     checksum:hash(source),mimetype:'application/pdf',status:'ready'};
   const pdf = require('../../src/services/pdfCell');
-  const message=scenario !== 'single' ? pdfBatch.prompt : 'У PDF на сторінці 2 у рядку «QA-202» у колонці «Дата» заміни «13.11.2026» на «07.11.2026». Поверни копію з назвою copy.pdf.';
+  const message=isText ? pdfText.prompt : scenario !== 'single' ? pdfBatch.prompt : 'У PDF на сторінці 2 у рядку «QA-202» у колонці «Дата» заміни «13.11.2026» на «07.11.2026». Поверни копію з назвою copy.pdf.';
   f.doc.pdfCellPlan=pdf.plan(message,[{...original,fileId:original._id,storage:'private'}],selected);
   assert.ok(f.doc.pdfCellPlan);
   let generated, calls=0;
@@ -308,21 +311,24 @@ for (const scenario of ['single','multiple','missing','partial-report']) test('P
   t.mock.method(require('../../src/models/managedFile'),'updateOne',async()=>({matchedCount:1}));
   t.mock.method(require('../../src/services/computation/session'),'runPdfCell',async req=>{
     assert.equal(req.source,source.toString('base64'));if (scenario === 'single') assert.deepEqual(req.cell, f.doc.pdfCellPlan.cell);
+    else if (isText) assert.deepEqual(req.text,{scope:pdfText.scope,changes:pdfText.changes});
     else assert.deepEqual(req.cells, pdfBatch.cells);
+    if (scenario==='text-missing') return {ok:false, text:'PDF_CELL_TEXT_NOT_FOUND', failedIndex:1, exports:[]};
     if (scenario === 'missing') return {ok:false, text:'PDF_CELL_NOT_FOUND', failedIndex:1, exports:[]};
-    const report = scenario === 'single' ? {changedCells:1,changedPages:1,page:2,pages:2} : {...pdfBatch.report};
+    const report = isText ? pdfText.report : scenario === 'single' ? {changedCells:1,changedPages:1,page:2,pages:2} : {...pdfBatch.report};
     if (scenario === 'partial-report') report.verifiedCells = report.verifiedCells.slice(1);
     return {ok:true,text:JSON.stringify(report),exports:[output.toString('base64')]};
   });
   const terminal = {input_tokens:12,output_tokens:4,total_tokens:16};
-  const call = {id:'call-1',type:'function',function:{name:pdf.name,arguments:'{}'}};
+  const toolName = isText ? 'edit_pdf_text' : pdf.name;
+  const call = {id:'call-1',type:'function',function:{name:toolName,arguments:'{}'}};
   if(apiMode==='responses') t.mock.method(Responses.prototype,'create',async function*(req){
-    calls++;assert.deepEqual(req.tools.map(x=>x.name),[pdf.name]);assert.equal(req.tool_choice.name,pdf.name);
+    calls++;assert.deepEqual(req.tools.map(x=>x.name),[toolName]);assert.equal(req.tool_choice.name,toolName);
     yield {type:'response.completed',response:{id:'resp-qa',status:'completed',usage:terminal,
       output:[{id:'fc-1',type:'function_call',status:'completed',call_id:call.id,...call.function}]}};
   });
   else t.mock.method(Completions.prototype,'create',async function*(req){
-    calls++;assert.deepEqual(req.tools.map(x=>x.function.name),[pdf.name]);assert.equal(req.tool_choice.function.name,pdf.name);
+    calls++;assert.deepEqual(req.tools.map(x=>x.function.name),[toolName]);assert.equal(req.tool_choice.function.name,toolName);
     yield {choices:[{delta:{tool_calls:[{...call,index:0}]},finish_reason:'tool_calls'}],
       usage:{prompt_tokens:12,completion_tokens:4,total_tokens:16}};
   });
@@ -331,9 +337,9 @@ for (const scenario of ['single','multiple','missing','partial-report']) test('P
   const result=await snapshot(f.doc);
   assert.equal(result.status,'completed');
   assert.equal(calls,1);assert.equal(f.counts().charges,1);assert.equal(f.counts().releases,1);
-  if (scenario === 'missing' || scenario === 'partial-report') {
+  if (scenario === 'missing' || scenario === 'partial-report' || scenario==='text-missing') {
     assert.equal(result.assistantMessage.computation.status,'partial');
-    assert.equal(result.assistantMessage.computation.reason,scenario==='missing'?'PDF_CELL_NOT_FOUND':'PDF_CELL_UNVERIFIED');
+    assert.equal(result.assistantMessage.computation.reason,scenario==='text-missing'?'PDF_CELL_TEXT_NOT_FOUND':scenario==='missing'?'PDF_CELL_NOT_FOUND':'PDF_CELL_UNVERIFIED');
     if (scenario==='missing') assert.match(result.assistantMessage.content,/QA-202.*Сума, грн/);
     assert.deepEqual(result.assistantMessage.attachments,[]);
     assert.equal(generated,undefined);

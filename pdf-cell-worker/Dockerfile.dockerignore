@@ -7,3 +7,6 @@
 !test/
 !test/pdfCell/
 !test/pdfCell/source.pdf
+!pdf-cell-worker/text_edit.py
+!pdf-cell-worker/test_text.py
+!test/pdfCell/text_source.pdf

@@ -82,3 +82,38 @@ test('a malformed or oversized explicit list stays on the protected path', () =>
   const [intro,line,,,end] = batch.prompt.split('\n');
   assert.equal(pdf.plan([intro,...Array(65).fill(line),end].join('\n'), [file], {}).error, 'PDF_CELL_BATCH_SIZE');
 });
+
+const textFixture = require('./textFixture');
+
+test('natural scoped edits bind both replacements, options and default output name', () => {
+  const p = pdf.plan(textFixture.prompt,[file],{});
+  assert.deepEqual(p.text,{scope:textFixture.scope,changes:textFixture.changes});
+  assert.equal(pdf.toolFor(p).function.name,'edit_pdf_text');
+  assert.equal(p.filename,'source_edited.pdf');
+  assert.equal(covers(p,textFixture.report),true);
+  assert.equal(covers(p,{...textFixture.report,verifiedTexts:textFixture.report.verifiedTexts.toReversed()}),false);
+  assert.equal(covers(p,{...textFixture.report,targetPages:[1,2]}),false);
+  assert.equal(pdf.plan(textFixture.prompt+' і видали додаток',[file],{}).error,'PDF_CELL_TEXT_SYNTAX');
+  assert.equal(pdf.plan(textFixture.prompt,[file,file],{}),null);
+  assert.notEqual(key(p),key({...p,text:{...p.text,scope:{...p.text.scope,party:'QA-100'}}}));
+});
+
+test('one request may address different pages, named sections and phrases with punctuation', () => {
+  const message = 'На сторінці 1 у розділі «Умови оплати» заміни «10 днів» на «15 днів»; на сторінці 2 заміни «100 грн.» на «150 грн.». Поверни копію з назвою two_pages.pdf.';
+  const p = pdf.plan(message,[file],{});
+  assert.equal(p.filename,'two_pages.pdf');
+  assert.equal(p.text.scope.page,1);
+  assert.equal(p.text.changes[1].scope.page,2);
+  assert.equal(p.text.changes[1].old,'100 грн.');
+  const quoted = pdf.plan('Заміни «Розділ 1, умови та комісії» на «Умови, ціни і комісії».',[file],{});
+  assert.equal(quoted.text.changes[0].new,'Умови, ціни і комісії');
+  const unsafe = pdf.plan('На сторінці 1 заміни «A» на «B». Перестав сторінки.',[file],{});
+  assert.equal(unsafe.error,'PDF_CELL_TEXT_SYNTAX');
+});
+
+test('a trailing section qualifier is bound to the target rather than inserted in the PDF', () => {
+  const p = pdf.plan('Заміни «10 днів» на «15 днів» у розділі «Умови оплати».',[file],{});
+  assert.equal(p.text.changes[0].scope.section,'Умови оплати');
+  assert.equal(p.text.changes[0].new,'15 днів');
+  assert.equal(pdf.plan('Як замінити текст на інший?',[file],{}),null);
+});

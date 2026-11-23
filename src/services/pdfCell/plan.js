@@ -1,3 +1,4 @@
+const textPlan = require('./textPlan');
 const {createHash} = require('node:crypto');
 
 const singleProfile = 'pdf-table-number-v1';
@@ -43,12 +44,29 @@ const fields = cell => [cell.page_number, cell.row_key, cell.column, cell.old, c
 const receipt = cell => sha(JSON.stringify(fields(cell)));
 
 function key(plan) {
+  if (plan.profile === textPlan.profile) {
+    const {scope, changes} = plan.text;
+    return sha(JSON.stringify([plan.profile, plan.fileId, plan.filename, scope.page, scope.section,
+      scope.party, changes.map(c => [c.old,c.new,c.scope?.page,c.scope?.section,c.scope?.party])]));
+  }
   const targets = plan.profile === singleProfile ? fields(plan.cell) : plan.cells.map(fields);
   return sha(JSON.stringify([plan.profile, plan.fileId, plan.filename, ...targets]));
 }
 
 function covers(plan, report) {
   if (plan.error || !report || !Number.isInteger(report.pages) || report.pages < 1 || report.pages > 12) return false;
+  if (plan.profile === textPlan.profile) {
+    const {changes, scope} = plan.text;
+    const pages = report.targetPages;
+    return Array.isArray(pages) && pages.length === changes.length && changes.length > 0 &&
+      pages.every((p,i) => {
+        const selected = changes[i].scope || scope;
+        return Number.isInteger(p) && p >= 1 && p <= report.pages && (!selected.page || selected.page === p);
+      }) &&
+      report.changedTexts === changes.length && report.changedPages === new Set(pages).size &&
+      Array.isArray(report.verifiedTexts) && report.verifiedTexts.length === changes.length &&
+      changes.every((c,i) => report.verifiedTexts[i] === sha(JSON.stringify([c.old,c.new,pages[i]])));
+  }
   if (plan.profile === singleProfile) {
     return plan.cell.page_number >= 1 && report.page === plan.cell.page_number && report.pages >= report.page &&
       report.changedCells === 1 && report.changedPages === 1;

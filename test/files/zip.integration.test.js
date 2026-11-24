@@ -23,12 +23,12 @@ test.before(async()=>{
  await new Promise(resolve=>{server=app.listen(0,'127.0.0.1',resolve);});base=`http://127.0.0.1:${server.address().port}`;
 });
 test.after(async()=>{if(server)await new Promise(r=>server.close(r));if(uri){await mongoose.connection.dropDatabase();await mongoose.disconnect();}});
-async function fixture(model={}){
+async function fixture(model={}, entries=[{path:'folder/data.csv',buffer:Buffer.from('name,value\nМарія,42')}]){
  const id=crypto.randomUUID(),modelId=`zip-${id}`;
  const user=await models.User.create({email:`${id}@example.test`,name:'ZIP test',status:'active',appTokens:100000});
  await models.ChatModels.create({modelId,enabled:true,inputPerM:1,outputPerM:2,...model});
  const conversation=await models.ChatConversation.create({user:user.id,modelId});
- const file=await store.create({user:user.id,name:'inputs.zip',mimetype:'application/zip',buffer:codec.write([{path:'folder/data.csv',buffer:Buffer.from('name,value\nМарія,42')}])});
+ const file=await store.create({user:user.id,name:'inputs.zip',mimetype:'application/zip',buffer:codec.write(entries)});
  const payload={clientMessageId:crypto.randomUUID(),conversationId:conversation.id,modelId,message:'Read ZIP and return results in a ZIP',files:[{fileId:file.id,storage:'private'}]};
  return {user,modelId,conversation,file,payload};
 }
@@ -47,7 +47,12 @@ test('prepare is private/idempotent, preview lists contents, derived quota recla
  const preview=await (await request(f,`/files/${f.file.id}/preview`)).json();assert.equal(preview.kind,'archive');assert.equal(preview.entries[0].path,'folder/data.csv');assert.equal(preview.entries[0].content,undefined);
  assert.equal((await request(f,`/files/${f.file.id}/download`)).status,200);
  await store.remove(f.user.id,f.file.id);await store.remove(f.user.id,f.file.id);assert.equal((await Quota.findById(f.user.id)).bytes,0);assert.equal((await File.findById(f.file.id)).zipCache,null);
- const expired=await fixture();await input.prepare(expired.user.id,expired.file.id,{});await File.updateOne({_id:expired.file.id},{$set:{expiresAt:new Date(0)}});await store.cleanup();assert.equal((await Quota.findById(expired.user.id)).bytes,0);
+ const expired=await fixture();
+ await input.prepare(expired.user.id,expired.file.id,{});
+ // Unattached legacy uploads could expire. Permanent library uploads keep their bytes.
+ await File.updateOne({_id:expired.file.id},{$unset:{retention:1},$set:{expiresAt:new Date(0)}});
+ await store.cleanup();
+ assert.equal((await Quota.findById(expired.user.id)).bytes,0);
 });
 test('V2 transmits extracted ZIP, reserves its context, creates one ZIP and restores references after recovery',opts,async t=>{
  const f=await fixture();const calls=provider(t);const admitted=await accept({userId:f.user.id,payload:f.payload});assert.ok(admitted.turn.reservedAppTokens>10);
@@ -74,4 +79,35 @@ test('saved ZIP provider result recovers without another model call or duplicate
  await models.ChatTurn.updateOne({_id:claim.turn._id},{$set:{leaseUntil:new Date(0),providerStartedAt:new Date(),providerResult:{assistantText:'Archive',usage:{promptTokens:100,completionTokens:30,totalTokens:130},artifact:{filename:'out.zip',content:JSON.stringify({files:[{path:'answer.txt',content:'saved'}]}),summary:'Archive'}}}});
  let calls=0;t.mock.method(Completions.prototype,'create',()=>{calls++;throw Error('Must not replay');});await worker.recoverExpired();await worker.recoverExpired();
  const row=await models.ChatTurn.findById(claim.turn._id).lean();assert.equal(row.status,'completed');assert.equal(calls,0);assert.equal(await File.countDocuments({user:f.user.id,source:'generated'}),1);assert.equal(await models.ChatBillingLedger.countDocuments({turnId:row.turnId}),1);
+});
+
+
+test('new turn upgrades cached OCR from a previous revision before building ZIP provider input',opts,async t=>{
+ const previous=process.env.OCR_ENABLED;
+ process.env.OCR_ENABLED='true';
+ t.after(()=>{if(previous===undefined)delete process.env.OCR_ENABLED;else process.env.OCR_ENABLED=previous;});
+ const {revision}=require('../../src/services/files/ocrReading');
+ const messages=require('../../src/services/files/messages');
+ const scanPath='forms/code.png';
+ const raw=Buffer.from('89504e470d0a1a0a00000000','hex');
+ let reads=0;
+ t.mock.method(require('../../src/services/files/ocrProcess'),'extract',async()=>{
+   reads++;
+   return {text:'Контрольний код 384715',pages:1,detections:[]};
+ });
+ for (const previousRevision of [4,5]) {
+   const f=await fixture({},[{path:scanPath,buffer:raw}]);
+   const stale={version:1,checksum:f.file.checksum,kinds:['ocr'],ocrQualityRevision:previousRevision,
+     text:JSON.stringify({entries:[{path:scanPath,status:'read',content:'Контрольний код 3847 15'}]})};
+   const size=Buffer.byteLength(JSON.stringify(stale));
+   await File.updateOne({_id:f.file._id},{$set:{zipCache:stale,derivedBytes:size}});
+   await Quota.updateOne({_id:f.user._id},{$inc:{bytes:size}});
+   const accepted=await accept({userId:f.user.id,payload:f.payload});
+   const turn=await models.ChatTurn.findOne({turnId:accepted.turn.turnId});
+   const parts=await messages.providerContent(f.user.id,'Read code',turn.files);
+   assert.match(JSON.stringify(parts),/Контрольний код 384715/u);
+   assert.doesNotMatch(JSON.stringify(parts),/3847 15/u);
+   assert.equal((await File.findById(f.file._id)).zipCache.ocrQualityRevision,revision);
+ }
+ assert.equal(reads,2);
 });

@@ -90,13 +90,13 @@ test('regional rereads share unused final-page time without extending the overal
 test('code fields only join unchanged digits when both the image and independent word reread agree', async () => {
   const { createCanvas } = require('@napi-rs/canvas');
   const { resolve } = require('../../src/services/files/ocrCodeSpacing');
-  async function result({label='Код', extra=0, reread='384715', confidence=95, budget=1000, outside=false} = {}) {
+  async function result({label='Код', extra=0, narrowBy=0, reread='384715', confidence=95, budget=1000, outside=false} = {}) {
     const canvas = createCanvas(140, 28);
     const ctx = canvas.getContext('2d');
     ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, 140, 28);
     ctx.fillStyle = '#111';
     for (let i=0; i<6; i++) ctx.fillRect(10 + 14*i + (i>=4 ? extra : 0), 4, 10, 16);
-    const words = [{text:label},{text:'3847',left:10,top:4,width:52,height:16,confidence:95},
+    const words = [{text:label},{text:'3847',left:10,top:4,width:52-narrowBy,height:16,confidence:95},
       {text:'15',left:66+extra,top:4,width:24,height:16,confidence:95}];
     const line = words.map(word => word.text);
     const text = line.join(' ');
@@ -104,6 +104,8 @@ test('code fields only join unchanged digits when both the image and independent
       async () => canvas, () => ({words:[{text:reread,confidence}]}), () => budget);
   }
   assert.equal(await result(), 'Код 384715');
+  // 4.1.1 can report a word box ending inside the last digit, creating a spurious word gap.
+  assert.equal(await result({narrowBy:4}), 'Код 384715');
   // This gap still enters the region crop but fails the measured glyph pitch.
   assert.equal(await result({extra:2.5}), 'Код 3847 15');
   assert.equal(await result({extra:10}), 'Код 3847 15');

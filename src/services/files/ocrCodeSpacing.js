@@ -15,7 +15,8 @@ function codeBox(pieces, original) {
   if (height < 10 || width < digits.length * 5 || width * height > 180000) return;
   for (let i = 1; i < pieces.length; i++) {
     const a = pieces[i-1], b = pieces[i];
-    if (b.left < a.left + a.width || b.left - a.left - a.width > width / digits.length * 0.45 ||
+    // Word boxes can end inside a digit on Tesseract 4. Measure spacing on the original pixels below.
+    if (b.left < a.left + a.width ||
         Math.abs(a.top + a.height - b.top - b.height) > height * 0.2) return;
   }
   return { left, top, width, height, digits, original };

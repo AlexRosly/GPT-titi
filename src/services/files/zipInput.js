@@ -31,7 +31,7 @@ async function extract(buffer,model){
  const unpacked=await processZip({action:'read',buffer});const prepared=[],kinds=new Set();
  // Validate the entire manifest and all capability flags before starting OCR/parsers.
  for(const e of unpacked.entries){
-  const bytes=Buffer.from(e.buffer),name=path.posix.basename(e.path),ext=path.posix.extname(name).slice(1).toLowerCase();
+  const bytes=Buffer.from(e.buffer.buffer,e.buffer.byteOffset,e.buffer.byteLength),name=path.posix.basename(e.path),ext=path.posix.extname(name).slice(1).toLowerCase();
   if(name==='.DS_Store'||e.path.startsWith('__MACOSX/')){prepared.push({path:e.path,size:bytes.length,kind:'ignored'});continue;}
   if(![...require('./validation').textExtensions,'pdf','docx','xlsx','png','jpg','jpeg','webp'].includes(ext))throw fail('ZIP_UNSUPPORTED_ENTRY',415);
   if(!bytes.length){if(require('./validation').textExtensions.has(ext)){kinds.add('text');prepared.push({path:e.path,size:0,kind:'text',bytes});continue;}throw fail('ZIP_UNSUPPORTED_ENTRY',415);}

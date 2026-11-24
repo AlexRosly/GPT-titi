@@ -1,7 +1,9 @@
 // ZIP parsing never writes entry paths to disk. Only classic stored/deflated ZIP.
 const { inflateRawSync, deflateRawSync } = require('node:zlib');
 const { fail } = require('./validation');
-const LIMITS = Object.freeze({ inputBytes:10*1024**2, expandedBytes:25*1024**2, entryBytes:5*1024**2, entries:20, records:100, textBytes:128*1024, outputEntries:10 });
+const { FILE_BYTES } = require('./config');
+const OUTPUT_EXPANDED_BYTES = 25 * 1024 ** 2;
+const LIMITS = Object.freeze({ inputBytes:FILE_BYTES, expandedBytes:2*FILE_BYTES, entryBytes:5*1024**2, entries:20, records:100, textBytes:128*1024, outputEntries:10 });
 const table=Array.from({length:256},(_,n)=>{for(let i=0;i<8;i++)n=n&1?0xedb88320^(n>>>1):n>>>1;return n>>>0;});
 const crc32=bytes=>{let n=0xffffffff;for(const b of bytes)n=table[(n^b)&255]^(n>>>8);return (n^0xffffffff)>>>0;};
 function safePath(name,directory=false){
@@ -70,7 +72,7 @@ function write(entries){
  let offset=0,total=0;const chunks=[],central=[],seen=new Set();
  for(const e of entries){
   safePath(e.path);const key=e.path.normalize('NFC').toLowerCase();if(seen.has(key)||[...seen].some(n=>n.startsWith(key+'/')||key.startsWith(n+'/')))throw fail('ZIP_UNSAFE_PATH');seen.add(key);
-  if(!Buffer.isBuffer(e.buffer))bad();total+=e.buffer.length;if(total>LIMITS.expandedBytes||e.buffer.length>8*1024**2)limit();
+  if(!Buffer.isBuffer(e.buffer))bad();total+=e.buffer.length;if(total>OUTPUT_EXPANDED_BYTES||e.buffer.length>8*1024**2)limit();
   const name=Buffer.from(e.path),bytes=deflateRawSync(e.buffer),crc=crc32(e.buffer);
   const local=Buffer.alloc(30);local.writeUInt32LE(0x04034b50);local.writeUInt16LE(20,4);local.writeUInt16LE(0x800,6);local.writeUInt16LE(8,8);local.writeUInt16LE(33,12);
   local.writeUInt32LE(crc,14);local.writeUInt32LE(bytes.length,18);local.writeUInt32LE(e.buffer.length,22);local.writeUInt16LE(name.length,26);
@@ -80,4 +82,4 @@ function write(entries){
  const directory=Buffer.concat(central),end=Buffer.alloc(22);end.writeUInt32LE(0x06054b50);end.writeUInt16LE(entries.length,8);end.writeUInt16LE(entries.length,10);end.writeUInt32LE(directory.length,12);end.writeUInt32LE(offset,16);
  return Buffer.concat([...chunks,directory,end]);
 }
-module.exports={LIMITS,safePath,read,write,crc32};
+module.exports={LIMITS,OUTPUT_EXPANDED_BYTES,safePath,read,write,crc32};

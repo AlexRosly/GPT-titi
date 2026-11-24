@@ -201,7 +201,7 @@ async function assemble(book,args,saved,records){
  parts.set('xl/workbook.xml',Buffer.from(workbook));
  const zip=new(require('jszip'))();for(const [name,b]of parts)zip.file(name,b,{createFolders:false});
  const buffer=await zip.generateAsync({type:'nodebuffer',compression:'DEFLATE',compressionOptions:{level:6}});
- if(buffer.length>require('../files/config').maxBytes())throw fail('COMPUTE_OUTPUT_LIMIT');
+ if(buffer.length>require('../files/config').generatedMaxBytes())throw fail('COMPUTE_OUTPUT_LIMIT');
  // Reopen the final container; verify untouched part bytes and the exact edited XML.
  const verified=load(buffer);if(!verified.parts.get(sheet.path)?.equals(parts.get(sheet.path)))throw fail('XLSX_VERIFICATION_FAILED');
  for(const [name,b]of book.parts)if(name!==sheet.path&&name!=='xl/workbook.xml'&&!verified.parts.get(name)?.equals(b))throw fail('XLSX_VERIFICATION_FAILED');

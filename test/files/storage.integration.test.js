@@ -108,3 +108,60 @@ integration('streamed uploads persist multiple chunks; failed checksum/abort rol
     assert.equal(await Chunk.countDocuments(), chunkCount);
   } finally { await upload.handle.close(); }
 });
+
+integration('large uploads publish once, keep independent chat IDs and remove unpublished chunks', async () => {
+  const Stage = require('../../src/models/fileUploadStage');
+  const {spool} = require('../../src/services/files/streamUpload');
+  const {Readable} = require('node:stream');
+  const bytes = Buffer.alloc(9 * 1024 ** 2);
+  bytes.write('%PDF-1.7');
+  const upload = await spool(Readable.from([bytes]), 'large.pdf');
+  const owner = new mongoose.Types.ObjectId();
+  const before = await Chunk.countDocuments();
+  try {
+    // Wrong checksum is detected after multiple batches have been written.
+    await assert.rejects(store.createUpload({user:owner, upload:{...upload, checksum:'0'.repeat(64)}}),
+      {fileError:'FILE_UNAVAILABLE'});
+    assert.equal(await File.countDocuments({user:owner}), 0);
+    assert.equal(await Chunk.countDocuments(), before);
+    assert.equal(await Stage.countDocuments(), 0);
+    assert.equal((await Quota.findById(owner)).bytes, 0);
+    const args = {user:owner, upload};
+    const pair = await Promise.all([store.uploadToLibrary(args), store.uploadToLibrary(args)]);
+    assert.deepEqual(pair.map(x => x.outcome).sort(), ['added', 'existing']);
+    assert.equal(String(pair[0].file._id), String(pair[1].file._id));
+    const chatFile = await store.createUpload(args);
+    assert.notEqual(String(chatFile._id), String(pair[0].file._id));
+    assert.deepEqual((await store.read(owner, chatFile.id)).buffer, bytes);
+    assert.equal((await Quota.findById(owner)).bytes, bytes.length * 2);
+    process.env.FILES_USER_BYTES = String(bytes.length * 2);
+    try {
+      assert.equal((await store.uploadToLibrary(args)).outcome, 'existing');
+      await assert.rejects(store.createUpload({user:owner, upload:{...upload, handle:null}}),
+        {fileError:'FILE_QUOTA_EXCEEDED'});
+    } finally {
+      delete process.env.FILES_USER_BYTES;
+    }
+    assert.equal(await Stage.countDocuments(), 0);
+    await store.remove(owner, chatFile.id);
+    await store.remove(owner, String(pair[0].file._id));
+    assert.equal(await Chunk.countDocuments(), before);
+  } finally {
+    await upload.handle.close();
+  }
+});
+
+integration('cleanup after interruption only removes expired upload stages', async () => {
+  const Stage = require('../../src/models/fileUploadStage');
+  const expired = await Stage.create({expiresAt:new Date(0)});
+  const active = await Stage.create({expiresAt:new Date(Date.now() + 60000)});
+  for (const stage of [expired, active]) {
+    await Chunk.create({file:stage._id, index:0, data:Buffer.from('partial upload')});
+    await assert.rejects(store.owned(user, String(stage._id)), {fileError:'FILE_NOT_FOUND'});
+  }
+  await store.cleanup();
+  assert.equal(await Chunk.countDocuments({file:expired._id}), 0);
+  assert.equal(await Stage.exists({_id:expired._id}), null);
+  assert.equal(await Chunk.countDocuments({file:active._id}), 1);
+  assert.ok(await Stage.exists({_id:active._id}));
+});

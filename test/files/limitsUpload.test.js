@@ -136,7 +136,7 @@ test('disconnected multipart upload releases its slot and private descriptor', {
   } finally { request.destroy(); delete process.env.FILES_UPLOAD_SLOTS; await new Promise(r => server.close(r)); }
 });
 
-test('50 MB storage upload is streamed; archive reading remains separately bounded', async () => {
+test('50 MB storage upload is streamed and matches the default chat ZIP ceiling', async () => {
   async function* archive(bytes) {
     yield Buffer.from('504b0304', 'hex');
     let remaining = bytes - 4;
@@ -147,5 +147,6 @@ test('50 MB storage upload is streamed; archive reading remains separately bound
   try { assert.equal(upload.size, 50_000_000); assert.equal((await upload.handle.stat()).size, 50_000_000); }
   finally { await upload.handle.close(); }
   await assert.rejects(spool(Readable.from(archive(50_000_001)), 'large.zip'), { fileError: 'FILE_TOO_LARGE' });
-  assert.equal(limits.effective().processing.zip.inputBytes, 10 * 1024 ** 2);
+  assert.equal(limits.effective().processing.zip.inputBytes, 50_000_000);
+  assert.equal(limits.effective().message.maxBytes, 50_000_000);
 });

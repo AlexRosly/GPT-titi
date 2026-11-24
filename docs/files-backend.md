@@ -13,7 +13,8 @@ The legacy FileModels schema is not migrated: the active legacy Cloudinary uploa
 
 ```
 PRIVATE_FILES_ENABLED=false
-FILES_MAX_BYTES=26214400
+FILES_MAX_BYTES=50000000
+FILES_UPLOAD_MAX_BYTES=50000000
 FILES_USER_BYTES=262144000
 FILE_OUTPUT_MODELS=
 ```
@@ -22,7 +23,7 @@ The switch defaults to false. New file routes return 404 while disabled, existin
 
 `FILE_OUTPUT_MODELS` is a comma-separated allowlist of enabled model IDs verified to support Chat Completions function calls. Set it to `*` to allow every enabled chat model to attempt file generation; only do this in development unless every configured provider/model has been verified to support function calls. File generation is enabled only for requests with `outputFile`. Plain text chats are unchanged.
 
-Limits: 25 MiB maximum single upload; at most 10 attachments, 25 MiB combined in one new turn; 512 KiB generated UTF-8 content; 2 GB per user by default, with no separate file-count limit. Memory uploads and bounded downloads are used. HTTP file routes have a per-user 120/min limiter (per process; existing deployment is one process). These are configurable operating defaults, not provider guarantees.
+Limits: per-format uploads up to 50 MB; at most 10 attachments, 50 MB combined in one new turn by default (50,000,000 bytes, inclusive); ZIP input up to 50 MB and 100 MB expanded, with 20 files and 5 MiB per file; 512 KiB generated UTF-8 content; 2 GB per user by default, with no separate file-count limit. Uploads are spooled to disk; downloads are bounded. HTTP file routes have a per-user 120/min limiter (per process; existing deployment is one process). These are configurable operating defaults, not provider guarantees.
 
 Ready unattached uploads expire in 24h. Binding a supported upload to a message clears expiry in the acceptance transaction. Generated files do not expire automatically. Hourly cleanup processes up to 100 expired items per run. Explicit deletion removes chunks and refunds quota transactionally; the metadata tombstone remains to prevent replay resurrection.
 

@@ -79,14 +79,15 @@ const receive = (handler) => async (req, res, next) => {
   const timer = setTimeout(() => { abort(); req.destroy(); }, 120000);
   timer.unref();
   try {
-    const upload = multer({ storage, limits: { fileSize: config.uploadMaxBytes(), files: 1, fields: 0, parts: 2 } });
+    // Busboy emits its limit event at equality. spool() checks the exact per-type ceiling.
+    const upload = multer({ storage, limits: { fileSize: config.uploadMaxBytes() + 1, files: 1, fields: 0, parts: 2 } });
     await new Promise((resolve, reject) => upload.single('file')(req, res, err => err ? reject(err) : resolve()));
     controller.signal.throwIfAborted();
     if (!req.file) throw fail('FILE_REQUIRED');
     await handler(req, res);
   } catch (error) {
     if (res.destroyed || res.headersSent) return;
-    if (error instanceof multer.MulterError) return res.status(400).json({ error: error.code === 'LIMIT_FILE_SIZE' ? 'FILE_TOO_LARGE' : 'INVALID_UPLOAD' });
+    if (error instanceof multer.MulterError) return res.status(error.code === 'LIMIT_FILE_SIZE' ? 413 : 400).json({ error: error.code === 'LIMIT_FILE_SIZE' ? 'FILE_TOO_LARGE' : 'INVALID_UPLOAD' });
     if (error.fileError) return res.status(error.status).json({ error: error.fileError });
     next(error);
   } finally {

@@ -8,7 +8,7 @@ const categories = Object.freeze({
   text: { extensions: [...textExtensions].filter(x => !['csv', 'tsv'].includes(x)), bytes: MB },
   spreadsheet: { extensions: ['xlsx', 'csv', 'tsv'], bytes: 20 * MB },
   image: { extensions: ['png', 'jpg', 'jpeg', 'webp'], bytes: 15 * MB },
-  archive: { extensions: ['zip'], bytes: 50 * MB },
+  archive: { extensions: ['zip'], bytes: config.FILE_BYTES },
   // Existing storage-only compatibility; no new PPTX reader is advertised.
   presentation: { extensions: ['pptx'], bytes: 25 * MB },
 });

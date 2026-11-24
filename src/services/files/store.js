@@ -4,6 +4,7 @@ const path = require('node:path');
 const File = require('../../models/managedFile');
 const Quota = require('../../models/fileQuota');
 const Chunk = require('../../models/fileChunk');
+const Stage = require('../../models/fileUploadStage');
 const config = require('./config');
 const { fail } = require('./validation');
 const CHUNK_BYTES = 256 * 1024;
@@ -24,7 +25,7 @@ const transaction = async (fn) => {
   finally { await session.endSession(); }
 };
 const create = async ({ user, name, mimetype, buffer, generatedPreview = null, documentEdit = null, source = 'upload', resultKey, retention = 'library', session }) => {
-  if (!Buffer.isBuffer(buffer) || !buffer.length || buffer.length > config.maxBytes()) throw fail('FILE_TOO_LARGE', 413);
+  if (!Buffer.isBuffer(buffer) || !buffer.length || buffer.length > (source === 'generated' ? config.generatedMaxBytes() : config.maxBytes())) throw fail('FILE_TOO_LARGE', 413);
   if (!session) return transaction((s) => create({ user, name, mimetype, buffer, generatedPreview, documentEdit, source, resultKey, retention, session: s }));
   if (!['library', 'temporary'].includes(retention) || (retention === 'temporary' && source !== 'generated')) throw fail('INVALID_FILE_RETENTION');
   if (generatedPreview && (source !== 'generated' || Buffer.byteLength(JSON.stringify(generatedPreview)) > 65536)) throw fail('INVALID_FILE_PREVIEW');
@@ -48,64 +49,122 @@ const create = async ({ user, name, mimetype, buffer, generatedPreview = null, d
 };
 // The descriptor is private and remains open across transaction retries. Always read
 // with explicit offsets; a retried transaction must restart at byte zero.
-const persistUpload = async ({ user, upload, signal }, session) => {
-  const { name, mimetype, size, checksum, handle } = upload;
-  if (!Number.isSafeInteger(size) || size < 1 || size > require('./limits').uploadLimit(name)) throw fail('FILE_TOO_LARGE', 413);
-  signal?.throwIfAborted();
-  const reserved = await Quota.updateOne({ _id: user, bytes: { $lte: config.quotaBytes() - size } },
-    { $inc: { bytes: size, count: 1 } }, { session });
-  if (!reserved.modifiedCount) throw fail('FILE_QUOTA_EXCEEDED', 413);
-  const [file] = await File.create([{ user, originalName: name, mimetype, size, checksum,
-    source: 'upload', retention: 'library', expiresAt: null }], { session });
+const STAGED_UPLOAD_THRESHOLD = 8 * 1024 ** 2;
+const CHUNKS_PER_BATCH = 8;
+const stageDeadline = () => new Date(Date.now() + 15 * 60_000);
+
+async function* uploadChunks(upload, file, signal) {
   const hash = crypto.createHash('sha256');
-  for (let offset = 0, index = 0; offset < size; index++) {
+  for (let offset = 0, index = 0; offset < upload.size; index++) {
     signal?.throwIfAborted();
-    const data = Buffer.alloc(Math.min(CHUNK_BYTES, size - offset));
+    const data = Buffer.alloc(Math.min(CHUNK_BYTES, upload.size - offset));
     let filled = 0;
     while (filled < data.length) {
-      const { bytesRead } = await handle.read(data, filled, data.length - filled, offset + filled);
+      const { bytesRead } = await upload.handle.read(data, filled, data.length - filled, offset + filled);
       if (!bytesRead) throw fail('FILE_UNAVAILABLE', 503);
       filled += bytesRead;
     }
     hash.update(data);
-    await Chunk.create([{ file: file._id, index, data }], { session });
+    yield { file, index, data };
     offset += data.length;
   }
-  if (hash.digest('hex') !== checksum) throw fail('FILE_UNAVAILABLE', 503);
-  signal?.throwIfAborted();
-  return file;
-};
+  if (hash.digest('hex') !== upload.checksum) throw fail('FILE_UNAVAILABLE', 503);
+}
 
-const ensureUploadQuota = (user, session) => Quota.updateOne({ _id: user },
-  { $setOnInsert: { bytes: 0, count: 0 } }, { upsert: true, session });
-const createUpload = args => transaction(async session => {
-  await ensureUploadQuota(args.user, session);
-  return persistUpload(args, session);
-});
+async function stageUpload(args, stageId) {
+  let batch = [];
+  async function flush() {
+    await transaction(async session => {
+      args.signal?.throwIfAborted();
+      const lease = await Stage.updateOne({ _id: stageId, cleaning: false },
+        { $set: { expiresAt: stageDeadline() } }, { session });
+      if (!lease.matchedCount) throw fail('FILE_UNAVAILABLE', 503);
+      await Chunk.insertMany(batch, { session });
+    });
+    batch = [];
+  }
+  for await (const chunk of uploadChunks(args.upload, stageId, args.signal)) {
+    batch.push(chunk);
+    if (batch.length === CHUNKS_PER_BATCH) await flush();
+  }
+  if (batch.length) await flush();
+}
 
-// Explicit Files-page uploads only. Chat uploads retain independent file IDs.
-// The checksum comes from the validated private spool, never from the client.
-const uploadToLibrary = async args => {
+async function discardStage(filter) {
+  // A committed file has no stage marker. Competing writers and publication
+  // both write this same marker in their transaction, fencing cleanup.
+  const stage = await Stage.findOneAndUpdate(filter,
+    { $set: { cleaning: true, expiresAt: new Date(0) } }, { new: true }).select('_id').lean();
+  if (!stage) return;
+  await Chunk.deleteMany({ file: stage._id });
+  await Stage.deleteOne({ _id: stage._id, cleaning: true });
+}
+
+// Match an explicit Library upload against a live original for the same owner.
+// Chat attachments keep distinct IDs even when the bytes are identical.
+function libraryDuplicate(user, upload, session) {
+  const extension = path.extname(upload.name).slice(1).toLowerCase();
+  const suffix = ['jpg', 'jpeg'].includes(extension) ? /\.jpe?g$/i : new RegExp('\\.' + extension + '$', 'i');
+  return File.findOne({ user, checksum: upload.checksum, size: upload.size, source: 'upload',
+    status: 'ready', retention: { $ne: 'temporary' }, expiresAt: null, originalName: suffix }).sort({ _id: 1 })
+    .select('_id originalName mimetype size source status version createdAt retention expiresAt').session(session).lean();
+}
+
+async function saveUpload(args, reuse) {
   const { user, upload, signal } = args;
+  const { name, mimetype, size, checksum } = upload;
+  // uploadLimit validates the extension before libraryDuplicate builds its suffix.
+  if (!Number.isSafeInteger(size) || size < 1 || size > require('./limits').uploadLimit(name)) throw fail('FILE_TOO_LARGE', 413);
   signal?.throwIfAborted();
-  const ext = path.extname(upload.name).slice(1).toLowerCase();
-  if (!/^[a-z0-9]+$/.test(ext)) throw fail('UNSUPPORTED_FILE_TYPE', 415);
-  const suffix = ['jpg', 'jpeg'].includes(ext) ? /\.jpe?g$/i : new RegExp('\\.' + ext + '$', 'i');
-  // Bootstrap separately: first-time concurrent transactions must contend on an
-  // existing quota document rather than racing an insert of the same _id.
-  await ensureUploadQuota(user, null);
-  return transaction(async session => {
-    signal?.throwIfAborted();
-    const existing = await File.findOne({ user, checksum: upload.checksum, size: upload.size,
-      source: 'upload', status: 'ready', retention: { $ne: 'temporary' }, expiresAt: null,
-      originalName: suffix }).sort({ _id: 1 })
-      .select('_id originalName mimetype size source status version createdAt retention expiresAt').session(session).lean();
+  await Quota.updateOne({ _id: user }, { $setOnInsert: { bytes: 0, count: 0 } }, { upsert: true });
+  const large = size > STAGED_UPLOAD_THRESHOLD;
+  if (large && reuse) {
+    const existing = await libraryDuplicate(user, upload, null);
     if (existing) return { outcome: 'existing', file: existing };
-    // Any two successful inserts must write the same owner's quota row. A
-    // conflict retries this entire transaction, including the duplicate lookup.
-    return { outcome: 'added', file: await persistUpload(args, session) };
-  });
-};
+  }
+  const id = new mongoose.Types.ObjectId();
+  if (large) {
+    const hasSpace = await Quota.exists({ _id: user, bytes: { $lte: config.quotaBytes() - size } });
+    if (!hasSpace) {
+      // Another upload can publish the same file between the first lookup and the quota read.
+      const existing = reuse && await libraryDuplicate(user, upload, null);
+      if (existing) return { outcome: 'existing', file: existing };
+      throw fail('FILE_QUOTA_EXCEEDED', 413);
+    }
+    await Stage.create({ _id: id, expiresAt: stageDeadline() });
+  }
+  let published = false;
+  try {
+    if (large) await stageUpload(args, id);
+    const saved = await transaction(async session => {
+      signal?.throwIfAborted();
+      if (reuse) {
+        const existing = await libraryDuplicate(user, upload, session);
+        if (existing) return { outcome: 'existing', file: existing };
+      }
+      const reserved = await Quota.updateOne({ _id: user, bytes: { $lte: config.quotaBytes() - size } },
+        { $inc: { bytes: size, count: 1 } }, { session });
+      if (!reserved.modifiedCount) throw fail('FILE_QUOTA_EXCEEDED', 413);
+      if (large) {
+        const claim = await Stage.deleteOne({ _id: id, cleaning: false }, { session });
+        if (!claim.deletedCount) throw fail('FILE_UNAVAILABLE', 503);
+      } else {
+        for await (const chunk of uploadChunks(upload, id, signal)) await Chunk.create([chunk], { session });
+      }
+      signal?.throwIfAborted();
+      const [file] = await File.create([{ _id: id, user, originalName: name, mimetype, size, checksum,
+        source: 'upload', retention: 'library', expiresAt: null }], { session });
+      return { outcome: 'added', file };
+    });
+    published = saved.outcome === 'added';
+    return saved;
+  } finally {
+    if (large && !published) await discardStage({ _id: id }).catch(() => {}); // Scheduled cleanup retries.
+  }
+}
+
+const createUpload = async args => (await saveUpload(args, false)).file;
+const uploadToLibrary = args => saveUpload(args, true);
 
 const owned = async (user, id, { session, includeDeleted = false } = {}) => {
   if (!idOK(String(id))) throw fail('FILE_NOT_FOUND', 404);
@@ -137,6 +196,9 @@ const removeTemporary = async (user, id, session) => {
   if (file.retention === 'temporary' || (!file.retention && file.source === 'generated' && file.expiresAt)) await remove(user, id, session);
 };
 const cleanup = async () => {
+  const expired = await Stage.find({ expiresAt: { $lte: new Date() } }).select('_id').limit(100).lean();
+  for (const stage of expired) await discardStage({ _id: stage._id, expiresAt: { $lte: new Date() } });
+
   const files = await File.find({ status: 'ready', retention: { $ne: 'library' }, expiresAt: { $ne: null, $lte: new Date() } }).limit(100);
   for (const f of files) await transaction(async session => {
     const current = await owned(f.user, String(f._id), { session, includeDeleted: true });

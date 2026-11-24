@@ -136,7 +136,8 @@ test('effective limits are authenticated and reflect quota overrides and indepen
   assert.equal(limits.version, 1);
   assert.equal(limits.storage.maxBytes, require('../../src/services/files/config').quotaBytes());
   assert.equal(limits.upload.types.archive.maxBytes, 50_000_000);
-  assert.equal(limits.processing.zip.inputBytes, 10 * 1024 ** 2);
+  assert.equal(limits.processing.zip.inputBytes, 50_000_000);
+  assert.equal(limits.message.maxBytes, 50_000_000);
   assert.equal((await fetch(`${root}/limits?modelId=missing-model`, { headers })).status, 404);
 });
 
@@ -171,4 +172,56 @@ test('async OCR endpoints are private, opt-in, idempotent and leave the legacy p
     process.env.OCR_ENABLED = 'false';
     await store.remove(user._id, f.id);
   }
+});
+
+test('50 MB ZIP and combined chat/library attachments reach provider input at the inclusive byte boundary', {skip:!uri}, async () => {
+  const {zipBoundary} = require('./fixtures/zipBoundary');
+  const messages = require('../../src/services/files/messages');
+  const modelId = 'zip-50mb-qa';
+  await require('../../src/models/chatModels').create({modelId, enabled:true});
+  const headers = {authorization:'Bearer ' + token};
+  async function upload(name, bytes, route = '') {
+    const form = new FormData();
+    form.append('file', new Blob([bytes]), name);
+    return fetch(root+route,{method:'POST',headers,body:form});
+  }
+  async function prepare(file) {
+    const res = await fetch(root+'/'+file.id+'/prepare', {method:'POST',
+      headers:{...headers,'content-type':'application/json'}, body:JSON.stringify({modelId})});
+    const body = await res.json();
+    assert.equal(res.status,200,JSON.stringify(body));
+    assert.equal(body.processing.status,'ready');
+  }
+  async function submit(files) {
+    return store.transaction(session=>messages.resolve(user._id,files,session,{}));
+  }
+  const limit = 50_000_000;
+  const large = await zipBoundary(limit);
+  const single = await upload('single.zip',large);
+  const uploaded = await single.json();
+  assert.equal(single.status,201,JSON.stringify(uploaded));
+  const file = uploaded.file;
+  await prepare(file);
+  const parts = await messages.providerContent(user._id,'Which control codes are in the PDFs?',await submit([file]));
+  for (let i=0;i<10;i++) assert.ok(parts.some(p=>p.text?.includes('QA-'+(701+i))));
+  const rejected = await upload('over.zip',Buffer.concat([large,Buffer.from([0])]));
+  assert.equal(rejected.status,413);
+  assert.equal((await rejected.json()).error,'FILE_TOO_LARGE');
+
+  const half = await zipBoundary(limit/2,5);
+  const pair = [];
+  for (const route of ['/library-upload','']) {
+    const res = await upload('half.zip',half,route);
+    assert.equal(res.status,201);
+    const item = (await res.json()).file;
+    await prepare(item);
+    pair.push(item);
+  }
+  assert.equal((await submit(pair)).length,2);
+  const extra = (await (await upload('extra.txt',Buffer.from('x'))).json()).file;
+  await assert.rejects(submit([...pair,extra]),{fileError:'ATTACHMENTS_TOO_LARGE'});
+  const deletion = await fetch(root+'/'+file.id, {method:'DELETE',headers});
+  assert.equal(deletion.status,204,await deletion.text());
+  assert.equal((await fetch(root+'/'+file.id+'/download',{headers})).status,404);
+  assert.equal(await require('../../src/models/fileChunk').countDocuments({file:file.id}),0);
 });

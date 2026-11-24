@@ -30,8 +30,8 @@ const CODES = {
 
   ZIP_INPUT_DISABLED: ["Reading ZIP archives is disabled for this model or server.", false],
   ZIP_OUTPUT_DISABLED: ["Creating ZIP archives is disabled for this model or server.", false],
-  ZIP_TOO_LARGE: ["ZIP input must be nonempty and no larger than 10 MiB.", false],
-  ZIP_LIMIT: ["ZIP exceeds 20 files, 100 entries, 5 MiB per entry or 25 MiB expanded. Split the archive.", false],
+  ZIP_TOO_LARGE: ["ZIP input must be nonempty and no larger than 50 MB.", false],
+  ZIP_LIMIT: ["ZIP exceeds a file count, entry size or expanded size limit. Check the file limits and split the archive.", false],
   ZIP_TEXT_TOO_LARGE: ["Extracted ZIP content exceeds 128 KiB. Split the archive.", false],
   ZIP_ENCRYPTED: ["Encrypted ZIP files are not supported. Upload an unencrypted archive you are authorized to use.", false],
   ZIP_UNSAFE_PATH: ["ZIP contains unsafe or conflicting paths. Use unique relative paths without traversal or links.", false],

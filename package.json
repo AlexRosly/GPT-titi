@@ -19,6 +19,8 @@
     "models:check": "node scripts/checkResponsesModels.js",
     "models:6.2:preview": "node scripts/addGpt62Models.js",
     "models:6.2:apply": "node scripts/addGpt62Models.js --apply",
+    "models:gpt6:preview": "node scripts/enableGpt6Models.js",
+    "models:gpt6:enable": "node scripts/enableGpt6Models.js --apply",
     "test:pinning": "node --test test/pinningRules.test.js",
     "test:token-transfers": "node --test test/tokenTransfers.test.js test/tokenTransfers.integration.test.js test/tokenTransfers.http.test.js test/legacyBilling.test.js",
     "db:indexes:token-transfers": "node scripts/createTokenTransferIndexes.js",

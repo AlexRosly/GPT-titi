@@ -70,3 +70,29 @@ test('GPT-6.2 seed rejects duplicate IDs or an enabled target before any mutatio
   assert.throws(() => gpt62.plan([{ ...model, enabled: true }]), /not explicitly disabled/);
   assert.throws(() => gpt62.plan([{ modelId: model.modelId }]), /not explicitly disabled/);
 });
+
+const activation = require('../../src/config/gpt6Activation');
+test('GPT-6 activation enables only the six requested models and supplies missing prices', () => {
+  const operations = activation.plan(catalog.retained.map(modelId => ({ modelId, enabled: false })));
+  assert.equal(operations.length, 6);
+  assert.deepEqual(operations.map(op => op.updateOne.filter.modelId), catalog.responsesModels.map(model => model.modelId));
+  for (const op of operations) {
+    assert.equal(op.updateOne.update.$set.enabled, true);
+    assert.equal(op.updateOne.update.$set.apiMode, 'responses');
+    assert.equal(typeof op.updateOne.update.$set.inputPerM, 'number');
+    assert.equal(typeof op.updateOne.update.$set.outputPerM, 'number');
+  }
+});
+
+test('GPT-6 activation preserves configured prices/effort and rejects invalid settings before writing', () => {
+  const configured = { modelId: 'gpt-6.2-astra', enabled: false, inputPerM: 16, outputPerM: 80, reasoningEffort: 'high' };
+  const original = structuredClone(configured);
+  const operation = activation.plan([configured]).find(op => op.updateOne.filter.modelId === configured.modelId);
+  assert.equal(operation.updateOne.update.$set.reasoningEffort, 'high');
+  assert.equal(operation.updateOne.update.$set.inputPerM, undefined);
+  assert.equal(operation.updateOne.update.$set.outputPerM, undefined);
+  assert.deepEqual(configured, original);
+  assert.throws(() => activation.plan([configured, { ...configured }]), /Duplicate/);
+  assert.throws(() => activation.plan([{ ...configured, inputPerM: NaN }]), /Invalid/);
+  assert.throws(() => activation.plan([{ ...configured, reasoningEffort: 'none' }]), /Unsupported/);
+});

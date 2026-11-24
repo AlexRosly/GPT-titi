@@ -7,9 +7,10 @@ const { responsesModels: additions, retained } = require('../../src/config/model
 async function request(t, records) {
   let status, body;
   t.mock.method(ChatModels, 'find', (query, projection) => ({ lean: async () => {
-    assert.equal(query.enabled, true);
+    assert.deepEqual(query.$or, [{ enabled: true }, { modelId: { $in: additions.map(m => m.modelId) } }]);
     assert.deepEqual(query.modelId.$in, [...retained, ...additions.map(m => m.modelId)]);
-    return records.filter(row => row.enabled === query.enabled && query.modelId.$in.includes(row.modelId))
+    return records.filter(row => query.modelId.$in.includes(row.modelId) && query.$or.some(branch =>
+      branch.enabled === true ? row.enabled === true : branch.modelId.$in.includes(row.modelId)))
       .map(row => Object.fromEntries(Object.entries(row).filter(([key]) => projection[key] !== 0)));
   } }));
   await getChatModels({}, { status(code) { status = code; return this; }, json(value) { body = value; } });
@@ -29,9 +30,16 @@ test('chat picker excludes enabled legacy variants, Realtime and tool cards', as
   assert.equal(models.every(m => m.label === m.modelId), true);
 });
 
-test('draft Responses entries stay hidden until explicitly enabled', async t => {
+test('all six GPT-6 drafts are visible with their actual disabled status', async t => {
   const records = [...retained.map(modelId => ({ modelId, enabled: true })),
     ...additions.map(model => ({ ...model, enabled: false }))];
   const models = await request(t, records);
-  assert.deepEqual(models.map(m => m.modelId), retained);
+  assert.deepEqual(models.map(m => m.modelId), [...retained, ...additions.map(m => m.modelId)]);
+  assert.equal(models.filter(m => m.enabled === false).length, 6);
+});
+
+test('disabled retained models remain hidden while GPT-6 drafts are visible', async t => {
+  const models = await request(t, [...retained.map(modelId => ({ modelId, enabled: false })),
+    ...additions.map(model => ({ ...model, enabled: false }))]);
+  assert.deepEqual(models.map(model => model.modelId), additions.map(model => model.modelId));
 });

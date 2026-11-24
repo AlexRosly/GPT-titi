@@ -86,3 +86,53 @@ test('regional rereads share unused final-page time without extending the overal
   assert.equal(budget(0,14000,0,10000),0);
   assert.equal(budget(50500,8000,0,10000),0);
 });
+
+test('code fields only join unchanged digits when both the image and independent word reread agree', async () => {
+  const { createCanvas } = require('@napi-rs/canvas');
+  const { resolve } = require('../../src/services/files/ocrCodeSpacing');
+  async function result({label='Код', extra=0, reread='384715', confidence=95, budget=1000, outside=false} = {}) {
+    const canvas = createCanvas(140, 28);
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, 140, 28);
+    ctx.fillStyle = '#111';
+    for (let i=0; i<6; i++) ctx.fillRect(10 + 14*i + (i>=4 ? extra : 0), 4, 10, 16);
+    const words = [{text:label},{text:'3847',left:10,top:4,width:52,height:16,confidence:95},
+      {text:'15',left:66+extra,top:4,width:24,height:16,confidence:95}];
+    const line = words.map(word => word.text);
+    const text = line.join(' ');
+    return resolve({words,lines:[{words:line}]},outside ? 'інший рядок' : text,
+      async () => canvas, () => ({words:[{text:reread,confidence}]}), () => budget);
+  }
+  assert.equal(await result(), 'Код 384715');
+  // This gap still enters the region crop but fails the measured glyph pitch.
+  assert.equal(await result({extra:2.5}), 'Код 3847 15');
+  assert.equal(await result({extra:10}), 'Код 3847 15');
+  assert.equal(await result({label:'Сума'}), 'Сума 3847 15');
+  assert.equal(await result({reread:'3847 15'}), 'Код 3847 15');
+  assert.equal(await result({reread:'384716'}), 'Код 3847 15');
+  assert.equal(await result({confidence:70}), 'Код 3847 15');
+  assert.equal(await result({budget:0}), 'Код 3847 15');
+  assert.equal(await result({outside:true}), 'інший рядок');
+});
+
+test('revision four OCR text and ZIP contents require another read from the source', () => {
+  const file = {checksum:'x', ocrCache:{version:3,checksum:'x',qualityRevision:4,text:'Контрольний код 3847 15'}};
+  assert.equal(ocr.fresh(file), false);
+  file.zipCache = {version:1,checksum:'x',kinds:['ocr'],ocrQualityRevision:4,text:'{"entries":[]}'};
+  assert.equal(zip.fresh(file), false);
+});
+
+test('real OCR preserves the difference between printed 384715 and printed 3847 15', async () => {
+  const previous = process.env.OCR_LANGUAGES;
+  process.env.OCR_LANGUAGES = 'auto';
+  try {
+    const file = require('node:fs').readFileSync(require('node:path').join(__dirname,'fixtures','ocr-code-spacing.pdf'));
+    const result = await require('../../src/services/files/ocrProcess').extract(file, 'pdf');
+    assert.equal(result.pages, 2);
+    assert.deepEqual(result.text.match(/^Контрольний код[ \t]+[^\n]+/gmu),
+      ['Контрольний код 384715', 'Контрольний код 3847 15']);
+  } finally {
+    if (previous === undefined) delete process.env.OCR_LANGUAGES;
+    else process.env.OCR_LANGUAGES = previous;
+  }
+});

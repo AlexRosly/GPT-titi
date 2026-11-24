@@ -1,7 +1,7 @@
 // One public transcription for a page. Alternative evidence is scoped to its
 // original occurrence, never used to rewrite another row or another page.
 const unknown = '[нерозбірливо]';
-const revision = 4;
+const revision = 5;
 
 function identifier(word, latin, second, glyph) {
   const match = /^([ОOQ])([АA])([-–][0-9]+)$/u.exec(word.text);

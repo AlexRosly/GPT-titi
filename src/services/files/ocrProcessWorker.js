@@ -195,6 +195,17 @@ async function recognize(buffer, page) {
         regionNotes = regionPolicy.note([],diagnostics.incomplete);
       }
     }
+    if (!diagnostic) {
+      const checkingSince = Date.now();
+      const budget = () => identifierPolicy.budget(Date.now()-startedAt, pagesRemaining, identifierMs+Date.now()-checkingSince);
+      publicText = await require('./ocrCodeSpacing').resolve(recognized, publicText,
+        async () => source ||= await loadImage(buffer),
+        (crop, ms) => {
+          fs.writeFileSync(identifierInput, crop.toBuffer('image/png'), { mode: 0o600 });
+          return run(available.has('eng') ? ['eng'] : selection.models, 7, ms, identifierInput);
+        }, budget);
+      identifierMs += Date.now() - checkingSince;
+    }
     selection.scriptUncertain = scriptUncertain;
     selection.qualityUncertain = recognized.uncertain || Boolean(selection.regions?.alternatives || selection.regions?.incomplete) || Boolean(selection.qualityRetryIncomplete) || Boolean(selection.identifierUncertain);
     selection.uncertain = scriptUncertain || selection.qualityUncertain;

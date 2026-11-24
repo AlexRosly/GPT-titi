@@ -1,7 +1,7 @@
 // A Latin-only second recognition is evidence, not permission to transliterate.
 // Keep the primary text verbatim, especially real Cyrillic inventory numbers.
 const pattern = /^([\p{L}]{2,24})([-–])([0-9]{1,12})$/u;
-const MAX_WORDS = 12, ROW_HEIGHT = 128;
+const MAX_WORDS = 12, ROW_HEIGHT = 128, TOTAL_MS = 10000;
 const candidates = words => words.filter(w => pattern.test(w.text) && /\p{Script=Cyrillic}/u.test(w.text));
 const alternatives = (originals, recognized, diagnostics = {}) => originals.flatMap((original, index) => {
   const row = recognized.words.filter(w => Math.floor((w.top + w.height / 2) / ROW_HEIGHT) === index);
@@ -23,7 +23,7 @@ const note = values => values.length
     values.map(v => JSON.stringify(v)).join('\n')
   : '';
 const budget = (elapsed, remainingPages, spent) => {
-  const left = Math.min(2500, 10000 - spent, require('./ocrLimits').JOB_MS - elapsed - 5000 - remainingPages * 4000);
+  const left = Math.min(2500, TOTAL_MS - spent, require('./ocrLimits').JOB_MS - elapsed - 5000 - remainingPages * 4000);
   return left >= 500 ? left : 0;
 };
-module.exports = { candidates, alternatives, note, budget, MAX_WORDS, ROW_HEIGHT };
+module.exports = { candidates, alternatives, note, budget, MAX_WORDS, ROW_HEIGHT, TOTAL_MS };

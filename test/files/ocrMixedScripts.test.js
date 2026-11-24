@@ -51,14 +51,14 @@ function verify(text) {
   assert.match(primary, /Zażółć gęślą jaźń/);
   if (text.includes('[OCR IDENTIFIER ALTERNATIVES')) assert.match(text, /OCR QUALITY UNCERTAIN/);
 }
-test('real raw OCR of mixed Ukrainian/English/Polish PNG and four-page scan retains codes or labelled alternatives, row order, date and amount', async () => {
+test('internal diagnostic OCR of mixed Ukrainian/English/Polish PNG and four-page scan retains codes or labelled alternatives, row order, date and amount', async () => {
   process.env.OCR_LANGUAGES = 'auto';
   const image = pageImage();
-  const png = await extract(image, 'image');
+  const png = await extract(image, 'image', {diagnostic:true});
   if (process.env.OCR_TEST_ARTIFACT_DIR) { const fs = require('node:fs'); fs.mkdirSync(process.env.OCR_TEST_ARTIFACT_DIR, { recursive: true }); fs.writeFileSync(path.join(process.env.OCR_TEST_ARTIFACT_DIR, 'mixed.png'), image); fs.writeFileSync(path.join(process.env.OCR_TEST_ARTIFACT_DIR, 'png-raw.txt'), png.text); }
   verify(png.text);
   const pdfBytes = await scannedPdf(image);
-  const pdf = await extract(pdfBytes, 'pdf');
+  const pdf = await extract(pdfBytes, 'pdf', {diagnostic:true});
   if (process.env.OCR_TEST_ARTIFACT_DIR) { const fs = require('node:fs'); fs.writeFileSync(path.join(process.env.OCR_TEST_ARTIFACT_DIR, 'mixed-4-pages.pdf'), pdfBytes); fs.writeFileSync(path.join(process.env.OCR_TEST_ARTIFACT_DIR, 'pdf-raw.txt'), pdf.text); }
   assert.equal(pdf.pages, 4);
   for (let i = 1; i <= 4; i++) {

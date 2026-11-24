@@ -51,8 +51,8 @@ test('verification time remains within optional and whole-job budgets',()=>{
 test('cache upgrade and checkpoints are keyed by regional profile; old results remain readable',()=>{
  const ocr=require('../../src/services/files/ocrInput'),paged=require('../../src/services/files/ocrPaged');
  const old=process.env.OCR_REGIONS_ENABLED;
- const f={checksum:'abc',ocrCache:{version:3,qualityRevision:3,checksum:'abc',text:'original',languages:require('../../src/services/files/ocrProcess').languages()}};
- const p={revision:1,checksum:'abc',languages:'auto',completed:[{page:1,text:'saved'}]};
+ const f={checksum:'abc',ocrCache:{version:3,qualityRevision:4,checksum:'abc',text:'original',languages:require('../../src/services/files/ocrProcess').languages()}};
+ const p={revision:1,qualityRevision:4,checksum:'abc',languages:'auto',completed:[{page:1,text:'saved'}]};
  try {delete process.env.OCR_REGIONS_ENABLED;assert.equal(ocr.fresh(f),true);assert.equal(paged.valid(p,f,'auto'),true);
  process.env.OCR_REGIONS_ENABLED='true';assert.equal(ocr.cached(f),true);assert.equal(ocr.fresh(f),false);assert.equal(paged.valid(p,f,'auto'),false);
  p.regionProfile='regions-1';f.ocrCache.regionProfile='regions-1';assert.equal(ocr.fresh(f),false);assert.equal(paged.valid(p,f,'auto'),false);

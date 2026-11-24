@@ -14,6 +14,9 @@ const qualityPolicy = require('./ocrQuality');
 const identifierPolicy = require('./ocrIdentifiers');
 const regionPolicy = require('./ocrRegions');
 const regionBounds = require('./ocrRegionBounds');
+const readings = require('./ocrReading');
+const wordReading = require('./ocrWordReading');
+const diagnostic = process.env.OCR_INTERNAL_DIAGNOSTIC === '1';
 const startedAt = Date.now();
 let retries = 0;
 let identifierMs = 0;
@@ -88,43 +91,20 @@ async function recognize(buffer, page) {
         selection.qualityRetryIncomplete = true;
       }
     }
-    let identifierNotes = '';
-    const suspect = languages === 'auto' ? identifierPolicy.candidates(recognized.words) : [];
-    if (suspect.length) {
-      selection.identifierUncertain = true;
-      const timeout = identifierPolicy.budget(Date.now() - startedAt, pagesRemaining, identifierMs);
-      selection.identifierCheckIncomplete = suspect.length > identifierPolicy.MAX_WORDS || !timeout;
-      if (timeout) {
-        const started = Date.now();
-        try {
-          const source = await loadImage(buffer);
-          const selected = suspect.slice(0, identifierPolicy.MAX_WORDS);
-          const sheet = createCanvas(2048, selected.length * identifierPolicy.ROW_HEIGHT);
-          const ctx = sheet.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, sheet.width, sheet.height);
-          selected.forEach((word, index) => {
-            const x = Math.max(0, word.left - 8), y = Math.max(0, word.top - 8);
-            const width = Math.min(source.width - x, word.width + 16), height = Math.min(source.height - y, word.height + 16);
-            const scale = Math.min(2, 96 / height, 2000 / width);
-            ctx.drawImage(source, x, y, width, height, 16, index * identifierPolicy.ROW_HEIGHT + 16, width * scale, height * scale);
-          });
-          fs.writeFileSync(identifierInput, sheet.toBuffer('image/png'), { mode: 0o600 });
-          const latin = languagePolicy.resolveScript('Latin', available);
-          const rejected = {};
-          const values = identifierPolicy.alternatives(selected, run([latin], 6, timeout, identifierInput), rejected);
-          selection.identifierRejections = rejected;
-          identifierNotes = identifierPolicy.note(values);
-          selection.identifierAlternatives = values.length;
-        } catch {
-          // Optional verification must not discard a successful primary extraction.
-          selection.identifierCheckIncomplete = true;
-        } finally { identifierMs += Date.now() - started; }
-      }
-    }
-    if (selection.identifierCheckIncomplete) identifierNotes += '\n[OCR IDENTIFIER CHECK INCOMPLETE: The bounded verification could not check every ambiguous code. Verify identifiers against the original.]';
+    const words = await wordReading.resolve(recognized,buffer,{
+      setting:languages, available, file:identifierInput, run, diagnostic,
+      budget:spent => identifierPolicy.budget(Date.now()-startedAt,pagesRemaining,identifierMs+spent),
+    });
+    identifierMs += words.spent;
+    let source = words.source;
+    let publicText = words.text;
+    const identifierNotes = words.notes;
+    selection.identifierUncertain = words.uncertain;
+    if (words.incomplete) selection.identifierCheckIncomplete = true;
     let regionNotes = '';
     if (languages === 'auto' && regionPolicy.enabled()) {
       const boundsStarted = Date.now();
-      const source = await loadImage(buffer);
+      source ||= await loadImage(buffer);
       const scale = Math.min(1,1800/Math.max(source.width,source.height));
       const raster = createCanvas(Math.max(1,Math.round(source.width*scale)),Math.max(1,Math.round(source.height*scale)));
       const rasterCtx = raster.getContext('2d'); rasterCtx.fillStyle='#fff';rasterCtx.fillRect(0,0,raster.width,raster.height);
@@ -136,11 +116,15 @@ async function recognize(buffer, page) {
       } catch { geometry={candidates:[],unmatched:recognized.lines.length,truncated:true}; }
       regionMs += Date.now()-boundsStarted;
       const lines = geometry.candidates;
+      // Once no later pages need identifier checks, their unused verification
+      // allowance can corroborate region readings within the same job deadline.
+      const regionBudget = extra => regionPolicy.budget(Date.now()-startedAt,regionMs+extra,
+        pagesRemaining,identifierPolicy.TOTAL_MS-identifierMs);
       const values = [];
       const diagnostics = { profile: regionPolicy.profile(), layoutRetries: 0, layoutRecovered: 0, crossChecks: 0, crossCheckConflicts: 0, eligible: lines.length, checked: 0, alternatives: 0, incomplete: lines.length > regionPolicy.MAX_REGIONS || geometry.unmatched>0 || geometry.truncated, unmatchedLines:geometry.unmatched, boundsTruncated:geometry.truncated, reasons: {}, detections: [] };
       const reason = code => { diagnostics.reasons[code] = (diagnostics.reasons[code] || 0) + 1; diagnostics.incomplete = true; };
       for (const line of lines.slice(0, regionPolicy.MAX_REGIONS)) {
-        const remaining = () => regionPolicy.budget(Date.now()-startedAt, regionMs, pagesRemaining);
+        const remaining = () => regionBudget(0);
         if (!remaining()) { reason('budget'); break; }
         const started = Date.now();
         try {
@@ -153,7 +137,7 @@ async function recognize(buffer, page) {
           ctx.drawImage(source,x,y,w,h,16,16,w*scale,h*scale);
           fs.writeFileSync(regionInput,crop.toBuffer('image/png'),{mode:0o600});
           const osd = spawnSync('tesseract',[regionInput,'stdout','-l','osd','--psm','0','-c','min_characters_to_try=10'],{
-            encoding:'utf8',timeout:Math.max(1,Math.min(1000,regionPolicy.budget(Date.now()-startedAt,regionMs+Date.now()-started,pagesRemaining))),killSignal:'SIGKILL',maxBuffer:65536,stdio:['ignore','pipe','pipe'] });
+            encoding:'utf8',timeout:Math.max(1,Math.min(1000,regionBudget(Date.now()-started))),killSignal:'SIGKILL',maxBuffer:65536,stdio:['ignore','pipe','pipe'] });
           diagnostics.checked++;
           if (osd.error || osd.status !== 0) { reason('detection'); continue; }
           const detected = languagePolicy.parseOsd(osd.stdout);
@@ -167,12 +151,13 @@ async function recognize(buffer, page) {
           }
           if (!chosen) continue;
           // Account for the current detection before starting optional recognition.
-          const left = regionPolicy.budget(Date.now()-startedAt,regionMs+Date.now()-started,pagesRemaining);
+          const left = regionBudget(Date.now()-started);
           if (!left) { reason('budget'); break; }
           const first = run(chosen.models,7,Math.min(2000,left),regionInput);
           const verified = regionPolicy.verify(line,first,chosen,{
+            requireAgreement: !diagnostic,
             state: regionLayoutState,
-            remaining: () => regionPolicy.budget(Date.now()-startedAt,regionMs+Date.now()-started,pagesRemaining),
+            remaining: () => regionBudget(Date.now()-started),
             run: (psm,timeout) => { diagnostics.layoutRetries++; return run(chosen.models,psm,timeout,regionInput); },
           });
           if (verified.retry === 'accepted') diagnostics.layoutRecovered++;
@@ -204,7 +189,11 @@ async function recognize(buffer, page) {
       diagnostics.alternatives = values.length;
       diagnostics.elapsedMs = regionMs;
       selection.regions = diagnostics;
-      regionNotes = regionPolicy.note(values,diagnostics.incomplete);
+      if (diagnostic) regionNotes = regionPolicy.note(values,diagnostics.incomplete);
+      else {
+        publicText = readings.regions(publicText,values);
+        regionNotes = regionPolicy.note([],diagnostics.incomplete);
+      }
     }
     selection.scriptUncertain = scriptUncertain;
     selection.qualityUncertain = recognized.uncertain || Boolean(selection.regions?.alternatives || selection.regions?.incomplete) || Boolean(selection.qualityRetryIncomplete) || Boolean(selection.identifierUncertain);
@@ -212,7 +201,7 @@ async function recognize(buffer, page) {
     selection.textConfidence = Math.round(recognized.confidence);
     selection.lowConfidenceFraction = Number(recognized.lowFraction.toFixed(3));
     detections.push({ page, ...selection });
-    return { text: recognized.text + identifierNotes + regionNotes, selection };
+    return { text: publicText + identifierNotes + regionNotes, selection };
   } catch (error) {
     if (error.fileError) throw error;
     if (error.code === 'ENOBUFS') throw fail('OCR_TEXT_TOO_LARGE');

@@ -121,16 +121,17 @@ router.get('/:id/ocr', handle(async (req, res) => {
   if (!ocr.supported(file)) return res.status(415).json({ error: 'OCR_UNSUPPORTED' });
   if (!ocr.cached(file)) return res.status(409).json({ error: 'OCR_NOT_READY' });
   const cache = file.ocrCache;
+  const text = ocr.cachedText(cache);
   if (req.query.download === '1') {
     const name = file.originalName + '.ocr.txt';
     res.set({ 'Content-Type': 'text/plain; charset=utf-8',
       'Content-Disposition': `attachment; filename="recognized-text.txt"; filename*=UTF-8''${encodeURIComponent(name).replace(/'/g, '%27')}` });
-    return res.send(Buffer.from(cache.text, 'utf8'));
+    return res.send(Buffer.from(text, 'utf8'));
   }
-  res.json({ kind: 'ocr', text: cache.text, version: cache.version,
-    textBytes: Buffer.byteLength(cache.text), ocrPages: cache.pages,
+  res.json({ kind: 'ocr', text, version: cache.version,
+    textBytes: Buffer.byteLength(text), ocrPages: cache.pages,
     uncertain: (cache.detections || []).some(d => d.uncertain === true),
-    legacy: cache.version !== 3 || cache.qualityRevision !== 3 });
+    legacy: cache.version !== 3 || cache.qualityRevision !== ocr.revision });
 }));
 router.get('/:id/preview', handle(async (req, res) => {
   const { file, buffer } = await store.read(req.user._id, req.params.id);

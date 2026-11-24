@@ -3,9 +3,19 @@ const File=require('../../models/managedFile'),Quota=require('../../models/fileQ
 const store=require('./store'),config=require('./config'),text=require('./textInput');
 const {fail,validateUpload}=require('./validation');const {LIMITS}=require('./zipCodec');
 const processZip=require('./zipProcess');
+const {revision: ocrQualityRevision, legacy} = require('./ocrReading');
 const supported=f=>/\.zip$/i.test(f.originalName||'')&&['application/zip','application/octet-stream','application/x-zip-compressed'].includes(f.mimetype);
 const enabled=model=>config.enabled()&&process.env.ZIP_INPUT_ENABLED!=='false'&&model?.zipInputEnabled!==false;
 const cached=f=>f.zipCache?.version===1&&f.zipCache.checksum===f.checksum&&typeof f.zipCache.text==='string'&&Buffer.byteLength(f.zipCache.text)<=LIMITS.textBytes;
+const fresh=f=>cached(f)&&(!f.zipCache.kinds?.includes('ocr')||f.zipCache.ocrQualityRevision===ocrQualityRevision);
+function readableArchive(file){
+ if(fresh(file))return file.zipCache.text;
+ const data=JSON.parse(file.zipCache.text);
+ for(const entry of data.entries){
+  if(/\.(?:png|jpe?g|webp|pdf)$/i.test(entry.path)&&typeof entry.content==='string')entry.content=legacy(entry.content);
+ }
+ return JSON.stringify(data);
+}
 function allowed(kinds,model){
  if(!enabled(model))throw fail('ZIP_INPUT_DISABLED',415);
  for(const kind of kinds){
@@ -60,15 +70,15 @@ async function extract(buffer,model){
 const pending=new Map();
 async function prepare(user,id,model){
  const f=await store.owned(user,id);if(!supported(f))return;
- allowed([],model);if(cached(f)){allowed(f.zipCache.kinds,model);return;}
+ allowed([],model);if(fresh(f)){allowed(f.zipCache.kinds,model);return;}
  if(f.size>LIMITS.inputBytes)throw fail('ZIP_TOO_LARGE',413);
  const key=`${user}:${id}:${f.checksum}`;
  if(pending.has(key)){await pending.get(key);const ready=await store.owned(user,id);allowed(ready.zipCache?.kinds||[],model);return;}
  const job=(async()=>{
   const {file,buffer}=await store.read(user,id);const result=await extract(buffer,model);
-  const cache={...result,version:1,checksum:file.checksum};const bytes=Buffer.byteLength(JSON.stringify(cache));
+  const cache={...result,version:1,ocrQualityRevision,checksum:file.checksum};const bytes=Buffer.byteLength(JSON.stringify(cache));
   await store.transaction(async session=>{
-   const latest=await store.owned(user,id,{session});if(cached(latest))return;
+   const latest=await store.owned(user,id,{session});if(fresh(latest))return;
    if(latest.checksum!==file.checksum)throw fail('FILE_UNAVAILABLE',503);
    const delta=bytes-(latest.derivedBytes||0);
    const claim=await Quota.updateOne({_id:user,bytes:{$lte:config.quotaBytes()-delta}},{$inc:{bytes:delta}},{session});
@@ -98,6 +108,6 @@ async function prepareHistory(user,history,model,deadline=Date.now()+45000){
 async function readPart(user,file,{session,state=text.budget(),model}={}){
  allowed([],model);const current=await store.owned(user,String(file._id||file.fileId),{session});
  if(!cached(current))throw fail('ZIP_NOT_READY',409);allowed(current.zipCache.kinds,model);
- text.consume(state,Buffer.byteLength(current.zipCache.text));const part=text.part(current,current.zipCache.text);state.promptBytes+=Buffer.byteLength(part.text);return part;
+ const content=readableArchive(current);text.consume(state,Buffer.byteLength(content));const part=text.part(current,content);state.promptBytes+=Buffer.byteLength(part.text);return part;
 }
-module.exports={supported,enabled,cached,allowed,extract,prepare,waitPrepare,prepareFiles,prepareHistory,readPart};
+module.exports={supported,enabled,cached,fresh,allowed,extract,prepare,waitPrepare,prepareFiles,prepareHistory,readPart};

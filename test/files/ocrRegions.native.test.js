@@ -1,7 +1,8 @@
 // Requires the same native OCR tools/models as production. No provider/model API calls.
 const test=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs'),path=require('node:path');
-const {extract}=require('../../src/services/files/ocrProcess');
+const engine=require('../../src/services/files/ocrProcess');
+const extract=(buffer,kind,options)=>engine.extract(buffer,kind,{...options,diagnostic:true});
 const root=path.join(__dirname,'fixtures');
 const marker='[OCR REGION ALTERNATIVES';
 const primary=text=>text.split(marker)[0].split('[OCR REGION CHECK INCOMPLETE')[0].trim();

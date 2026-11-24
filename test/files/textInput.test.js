@@ -91,13 +91,13 @@ test('attachment reserve includes the full provider instructions and wrapper all
 });
 
 
-test('OCR alternatives remain verbatim source data and the shared policy requires disclosure', () => {
+test('generic attachment wrapper preserves supplied bytes and OCR policy requires one reading', () => {
   const raw = '[PDF PAGE 1 OF 8 — OCR]\nКонтрольний код: САМъСЕГ-01\n[OCR IDENTIFIER ALTERNATIVES]\n{"original":"САМъСЕГ-01","latin":"CANCEL-01"}';
   const wrapped = textInput.part({ originalName: 'scan.pdf' }, raw).text;
   const decoded = JSON.parse(wrapped.split('\n')[1]);
   assert.equal(decoded.content, raw);
-  assert.match(textInput.instructions, /show the primary reading and its supplied alternative together/);
+  assert.match(textInput.instructions, /one supplied OCR reading/);
   assert.match(textInput.instructions, /physical page/);
-  assert.match(textInput.instructions, /do not silently choose one/);
-  assert.match(textInput.instructions, /language of your answer/);
+  assert.ok(textInput.instructions.includes('[нерозбірливо]'));
+  assert.doesNotMatch(textInput.instructions, /show the primary reading/);
 });

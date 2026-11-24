@@ -13,8 +13,9 @@ function candidates(lines = []) {
     // Stable priority: uncertain lines first, with their original line IDs retained.
     .sort((a, b) => a.confidence - b.confidence || a.line - b.line);
 }
-function budget(elapsed, spent, remainingPages = 0) {
-  const ms = Math.min(8000 - spent, JOB_MS - elapsed - 5000 - remainingPages * 4000);
+function budget(elapsed, spent, remainingPages = 0, unusedIdentifierMs = 0) {
+  const available = remainingPages === 0 ? Math.min(6000, Math.max(0, unusedIdentifierMs)) : 0;
+  const ms = Math.min(8000 + available - spent, JOB_MS - elapsed - 5000 - remainingPages * 4000);
   return ms >= 500 ? ms : 0;
 }
 function selection(detection, available, primaryModels) {
@@ -73,9 +74,9 @@ function crossCheck(line, first, chosen, { state, remaining, run }) {
   // is larger. Both exact readings remain unverified, even when they agree.
   return { ...value, comparisonAttempted: true, comparisonResult: result };
 }
-function verify(line, result, chosen, { state, remaining, run }) {
+function verify(line, result, chosen, { state, remaining, run, requireAgreement = false }) {
   const first = { result, value: alternative(line, result, chosen), psm: 7 };
-  if (first.value) return chosen.detectionUncertain ? crossCheck(line, first, chosen, { state, remaining, run }) : first;
+  if (first.value) return (requireAgreement || chosen.detectionUncertain) ? crossCheck(line, first, chosen, { state, remaining, run }) : first;
   const text = result.text.trim();
   const required = chosen.detectionUncertain ? Math.max(85, line.confidence + 5) : 70;
   if (!text || text === line.text || text.length > 2000 || /[\r\n]/.test(text) ||

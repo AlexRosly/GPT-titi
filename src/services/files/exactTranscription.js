@@ -15,7 +15,7 @@ async function candidates(user, history, model) {
     if (ref.storage !== 'private') continue;
     try {
       const file = await store.owned(user, String(ref.fileId));
-      if (ocr.eligible(file, model) && ocr.cached(file)) out.push({ id: String(file._id), name: file.originalName, text: file.ocrCache.text, checksum: file.checksum });
+      if (ocr.eligible(file, model) && ocr.cached(file)) out.push({ id: String(file._id), name: file.originalName, text: ocr.cachedText(file.ocrCache), checksum: file.checksum });
     } catch (e) { if (e.fileError !== 'FILE_NOT_FOUND') throw e; }
   }
   return out;
@@ -56,7 +56,7 @@ async function render(user, selection, files) {
   for (const f of selected) {
     try {
       const current = await store.owned(user, f.id);
-      if (!ocr.cached(current) || current.checksum !== f.checksum || current.ocrCache.text !== f.text) return failure;
+      if (!ocr.cached(current) || current.checksum !== f.checksum || ocr.cachedText(current.ocrCache) !== f.text) return failure;
     } catch (e) { if (e.fileError === 'FILE_NOT_FOUND') return failure; throw e; }
   }
   // Fences protect untrusted markup. The text BETWEEN fences remains byte-for-byte identical to the cache.

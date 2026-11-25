@@ -11,21 +11,14 @@ patch 19 has no effect. Existing/new model records are eligible unless
 
 ## Scope and contract
 
-When enabled, HTTP(S) links in the CURRENT user message are treated as supplied
-sources and read automatically, regardless of the language of the prompt.
-There is no intent-classifier model call: even a message containing a URL without
-"read" opts into retrieval. Historical URLs and links found inside pages are not
-followed. Maximum 3 URLs, 2048 characters per URL; only public HTML is supported.
-No search, login, cookies, JavaScript browser, CAPTCHA bypass, remote PDF/Office,
-image interpretation, OCR or autonomous crawling is introduced.
+Source selection is shared by both V2 provider APIs and by the HTML and browser workers.
 
-`chat:send` validates URLs and commits the existing V2 admission transaction.
-The ACK does not wait for website fetching. Existing OCR preflight, if applicable
-for attachments, is unchanged. Worker reads sequentially with lease checks and
-saves each page result on its owner-bound ChatTurn. Normal text and disabled web
-requests keep the existing provider path. After preparation, exactly one existing
-streaming provider call receives the bounded page text, frozen V2 history,
-attachments and existing file/exact-transcription tool definitions.
+- A bare HTTP(S) URL or a plain list of up to three distinct URLs is handled at admission. Common schemeless domains default to HTTPS. Supply an explicit scheme for other domains. The worker receives the selected public sources.
+- In prose, the user's selected chat model interprets the current message in its own language. Its normal first call can answer directly, ask which source was intended, or request `read_supplied_pages`. No keyword dictionary, translator or separate router model is involved. The user can mention URLs in instructions, code, examples or questions about router setup.
+- The backend validates every model-selected URL against the canonical public candidates from the current message. Historical, unrelated and invented destinations are ineligible. The original user message is preserved. Any selection containing an ineligible target is rejected as a whole. Failure to select a valid target can yield a clarification.
+- In messages containing only local addresses and prose, the model can explain the question or the access limitation in the user's language. An isolated local URL returns the existing protocol restriction. Actual downloads retain the normal DNS, redirect and origin controls.
+- The ordinary first call is also where document tools are selected. Forced PDF/DOCX editing workflows keep their existing document tool contract. Source selection is offered on models with web input enabled and requires function-calling support for prose. Reading quality in a language depends on the selected model.
+- On a semantic read, source choice and observed usage are recorded before retrieval. HTML preparation supplies the actual pages for the answer. The browser opens the selected pages in order within its limits. A Responses conversation carries the original function call ID and tool result into the continuation. Only the previous plan of an already queued request is used when recovering it.
 
 Limits: 15 seconds per URL including DNS/redirects/body, at most 3 redirects,
 2 MiB compressed and 2 MiB decoded bytes, 16 KiB response headers, 12 KiB UTF-8
@@ -57,7 +50,7 @@ silently shorten the requested context to fit the balance.
 
 Actual provider usage is billed by the existing V2 logic, with its existing
 fallback if usage is absent. Website downloads have no paid provider API fee.
-No paid selection call or new OCR fee is introduced. Ambiguous provider failures
+A bare-link HTML turn usually has one paid model call. A prose mention answered directly also uses one. If the first call selects a page, the subsequent answer is a paid continuation. The backend aggregates actual usage across those calls into one chat charge, and includes earlier usage when reserving for a continuation. Browser turns may make further calls within their existing budget. Ambiguous provider failures
 retain the existing reconciliation behavior; they are never blindly replayed.
 
 ## Recovery, history and privacy
@@ -73,8 +66,7 @@ results recover through existing V2 completion without another model call/charge
 Assistant messages retain webSources (id, URL, requested URL, title, status,
 truncation, fetchedAt or error), including private history reloads. The server
 adds clickable source URLs to the answer, including file-generation summaries.
-Failures are disclosed alongside successful pages. All pages failing yields a
-specific WEB_* error with zero model calls. Reading a source is not a claim that
+Failures are disclosed alongside successful pages. For direct HTML retrieval, all pages failing yields a specific WEB_* error before a model call. For a model-selected read, the answer can explain the retrieval failure in the user’s language, with completed model calls accounted for. Reading a source is not a claim that
 all content on the website was read. Page text is untrusted data; it cannot grant
 new tools or change system rules.
 

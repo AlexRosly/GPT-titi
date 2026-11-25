@@ -25,8 +25,11 @@ function readInitialUsage(raw) {
 // Runs inside the transaction that owns/fails the cancelled attempt. Unknown
 // provider cost can be absorbed only under an explicit policy, never labelled free.
 async function settleInitialCancellation(turn, session, options = {}) {
-  if (!session || !turn.cancelRequestedAt || turn.reservationState !== 'held' || !initialCall(turn)) return null;
-  const usage = turn.initialProviderUsage;
+  if (!session || !turn.cancelRequestedAt || turn.reservationState !== 'held') return null;
+  const selectedWeb = turn.webPlan?.selection === 'model' && turn.browserState?.pending === false &&
+    !turn.responseState && !turn.computeState && validUsage(turn.browserState.usage);
+  if (!initialCall(turn) && !selectedWeb) return null;
+  const usage = selectedWeb ? turn.browserState.usage : turn.initialProviderUsage;
   const confirmed = validUsage(usage);
   if (!confirmed && (options.policy ?? policy()) !== COVER_UNKNOWN) return null;
   if (!confirmed && !canCoverUnknown(turn)) return null;
@@ -55,13 +58,13 @@ async function settleInitialCancellation(turn, session, options = {}) {
     ...(confirmed ? { usage: { ...usage }, billing: billed, billingAppliedAt: new Date() } : {}),
     error: cancellationError(false),
     reconciliation: {
-      source: options.source || 'early-user-cancel-v1', at: new Date(),
+      source: options.source || (selectedWeb ? 'web-user-cancel-v1' : 'early-user-cancel-v1'), at: new Date(),
       decision: confirmed ? 'confirmed_usage' : COVER_UNKNOWN,
       providerUsageKnown: Boolean(confirmed), platformCoversUnknown: !confirmed,
       usage: confirmed ? { ...usage } : null, userChargeTokens: billed?.appTokensSpent || 0,
       releasedTokens: turn.reservedAppTokens,
       ...(options.fingerprint ? { fingerprint: options.fingerprint } : {}),
-      reason: confirmed ? 'Final usage received before cancellation; no further provider call or tool execution.'
+      reason: selectedWeb ? 'All completed web calls have confirmed usage; no provider call was pending.' : confirmed ? 'Final usage received before cancellation; no further provider call or tool execution.'
         : 'Explicit platform policy covers unknown cost of early cancellation without delivered output or tool execution.',
     },
   };

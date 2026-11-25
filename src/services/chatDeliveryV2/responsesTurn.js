@@ -26,7 +26,7 @@ const mappedUsage = usage => ({ promptTokens: usage.prompt_tokens, completionTok
 const addUsage = (a, b) => Object.fromEntries(Object.keys(a).map(k => [k, a[k] + b[k]]));
 
 async function run({ turn, token, model, messages, fileTools, computeFiles, exactFiles, client, signal,
-  onText, save, onResponseId, providerProgress, maxOutputTokens }) {
+  onText, save, onResponseId, providerProgress, maxOutputTokens, selectSources }) {
   const artifacts = require('../files/artifacts');
   const compute = require('../computation/policy');
   const accounting = require('../computation/accounting');
@@ -48,7 +48,8 @@ async function run({ turn, token, model, messages, fileTools, computeFiles, exac
       signal.throwIfAborted();
       if (Date.now() >= deadline) throw failure('PROVIDER_RESPONSE_INCOMPLETE', 'Tool workflow deadline exceeded.');
       const toolOptions = { ...fileTools, ...(step ? { tool_choice: 'auto' } : {}) };
-      if (createdFile) toolOptions.tools = (fileTools.tools || []).filter(t => t.function.name !== 'create_file');
+      if (createdFile || step && selectSources) toolOptions.tools = (fileTools.tools || []).filter(t =>
+        !(createdFile && t.function.name === 'create_file') && !(step && t.function.name === require('../web/sourceTool').name));
       if (turn.computeState) {
         await accounting.begin(turn, token, transcript, toolOptions.tools);
       }
@@ -90,6 +91,14 @@ async function run({ turn, token, model, messages, fileTools, computeFiles, exac
         return { assistantText: exactText ?? (assistantText || response.text), usage, ...fileOutput,
           ...(turn.computeState ? { computation: { status: turn.computeState.lastActionFailed ? 'partial' : 'completed', kind: turn.computeState.kind, reason: turn.computeState.lastActionError, files: turn.computeState.files,
             runs: turn.computeState.runs, executionMs: turn.computeState.executionMs } } : {}) };
+      }
+      const selected = response.calls.find(c => c.name === require('../web/sourceTool').name);
+      if (selectSources && step === 0 && selected) {
+        for (const item of response.calls) session.rememberToolResult(item.call_id, {
+          status: response.calls.length === 1 ? 'selection_received' : 'conflicting_calls',
+          note: 'Only subsequent server evidence establishes whether a public page was actually read.',
+        });
+        return await selectSources(response.calls.length === 1 ? selected.arguments : null, usage, session.asChatClient());
       }
       const calls = response.calls.map(c => ({ id: c.call_id, type: 'function', function: { name: c.name, arguments: c.arguments } }));
       // prepare() restores ALL original output items (including reasoning) for this group.

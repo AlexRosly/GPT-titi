@@ -34,7 +34,7 @@ async function fixture({balance=10000,model={}}={}) {
   const modelId=`web-${id}`;
   await models.ChatModels.create({modelId,enabled:true,inputPerM:2.5,outputPerM:10,...model});
   const conversation=await models.ChatConversation.create({user:user.id,modelId});
-  const payload={clientMessageId:crypto.randomUUID(),conversationId:conversation.id,modelId,message:'Підсумуй https://example.com/a',files:[]};
+  const payload={clientMessageId:crypto.randomUUID(),conversationId:conversation.id,modelId,message:'https://example.com/a',files:[]};
   return {user,conversation,modelId,payload};
 }
 async function run(f) {const accepted=await accept({userId:f.user.id,payload:f.payload});const claimed=await worker.claimTurn(accepted.turn.turnId);await worker.processTurn(claimed);return models.ChatTurn.findById(claimed.turn._id).lean();}
@@ -43,7 +43,8 @@ function provider(t, inspect=()=>{}) {let calls=0;t.mock.method(Completions.prot
 const sessions=require('../../src/services/browser/session');
 const accounting=require('../../src/services/browser/accounting');
 function browser(t) {let actions=0;t.mock.method(sessions,'create',()=>({close(){},async action(){actions++;return {...page('https://example.com/a'),controls:[]};}}));return ()=>actions;}
-function answer(t,{failAt=0,ambiguous=false}={}) {let calls=0;t.mock.method(Completions.prototype,'create',async()=>{
+function answer(t,{failAt=0,ambiguous=false,selected}={}) {let calls=0;t.mock.method(Completions.prototype,'create',async req=>{
+  if (selected && req.stream) return require('../web/sourceSelectionStream')(selected, usage);
   calls++;if(calls===failAt)throw Object.assign(new Error('test'),ambiguous?{}:{status:429});
   return calls===1?{usage,choices:[{finish_reason:'tool_calls',message:{tool_calls:[{id:'1',type:'function',function:{name:'browse',arguments:'{"kind":"done"}'}}]}}]}:{usage,choices:[{finish_reason:'stop',message:{content:'Browser answer'}}]};
 });return ()=>calls;}
@@ -55,6 +56,45 @@ test('browser plan, multi-call usage, one debit, private sources and reload',opt
   assert.equal(await models.TokenOperation.countDocuments({'context.turnId':row.turnId,'entries.delta':{$lt:0}}),1);
   const dto=await snapshot(row);assert.match(dto.assistantMessage.content,/Browser answer/);assert.equal(dto.assistantMessage.webSources[0].text,undefined);
 });
+test('only the requested public source is passed to the browser session and opened', opts, async t => {
+  const guide = 'https://example.org/guide';
+  const f = await fixture();
+  f.payload.message = 'У прикладі http://192.168.0.1 та https://example.net/other. Прочитай інструкцію ' + guide;
+  const opened = [];
+  t.mock.method(sessions, 'create', urls => {
+    assert.deepEqual(urls, [guide]);
+    return { close() {}, async action(action) {
+      opened.push(action);
+      return { ...page(guide), controls: [] };
+    } };
+  });
+  answer(t, { selected: [guide] });
+  const turn = await run(f);
+  assert.equal(turn.status, 'completed');
+  assert.equal(turn.webPlan.mode, 'browser');
+  assert.deepEqual(opened, [{ kind: 'open', url: guide }]);
+});
+
+test('comparison visits both selected sources before the model can finish', opts, async t => {
+  const sources = ['https://example.org/first', 'https://example.net/second'];
+  const f = await fixture();
+  f.payload.message = 'Адреса роутера http://192.168.0.1. Порівняй ' + sources.join(' та ');
+  const opened = [];
+  t.mock.method(sessions, 'create', urls => {
+    assert.deepEqual(urls, sources);
+    return { close() {}, async action({ url }) {
+      opened.push(url);
+      return { ...page(url), controls: [] };
+    } };
+  });
+  answer(t, { selected: sources });
+  const turn = await run(f);
+  assert.equal(turn.status, 'completed');
+  assert.deepEqual(opened, sources);
+  assert.deepEqual(turn.webState.results.map(r => r.requestedUrl), sources);
+  assert.equal(turn.usage.totalTokens, 360);
+});
+
 test('zero-call failure releases; known failure after paid call settles partial once; ambiguous retains',opts,async t=>{
   for(const [failAt,ambiguous,expected] of [[1,false,'failed'],[2,false,'completed'],[2,true,'failed']]){
     const f=await fixture();browser(t);answer(t,{failAt,ambiguous});const row=await run(f);

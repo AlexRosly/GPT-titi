@@ -509,6 +509,7 @@ const processTurn = async (claimed) => {
     const automaticFiles = !turn.outputFile && artifacts.autoEnabled(fileModel);
     if (automaticFiles)
       messages[0].content += " " + artifacts.fileSystemInstructions;
+    const webAnswerInstructions = messages[0].content;
     const fileTools = turn.outputFile
       ? artifacts.toolOptions(turn.outputFile)
       : automaticFiles
@@ -553,6 +554,30 @@ const processTurn = async (claimed) => {
       fileTools.tools = require('../docx/policy').tools;
       fileTools.parallel_tool_calls = false;
       messages[0].content += ' Inspect the attached source then use edit_docx alone with complete=true. The server verifies the requested edit against the original before delivery.';
+    }
+    const sourceTool = require('../web/sourceTool');
+    const webPolicy = require('../web/policy');
+    let selectSources, sourceCollector;
+    if (!turn.webPlan && webPolicy.urlsIn(turn.message).length) {
+      const allowed = webPolicy.enabled(fileModel) ? sourceTool.candidates(turn.message) : new Set();
+      if (allowed.size && !turn.pdfCellPlan && !turn.docxQualityPlan) {
+        const finalFileTools = turn.outputFile ? artifacts.toolOptions(turn.outputFile)
+          : automaticFiles ? artifacts.autoToolOptions(fileModel) : {};
+        messages[0].content += ' ' + sourceTool.instructions;
+        if (turn.outputFile) messages[0].content += ' After reading, create the requested output file. If no reading is needed, create it directly.';
+        fileTools.tools = [...(fileTools.tools || []), sourceTool.tool];
+        fileTools.tool_choice = 'auto';
+        fileTools.parallel_tool_calls = false;
+        sourceCollector = sourceTool.collector();
+        selectSources = (raw, usage, webClient = client) => {
+          // Restore the original prompt for the answer; the Responses session retains its tool result.
+          const original = [{ ...messages[0], content: webAnswerInstructions }, ...messages.slice(1)];
+          return sourceTool.run({ raw, allowed, usage, turn, token: leaseToken, model: fileModel,
+            messages: original, fileTools: finalFileTools, client: webClient, signal: controller.signal, save: saveResponse });
+        };
+      } else {
+        messages[0].content += ' No web source was read for this message. Treat example addresses as text and answer directly when possible. If the user explicitly asks to open an unavailable local address, explain in their language that only public pages are reachable. Do not claim a visit.';
+      }
     }
     if (turn.webPlan?.mode === "browser") {
       // Browser loop owns every provider boundary and accumulates actual usage.
@@ -617,7 +642,7 @@ const processTurn = async (claimed) => {
       };
       const data = await require('./responsesTurn').run({ turn, token: leaseToken, model: responseModel,
         messages, fileTools, computeFiles, exactFiles, client, signal: controller.signal, providerProgress,
-        save: saveResponse, onResponseId, maxOutputTokens: webBudget?.outputTokens,
+        save: saveResponse, onResponseId, selectSources, maxOutputTokens: webBudget?.outputTokens,
         onText: async delta => {
           if (turn.pdfCellPlan || turn.docxQualityPlan) return;
           pendingText += delta;
@@ -673,6 +698,7 @@ const processTurn = async (claimed) => {
     let emittedSince = 0;
     for await (const chunk of stream) {
       if (chunk.choices?.[0]?.finish_reason) finishReason = chunk.choices[0].finish_reason;
+      sourceCollector?.add(chunk);
       fileCollector?.add(chunk);
       exactCollector?.add(chunk);
       computeCollector?.add(chunk);
@@ -741,6 +767,17 @@ const processTurn = async (claimed) => {
       });
     }
 
+    const rawSelection = sourceCollector?.finish(finishReason);
+    if (rawSelection !== undefined) {
+      const data = await selectSources(rawSelection, usage);
+      await saveResponse({ providerResult: data });
+      resultStored = true;
+      const completion = await commitCompletion(turn, leaseToken, data.assistantText, data.usage);
+      emit(turn.user, 'chat:end', { protocolVersion: 2, event: 'chat:end', type: 'completed',
+        turnId: turn.turnId, clientMessageId: turn.clientMessageId, conversationId: turn.conversation.toString(),
+        attempt: turn.attempt, payload: { assistantMessage: messageDto(completion.assistant), billing: completion.billing } });
+      return;
+    }
     let computeCall;
     try { computeCall = computeCollector?.finish(); }
     catch (error) {
@@ -895,7 +932,7 @@ const recoverExpired = async () => {
       if (!saved.matchedCount) continue;
       turn.providerResult = data;
     }
-    if (turn.webPlan?.mode === "browser" && !turn.providerResult && turn.browserState && !turn.browserState.pending && turn.providerStartedAt) {
+    if (["browser", "selected_html"].includes(turn.webPlan?.mode) && !turn.providerResult && turn.browserState && !turn.browserState.pending && turn.providerStartedAt) {
       // Completed calls are accounted for. Do not replay browser actions after a crash.
       const data = require("../browser/agent").partial(turn, "PROCESS_INTERRUPTED");
       const saved = await ChatTurn.updateOne({...recoveryGuard(turn),providerResult:null},{$set:{providerResult:data}});

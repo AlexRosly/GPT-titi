@@ -1,4 +1,5 @@
 const ipaddr = require('ipaddr.js');
+const { directUrls, urlsIn } = require('./readTargets');
 const { errorFor } = require('../chatDeliveryV2/protocol');
 const MAX_URLS = 3, PAGE_BYTES = 12 * 1024, OUTPUT_TOKENS = 4096;
 const fail = code => Object.assign(new Error(code), { webError: code, protocolError: errorFor(code) });
@@ -16,21 +17,12 @@ function normalize(value) {
 function publicAddress(value) {
   try { if (value === '168.63.129.16') return false; const ip = ipaddr.parse(value); return ip.range() === 'unicast' && !(ip.kind() === 'ipv6' && ip.isIPv4MappedAddress()); } catch { return false; }
 }
-function urlsIn(message) {
-  const urls = [];
-  for (const match of String(message).matchAll(/https?:\/\/[^\s<>"`]+/giu)) {
-    let raw = match[0].replace(/[.,;!?]+$/, '');
-    while ((raw.endsWith(')') && (raw.match(/\)/g)||[]).length > (raw.match(/\(/g)||[]).length) || raw.endsWith(']')) raw = raw.slice(0,-1);
-    // Preserve candidates for validation before admitting the request.
-    if (!urls.includes(raw)) urls.push(raw);
-  }
-  return urls;
-}
 function plan(message, model) {
   if (!enabled(model)) return null;
-  const urls = urlsIn(message);
+  const urls = directUrls(message);
   if (!urls.length) return null;
-  if (urls.length > MAX_URLS) throw fail('WEB_TOO_MANY_URLS');
-  return { version: 2, urls: [...new Set(urls.map(normalize))] };
+  const targets = [...new Set(urls.map(normalize))];
+  if (targets.length > MAX_URLS) throw fail('WEB_TOO_MANY_URLS');
+  return { version: 3, urls: targets };
 }
 module.exports = { MAX_URLS, PAGE_BYTES, OUTPUT_TOKENS, fail, enabled, normalize, publicAddress, urlsIn, plan };

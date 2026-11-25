@@ -11,13 +11,13 @@ const instructions = [
   'Disclose any failed pages and truncated content. Do not claim images, video, linked pages, login content or JavaScript-rendered content were read.',
   'For a request to reproduce a copyrighted web page, follow applicable quotation limits and offer a summary instead.'
 ].join(' ');
-async function prepare(turn, leaseToken, model, signal) {
+async function prepare(turn, leaseToken, model, signal, guard = lease) {
   if (!turn.webPlan) return null;
   if (!enabled(model)) throw fail('WEB_INPUT_DISABLED');
   let state = turn.webState || { version: 2, results: [] };
   const save = async () => {
     if (signal?.aborted) throw signal.reason || fail('WEB_UNAVAILABLE');
-    const result = await ChatTurn.updateOne(lease(turn, leaseToken), { $set: { webState: state } });
+    const result = await ChatTurn.updateOne(guard(turn, leaseToken), { $set: { webState: state } });
     if (!result.matchedCount) throw Object.assign(new Error('Stale worker lease'), { staleLease: true });
     turn.webState = state;
   };

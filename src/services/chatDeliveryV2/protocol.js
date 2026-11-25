@@ -57,7 +57,7 @@ const CODES = {
   BROWSER_INVALID_ACTION: ["The model returned an unsupported browser action.", false],
   WEB_TOO_MANY_URLS: ["Use at most three web URLs in one request.", false],
   WEB_INVALID_URL: ["Use a valid public HTTP or HTTPS URL without credentials or a custom port.", false],
-  WEB_BLOCKED_ADDRESS: ["This address cannot be accessed by the web reader.", false],
+  WEB_BLOCKED_ADDRESS: ["The web reader can only open public websites. This address is unavailable from the server.", false],
   WEB_INPUT_DISABLED: ["Web reading is disabled for this model or server.", false],
   WEB_CONTEXT_TOO_LARGE: ["This request exceeds the web-reading context budget. Shorten the conversation or attachments.", false],
   WEB_CONFIGURATION_ERROR: ["Web reading pricing is not configured. Contact support.", false],

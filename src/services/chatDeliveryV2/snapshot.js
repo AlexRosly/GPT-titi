@@ -32,6 +32,7 @@ const snapshot = async (turn) => {
 
   if (assistant) [assistant] = await require("../files/messages").hydrate(turn.user, [assistant]);
 
+  const answeringWeb = turn.webPlan?.mode === 'selected_html' ? turn.browserState?.stage === 'answering' : Boolean(turn.providerStartedAt);
   return {
     turnId: turn.turnId,
     clientMessageId: turn.clientMessageId,
@@ -42,7 +43,7 @@ const snapshot = async (turn) => {
     partialContent: turn.partialContent || "",
     computationStatus: require("../computation/status").progress(turn),
     webStatus: turn.status === "processing" && turn.webPlan ? {
-      stage: turn.webPlan.mode === "browser" ? (turn.browserState?.stage || "opening_browser") : turn.providerStartedAt ? "answering" : "reading_web",
+      stage: turn.webPlan.mode === "browser" ? (turn.browserState?.stage || "opening_browser") : (answeringWeb ? "answering" : "reading_web"),
       completed: turn.webState?.results?.length || 0, total: turn.webPlan.mode === "browser" ? 5 : turn.webPlan.urls.length
     } : null,
     outputFile: turn.outputFile || null,

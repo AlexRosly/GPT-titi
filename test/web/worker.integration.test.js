@@ -34,7 +34,7 @@ async function fixture({balance=10000,model={}}={}) {
   const modelId=`web-${id}`;
   await models.ChatModels.create({modelId,enabled:true,inputPerM:2.5,outputPerM:10,...model});
   const conversation=await models.ChatConversation.create({user:user.id,modelId});
-  const payload={clientMessageId:crypto.randomUUID(),conversationId:conversation.id,modelId,message:'Підсумуй https://example.com/a',files:[]};
+  const payload={clientMessageId:crypto.randomUUID(),conversationId:conversation.id,modelId,message:'https://example.com/a',files:[]};
   return {user,conversation,modelId,payload};
 }
 async function run(f) {const accepted=await accept({userId:f.user.id,payload:f.payload});const claimed=await worker.claimTurn(accepted.turn.turnId);await worker.processTurn(claimed);return models.ChatTurn.findById(claimed.turn._id).lean();}
@@ -112,8 +112,62 @@ test('flag defaults off, model opt-out and ordinary text preserve the existing s
   const c=await fixture();c.payload.message='Hello';assert.equal((await run(c)).webPlan,null);assert.equal(calls(),3);
 });
 
+test('incidental router instruction reaches the provider verbatim in HTML and browser modes', opts, async t => {
+  const message = 'Для налаштування PPPoE на TP-Link TL-WR841N підключіть кабель провайдера в синій порт WAN, відкрийте у браузері адресу http://192.168.0.1 (або 192.168.1.1/tplinkwifi.net), увійдіть з логіном та паролем admin та вкажіть дані PPPoE у розділі Мережа → WAN. Ви можете подивитися в інтернеті як налаштувати. Де взяти PPPoE?';
+  const reads = t.mock.method(reader, 'read', () => { throw new Error('Unexpected read'); });
+  const sessions = t.mock.method(require('../../src/services/browser/session'), 'create', () => { throw new Error('Unexpected browser'); });
+  const calls = provider(t, req => {
+    assert.deepEqual(req.messages.at(-1).content, [{ type: 'text', text: message }]);
+    assert.match(req.messages[0].content, /No web source was read/);
+  });
+  t.after(() => { delete process.env.BROWSER_V2_ENABLED; });
+  for (const mode of ['false', 'true']) {
+    process.env.BROWSER_V2_ENABLED = mode;
+    const f = await fixture();
+    f.payload.message = message;
+    const turn = await run(f);
+    assert.equal(turn.message, message);
+    assert.equal(turn.status, 'completed');
+    assert.equal(turn.webPlan, null);
+    assert.equal(turn.webState, null);
+  }
+  assert.equal(calls(), 2);
+  assert.equal(reads.mock.callCount(), 0);
+  assert.equal(sessions.mock.callCount(), 0);
+});
+
+test('mixed message reads and cites only the selected guide', opts, async t => {
+  const f = await fixture();
+  const guide = 'https://example.org/guide';
+  f.payload.message = 'Адреса роутера http://192.168.0.1. Прочитай інструкцію ' + guide;
+  const reads = t.mock.method(reader, 'read', async url => {
+    assert.equal(url, guide);
+    const active = await models.ChatTurn.findOne({clientMessageId:f.payload.clientMessageId});
+    assert.equal((await snapshot(active)).webStatus.stage, 'reading_web');
+    return page(url);
+  });
+  const calls = t.mock.method(Completions.prototype, 'create', async req => {
+    if (req.stream) {
+      assert.ok(req.tools.some(tool => tool.function.name === 'read_supplied_pages'));
+      return require('./sourceSelectionStream')([guide], usage);
+    }
+    assert.deepEqual(req.messages.at(-1).content, [{ type: 'text', text: f.payload.message }]);
+    assert.ok(req.messages.some(m => typeof m.content === 'string' && m.content.includes('WEB_PAGE_DATA')));
+    return { usage, choices: [{ finish_reason: 'stop', message: { content: 'Guide summary' } }] };
+  });
+  const turn = await run(f);
+  assert.equal(turn.status, 'completed');
+  assert.deepEqual(turn.webPlan.urls, [guide]);
+  assert.equal(reads.mock.callCount(), 1);
+  assert.equal(calls.mock.callCount(), 2);
+  assert.equal(turn.usage.totalTokens, 240);
+  assert.equal(await models.TokenOperation.countDocuments({'context.turnId':turn.turnId,'entries.delta':{$lt:0}}), 1);
+  const result = await snapshot(turn);
+  assert.deepEqual(result.assistantMessage.webSources.map(s => s.url), [guide]);
+});
+
 test('invalid and excessive URLs reject before retention, turn creation and reservation',opts,async()=>{
-  for(const message of ['Read http://127.0.0.1','https://a.com https://b.com https://c.com https://d.com']){
+  for(const message of ['http://127.0.0.1','https://a.com https://b.com https://c.com https://d.com']){
     const f=await fixture();f.payload.message=message;
     await assert.rejects(accept({userId:f.user.id,payload:f.payload}),e=>Boolean(e.webError));
     assert.equal(await models.ChatTurn.countDocuments({user:f.user.id}),0);assert.equal((await models.User.findById(f.user.id)).reservedAppTokens,0);
@@ -156,7 +210,111 @@ test('Socket.IO send ACK arrives before page work and invalid URLs return an exp
   await new Promise((resolve,reject)=>{client.once('connect',resolve);client.once('connect_error',reject);});
   const send=payload=>new Promise((resolve,reject)=>client.timeout(8000).emit('chat:send',{protocolVersion:2,event:'chat:send',type:'request',payload},(error,ack)=>error?reject(error):resolve(ack)));
   const ack=await send(f.payload);assert.equal(ack.ok,true);assert.equal(ack.turn.status,'queued');
-  const rejected=await send({...f.payload,clientMessageId:crypto.randomUUID(),message:'Read http://127.0.0.1'});
+  const rejected=await send({...f.payload,clientMessageId:crypto.randomUUID(),message:'http://127.0.0.1'});
   assert.equal(rejected.ok,false);assert.equal(rejected.error.code,'WEB_BLOCKED_ADDRESS');
   const row=await models.ChatTurn.findOne({turnId:ack.turn.turnId});assert.equal(row.providerStartedAt,null);assert.equal(row.webState,null);
+});
+
+test('Responses selects a supplied Japanese source, continues its function result, and charges once', opts, async t => {
+  const { Responses } = require('openai/resources/responses');
+  const f = await fixture({ model: { apiMode: 'responses', reasoningEffort: 'low' } });
+  const guide = 'https://example.org/guide';
+  f.payload.message = 'https://example.net/sample は例です。' + guide + ' だけ読んでください。';
+  const reads = t.mock.method(reader, 'read', async url => { assert.equal(url, guide); return page(url); });
+  let calls = 0;
+  t.mock.method(Responses.prototype, 'create', async function* (req) {
+    calls++;
+    let output;
+    if (calls === 1) {
+      assert.ok(req.tools.some(tool => tool.name === 'read_supplied_pages'));
+      assert.ok(JSON.stringify(req.input).includes(f.payload.message));
+      output = [{type:'function_call',status:'completed',id:'fc1',call_id:'call1',name:'read_supplied_pages',arguments:JSON.stringify({urls:[guide]})}];
+    } else {
+      assert.ok(req.input.some(item => item.type === 'function_call_output' && item.call_id === 'call1'));
+      assert.match(JSON.stringify(req.input), /WEB_PAGE_DATA/);
+      output = [{type:'message',content:[{type:'output_text',text:'確認しました。'}]}];
+    }
+    yield {type:'response.completed',response:{id:'resp_'+calls,status:'completed',output,
+      usage:{input_tokens:20,output_tokens:6,total_tokens:26}}};
+  });
+  const turn = await run(f);
+  assert.equal(turn.status, 'completed');
+  assert.deepEqual(turn.webPlan.urls, [guide]);
+  assert.equal(calls, 2);
+  assert.equal(reads.mock.callCount(), 1);
+  assert.equal(turn.usage.totalTokens, 52);
+  assert.equal(await models.TokenOperation.countDocuments({'context.turnId':turn.turnId,'entries.delta':{$lt:0}}), 1);
+});
+
+test('an invented model destination triggers a localized clarification without a fetch', opts, async t => {
+  const f = await fixture();
+  f.payload.message = '请阅读 https://example.org/guide。';
+  const reads = t.mock.method(reader, 'read', () => { throw new Error('Unexpected read'); });
+  let calls = 0;
+  t.mock.method(Completions.prototype, 'create', async req => {
+    calls++;
+    if (req.stream) return require('./sourceSelectionStream')(['https://example.com/not-supplied'], usage);
+    assert.match(req.messages[0].content, /No page was opened/);
+    return {usage,choices:[{message:{content:'请单独发送需要阅读的网址。'},finish_reason:'stop'}]};
+  });
+  const turn = await run(f);
+  assert.equal(turn.status, 'completed');
+  assert.equal(turn.webPlan.selectionError, 'UNVERIFIED_SELECTION');
+  assert.equal(reads.mock.callCount(), 0);
+  assert.equal(calls, 2);
+});
+
+test('public URL mentioned in Arabic goes to the regular answer with exactly one model call', opts, async t => {
+  const f = await fixture();
+  f.payload.message = 'ترجم عبارة «افتح https://example.org/guide» من دون زيارة الصفحة.';
+  const reads = t.mock.method(reader, 'read', () => { throw new Error('Unexpected read'); });
+  const count = provider(t, req => {
+    assert.ok(req.tools.some(t => t.function.name === 'read_supplied_pages'));
+    assert.equal(req.messages.at(-1).content[0].text, f.payload.message);
+  });
+  const turn = await run(f);
+  assert.equal(turn.status, 'completed');
+  assert.equal(turn.webPlan, null);
+  assert.equal(count(), 1);
+  assert.equal(reads.mock.callCount(), 0);
+});
+
+test('cancel while the selected HTML page is loading settles only the first confirmed call', opts, async t => {
+  const f = await fixture();
+  const url = 'https://example.org/guide';
+  f.payload.message = 'Lis seulement ' + url;
+  t.mock.method(Completions.prototype, 'create', async req => {
+    assert.equal(req.stream, true);
+    return require('./sourceSelectionStream')([url], usage);
+  });
+  t.mock.method(reader, 'read', async () => {
+    const row = await models.ChatTurn.findOne({clientMessageId:f.payload.clientMessageId}).lean();
+    await require('../../src/services/chatDeliveryV2/cancelTurn')({turnId:row.turnId,userId:f.user.id});
+    throw fail('WEB_UNAVAILABLE');
+  });
+  const turn = await run(f);
+  assert.equal(turn.error.code, 'USER_CANCELLED');
+  assert.equal(turn.reservationState, 'settled');
+  assert.equal(turn.needsReconciliation, false);
+  assert.equal(turn.usage.totalTokens, 120);
+  assert.equal(await models.TokenOperation.countDocuments({'context.turnId':turn.turnId,'entries.delta':{$lt:0}}), 1);
+});
+
+test('an ambiguous answer call after source selection stays held without automatic replay', opts, async t => {
+  const f = await fixture();
+  const guide = 'https://example.org/guide';
+  f.payload.message = '내용을 요약해 주세요. ' + guide;
+  t.mock.method(reader, 'read', async url => page(url));
+  let calls = 0;
+  t.mock.method(Completions.prototype, 'create', async req => {
+    calls++;
+    if (req.stream) return require('./sourceSelectionStream')([guide], usage);
+    throw Error('connection lost');
+  });
+  const turn = await run(f);
+  await worker.recoverExpired();
+  assert.equal(turn.needsReconciliation, true);
+  assert.equal(turn.reservationState, 'held');
+  assert.equal(calls, 2);
+  assert.equal(await models.TokenOperation.countDocuments({'context.turnId':turn.turnId,'entries.delta':{$lt:0}}), 0);
 });

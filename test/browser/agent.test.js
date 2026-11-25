@@ -159,3 +159,36 @@ test('time budget stops planning early and answers without another navigation',a
   }));
   assert.equal(calls,2);assert.equal(f.actions(),1);assert.match(result.assistantText,/BROWSER_TIME_BUDGET/);
 });
+
+test('pre-provider recovery reuses a saved source and reopens the live DOM once', async t => {
+  const { turn } = setup(t);
+  const first = 'https://example.com/', last = 'https://example.org/';
+  turn.webPlan = { version: 3, mode: 'browser', urls: [first, last] };
+  turn.webState = { version: 3, results: [
+    { index: 0, requestedUrl: first, url: first, status: 'ready', text: 'Saved first source' },
+    { index: 1, requestedUrl: last, url: last, status: 'ready', text: 'Old last DOM' },
+  ] };
+  const opened = [];
+  t.mock.method(sessions, 'create', () => ({ close() {}, async action({ url }) {
+    opened.push(url);
+    return { url, text: 'New last DOM', controls: [] };
+  } }));
+  await run(turn, 'lease', {}, messages, {}, client(async req => {
+    if (req.tools) return choose({kind:'done'});
+    const evidence = JSON.stringify(req.messages);
+    assert.match(evidence, /Saved first source/);
+    assert.match(evidence, /New last DOM/);
+    assert.doesNotMatch(evidence, /Old last DOM/);
+    return { usage, choices: [{ message: { content: 'Comparison' } }] };
+  }));
+  assert.deepEqual(opened, [last]);
+  assert.equal(turn.webState.results.length, 2);
+});
+
+test('legacy queued plan keeps its original first page behavior', async t => {
+  const f = setup(t);
+  f.turn.webPlan = { version: 2, mode: 'browser', urls: ['https://example.com/', 'https://example.org/'] };
+  await run(f.turn, 'lease', {}, messages, {}, client(async req => req.tools
+    ? choose({kind:'done'}) : { usage, choices: [{ message: { content: 'Done' } }] }));
+  assert.equal(f.actions(), 1);
+});

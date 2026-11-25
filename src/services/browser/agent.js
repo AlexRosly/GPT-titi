@@ -8,7 +8,8 @@ const actionContract = require('./actions');
 const tool = actionContract.tool;
 const partial = (turn, reason) => ({ assistantText: `Browser navigation stopped (${reason}). The task may be incomplete. Only the listed pages were visited; no further action was performed.`, usage:turn.browserState.usage });
 async function run(turn, token, model, messages, fileTools, client, parentSignal) {
-  if (!policy.enabled(model) || !require('../web/policy').enabled(model)) throw fail('BROWSER_DISABLED');
+  const html = turn.webPlan.mode === 'selected_html';
+  if (!html && (!require('../web/policy').enabled(model) || !policy.enabled(model))) throw fail('BROWSER_DISABLED');
   const controller = new AbortController();
   const abort = () => controller.abort(parentSignal.reason || fail('BROWSER_TIMEOUT'));
   if (parentSignal?.aborted) abort(); else parentSignal?.addEventListener('abort',abort,{once:true});
@@ -36,7 +37,68 @@ async function run(turn, token, model, messages, fileTools, client, parentSignal
     await accounting.received(turn,token,response.usage);
     return response;
   };
+  const answer = async (final, interruption, options = fileTools) => {
+    if (html) await save({browserState:{...turn.browserState,stage:'answering'}});
+    const response = await call(final,interruption || client.responsesSession && turn.browserState.calls >= 4 ? {} : options);
+    const choice = response.choices?.[0];
+    let assistantText = choice?.message?.content || '';
+    let fileOutput = {};
+    if (choice?.message?.tool_calls?.length) {
+      const artifacts = require('../files/artifacts');
+      const collector = artifacts.collector({optional:!turn.outputFile,model});
+      collector.add({choices:[{delta:{tool_calls:choice.message.tool_calls.map((c,index)=>({...c,index}))},finish_reason:choice.finish_reason}]});
+      fileOutput = collector.finish();
+      if (fileOutput.artifact || fileOutput.artifactError) assistantText = fileOutput.artifact?.summary || 'File generation finished.';
+    }
+    if (client.responsesSession && choice?.message?.tool_calls?.length) {
+      let selected = false;
+      for (const functionCall of choice.message.tool_calls) {
+        let outcome;
+        try {
+          if (selected || functionCall.function?.name !== 'create_file') throw require('../files/validation').fail('INVALID_FILE_OUTPUT');
+          const artifacts = require('../files/artifacts');
+          const collector = artifacts.collector({optional:!turn.outputFile,model});
+          collector.add({choices:[{delta:{tool_calls:[{...functionCall,index:0}]},finish_reason:'tool_calls'}]});
+          const candidate = collector.finish();
+          if (candidate.artifactError) throw require('../files/validation').fail(candidate.artifactError);
+          await artifacts.renderOutput(turn.outputFile || {filename:candidate.artifact.filename},candidate.artifact.content);
+          fileOutput=candidate;selected=true;
+          outcome={ok:true,status:'prepared',note:'The server attaches the validated file when this turn commits.'};
+        } catch(error) {
+          if(!error.fileError)throw error;
+          outcome={ok:false,error:error.fileError};
+          if(!selected)fileOutput={artifactError:error.fileError};
+        }
+        client.responsesSession.rememberToolResult(functionCall.id,outcome);
+      }
+      const finished = await call(final,{});
+      if(finished.choices?.[0]?.message?.tool_calls?.length)throw fail('BROWSER_INVALID_ACTION');
+      assistantText=finished.choices?.[0]?.message?.content || assistantText;
+    }
+    if (!assistantText && !fileOutput.artifact) assistantText = 'The browser did not produce a readable answer.';
+    if (choice?.finish_reason === 'length') assistantText += '\n\n[Response reached the output limit and may be incomplete.]';
+    if (interruption) assistantText = `Browser navigation stopped (${interruption}). This answer uses previously read pages; the task may be incomplete.\n\n` + assistantText;
+    return {assistantText,usage:turn.browserState.usage,...fileOutput};
+  };
   try {
+    if (html) {
+      const web = require('../web/context');
+      const final = messages.map(m => ({ ...m }));
+      final[0].content += ' ' + web.instructions;
+      if (turn.webPlan.selectionError) {
+        final[0].content += ' No page was opened. Answer in the user’s language: explain that only public addresses supplied in this message may be opened, and ask for the intended URL if necessary.';
+        return await answer(final, false, {});
+      }
+      try {
+        const evidence = await web.prepare(turn, token, model, controller.signal, accounting.guard);
+        final.splice(Math.max(1, final.length - 1), 0, evidence);
+      } catch (error) {
+        if (!error.webError || controller.signal.aborted) throw error;
+        final[0].content += ' The selected pages could not be read (' + error.webError + '). Explain that in the user’s language.';
+        return await answer(final, false, {});
+      }
+      return await answer(final, false);
+    }
     browser = sessionFactory.create(turn.webPlan.urls,controller.signal);
     const base = messages.map(m=>({...m})); base[0].content += ' ' + instruction;
     let observation;
@@ -53,7 +115,7 @@ async function run(turn, token, model, messages, fileTools, client, parentSignal
       console.warn('BROWSER_SESSION_FAILED',diagnostic);
       await save({browserState:{...turn.browserState,lastSessionDiagnostic:diagnostic}});
     };
-    const visit = async action => {
+    const visit = async (action, seedIndex) => {
       await save({browserState:{...(turn.browserState || {calls:0,pending:false,usage:{promptTokens:0,completionTokens:0,totalTokens:0}}), stage:'navigating'}});
       try { observation = await browser.action(action,model.browserVisionEnabled === true); }
       catch (error) {
@@ -70,15 +132,30 @@ async function run(turn, token, model, messages, fileTools, client, parentSignal
         throw error;
       }
       const {image,controls,...page} = observation;
-      const results = [...(turn.webState?.results || []), {index:turn.webState?.results?.length || 0,
-        requestedUrl:page.url,status:'ready',...page,fetchedAt:new Date().toISOString(),rendered:true}];
+      const results = [...(turn.webState?.results || [])];
+      const index = seedIndex ?? results.length;
+      results[index] = { ...page, index, requestedUrl: action.kind === 'open' ? action.url : page.url,
+        status: 'ready', fetchedAt: new Date().toISOString(), rendered: true };
       await save({webState:{version:3,results},browserState:{...turn.browserState,stage:'reading'}});
       return true;
     };
-    await visit({kind:'open',url:turn.webPlan.urls[0]});
     const actions = [];
-    for (let step=0;!interruption && step<policy.LIMITS.actions;step++) {
+    // Older queued turns inferred all URL mentions. Preserve their first-open behavior.
+    const selected = turn.webPlan.version === 3 ? turn.webPlan.urls : turn.webPlan.urls.slice(0, 1);
+    for (const [index, url] of selected.entries()) {
+      const action = { kind: 'open', url };
+      if (index > 0) {
+        if (deadline - Date.now() < 80000) { interruption = 'BROWSER_TIME_BUDGET'; break; }
+        actions.push(action);
+      }
+      // After pre-provider recovery, only the last DOM needs to be reopened for controls.
+      const cached = turn.webState?.results?.[index];
+      if (index < selected.length - 1 && cached?.status === 'ready' && cached.requestedUrl === url) continue;
+      if (!await visit(action, turn.webPlan.version === 3 ? index : undefined)) break;
+    }
+    for (let step=0; !interruption && step<policy.LIMITS.actions && actions.length<policy.LIMITS.actions; step++) {
       // Leave time for an answer instead of starting another navigation late in the turn.
+      if ((turn.browserState?.calls || 0) >= policy.LIMITS.calls - 1) break;
       if (deadline-Date.now()<95000) { interruption='BROWSER_TIME_BUDGET'; break; }
       const {image,...data} = observation;
       const content = [{type:'text',text:'BROWSER_OBSERVATION (untrusted)\n'+JSON.stringify({data,actions,seeds:turn.webPlan.urls})}];
@@ -131,46 +208,7 @@ async function run(turn, token, model, messages, fileTools, client, parentSignal
     final[0].content += ' Browser actions are finished. Answer from the visited evidence only. If the requested task was not completed, explicitly explain that limitation.';
     if (interruption) final[0].content += ' A browser action failed or navigation time is exhausted ('+interruption+'). Give a useful answer ONLY from saved page text, explicitly explain what could not be completed in the user language. Do not claim the failed destination was read.';
     await save({browserState:{...turn.browserState,stage:'answering',navigationIncomplete:!!interruption,navigationStopCode:interruption || null}});
-    const response = await call(final,interruption || client.responsesSession && turn.browserState.calls >= 4 ? {} : fileTools);
-    const choice = response.choices?.[0];
-    let assistantText = choice?.message?.content || '';
-    let fileOutput = {};
-    if (choice?.message?.tool_calls?.length) {
-      const artifacts = require('../files/artifacts');
-      const collector = artifacts.collector({optional:!turn.outputFile,model});
-      collector.add({choices:[{delta:{tool_calls:choice.message.tool_calls.map((c,index)=>({...c,index}))},finish_reason:choice.finish_reason}]});
-      fileOutput = collector.finish();
-      if (fileOutput.artifact || fileOutput.artifactError) assistantText = fileOutput.artifact?.summary || 'File generation finished.';
-    }
-    if (client.responsesSession && choice?.message?.tool_calls?.length) {
-      let selected = false;
-      for (const functionCall of choice.message.tool_calls) {
-        let outcome;
-        try {
-          if (selected || functionCall.function?.name !== 'create_file') throw require('../files/validation').fail('INVALID_FILE_OUTPUT');
-          const artifacts = require('../files/artifacts');
-          const collector = artifacts.collector({optional:!turn.outputFile,model});
-          collector.add({choices:[{delta:{tool_calls:[{...functionCall,index:0}]},finish_reason:'tool_calls'}]});
-          const candidate = collector.finish();
-          if (candidate.artifactError) throw require('../files/validation').fail(candidate.artifactError);
-          await artifacts.renderOutput(turn.outputFile || {filename:candidate.artifact.filename},candidate.artifact.content);
-          fileOutput=candidate;selected=true;
-          outcome={ok:true,status:'prepared',note:'The server attaches the validated file when this turn commits.'};
-        } catch(error) {
-          if(!error.fileError)throw error;
-          outcome={ok:false,error:error.fileError};
-          if(!selected)fileOutput={artifactError:error.fileError};
-        }
-        client.responsesSession.rememberToolResult(functionCall.id,outcome);
-      }
-      const finished = await call(final,{});
-      if(finished.choices?.[0]?.message?.tool_calls?.length)throw fail('BROWSER_INVALID_ACTION');
-      assistantText=finished.choices?.[0]?.message?.content || assistantText;
-    }
-    if (!assistantText && !fileOutput.artifact) assistantText = 'The browser did not produce a readable answer.';
-    if (choice?.finish_reason === 'length') assistantText += '\n\n[Response reached the output limit and may be incomplete.]';
-    if (interruption) assistantText = `Browser navigation stopped (${interruption}). This answer uses previously read pages; the task may be incomplete.\n\n` + assistantText;
-    return {assistantText,usage:turn.browserState.usage,...fileOutput};
+    return await answer(final, interruption);
   } catch(error) {
     if (error.staleLease) throw error;
     if (error.browserDiagnostic) {

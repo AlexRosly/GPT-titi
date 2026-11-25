@@ -46,7 +46,7 @@ function load(buffer){
   const rel=rels.get(id);if(!name||sheets.some(s=>s.name===name)||!rel?.type.endsWith('/worksheet')||!parts.has(rel.path))throw fail('XLSX_UNSUPPORTED');
   sheets.push({name,path:rel.path});
  }}});if(!sheets.length||sheets.length>256)throw fail('XLSX_RESOURCE_LIMIT');
- const formats=new Map(),styles=[];
+ const formats=new Map([[1,'0'],[2,'0.00'],[3,'#,##0'],[4,'#,##0.00']]),styles=[];
  if(parts.has('xl/styles.xml')){let cellStyles=false;parse(xmlOf(parts,'xl/styles.xml'),{open:n=>{if(n.uri!==NS)return;if(n.local==='numFmt')formats.set(Number(attr(n,'numFmtId')),attr(n,'formatCode'));if(n.local==='cellXfs')cellStyles=true;if(n.local==='xf'&&cellStyles){const id=Number(attr(n,'numFmtId')||0);styles.push({numberFormatId:id,numberFormat:formats.get(id)||null});}},close:n=>{if(n.split(':').at(-1)==='cellXfs')cellStyles=false;}});}
  const strings=[];
  if(parts.has('xl/sharedStrings.xml')){let text='',inside=false,capture=false,phonetic=0;parse(xmlOf(parts,'xl/sharedStrings.xml'),{
@@ -55,9 +55,11 @@ function load(buffer){
  });}
  return {parts,sheets,strings,styles,rowNamespaces:[...namespaces].map(([p,u])=>`xmlns:${p}="${escape(u)}"`).join(" "),checksum:hash(buffer)};
 }
-function sheetData(book,name){
+function sheetData(book,name,{indexFormulas=false,readShared=false}={}){
  const sheet=book.sheets.find(s=>s.name===name);if(!sheet)throw fail('XLSX_SHEET_NOT_FOUND');
  const xml=xmlOf(book.parts,sheet.path),rows=[],merges=[],formulaRanges=[];let current,prev=0,inData=false,dimension=null,maxColumn=0;
+ const shared=new Map();
+ let cellRef, cellColumn, master, formulaCount=0, bounds;
  parse(xml,{open:(n,start)=>{
   if(n.uri!==NS)return;
   if(n.local==='worksheet'&&n.prefix)throw fail('XLSX_UNSUPPORTED');
@@ -66,11 +68,28 @@ function sheetData(book,name){
   if(n.local==='f'&&attr(n,'ref'))formulaRanges.push(policy.range(attr(n,'ref')));
   if(n.local==='sheetData')inData=true;
   if(n.local==='row'&&inData){const r=Number(attr(n,'r'));if(current||!Number.isInteger(r)||r<=prev||r>1048576)bad();current={r,start};prev=r;}
-  if(n.local==='c'&&current){const ref=attr(n,'r'),m=/^([A-Z]{1,3})([1-9]\d*)$/.exec(ref||'');if(!m||Number(m[2])!==current.r)bad();maxColumn=Math.max(maxColumn,policy.column(m[1]));}
- },close:(n,end)=>{const local=n.split(':').at(-1);if(local==='row'&&current){rows.push({...current,end});current=null;}if(local==='sheetData')inData=false;}});
- return {...sheet,xml,rows,merges,formulaRanges,dimension,maxColumn,used:{r1:rows[0]?.r||1,r2:rows.at(-1)?.r||1,c1:1,c2:maxColumn||1}};
+  if(n.local==='c'&&current){const ref=attr(n,'r'),m=/^([A-Z]{1,3})([1-9]\d*)$/.exec(ref||'');if(!m||Number(m[2])!==current.r)bad();cellRef=ref;cellColumn=policy.column(m[1]);maxColumn=Math.max(maxColumn,cellColumn);}
+  if(n.local==='f'&&cellRef&&current){
+   if(indexFormulas){
+    formulaCount++;
+    if(!bounds)bounds={r1:current.r,r2:current.r,c1:cellColumn,c2:cellColumn};
+    bounds.r2=current.r;
+    bounds.c1=Math.min(bounds.c1,cellColumn);bounds.c2=Math.max(bounds.c2,cellColumn);
+   }
+   const si=attr(n,'si'),ref=attr(n,'ref');
+   if(readShared&&attr(n,'t')==='shared'&&si!=null&&ref){
+    master={cell:cellRef,range:ref,expression:''};
+    shared.set(si,shared.has(si)?null:master);
+   }
+  }
+ },text:t=>{if(master)master.expression+=t;},close:(n,end)=>{const local=n.split(':').at(-1);
+  if(local==='f')master=null;
+  if(local==='c')cellRef=null;
+  if(local==='row'&&current){rows.push({...current,end});current=null;}if(local==='sheetData')inData=false;}});
+ const formulaArea=bounds?`${colName(bounds.c1)}${bounds.r1}:${colName(bounds.c2)}${bounds.r2}`:null;
+ return {...sheet,xml,rows,merges,formulaRanges,shared,formulaCount,formulaArea,dimension,maxColumn,used:{r1:rows[0]?.r||1,r2:rows.at(-1)?.r||1,c1:1,c2:maxColumn||1}};
 }
-function cells(book,rowXML,rowNumber){
+function cells(book,rowXML,rowNumber,shared){
  const result=new Map();let cell,capture=null,text='',last=0,phonetic=0;
  // The row inherits its namespace from worksheet; wrap it without changing offsets.
  const prefix=`<root xmlns="${NS}" ${book.rowNamespaces||""}>`;
@@ -81,10 +100,18 @@ function cells(book,rowXML,rowNumber){
    cell={ref,col,start:start-prefix.length,openEnd:end-prefix.length,style:attr(n,'s'),type:attr(n,'t'),formula:false,value:null,inline:'',raw:''};
   }
   if(n.local==='rPh')phonetic++;
-  if(cell&&['f','v','t'].includes(n.local)&&!phonetic){capture=n.local;text='';if(n.local==='f')cell.formula=true;}
+  if(cell&&['f','v','t'].includes(n.local)&&!phonetic){capture=n.local;text='';if(n.local==='f'){
+   cell.formula=true;
+   if(shared){
+    const type=attr(n,'t')||'normal';
+    cell.definition={type};
+    if(attr(n,'ref'))cell.definition.range=attr(n,'ref');
+    if(type==='shared')cell.definition.master=shared.get(attr(n,'si'))||null;
+   }
+  }}
  },text:t=>{if(capture)text+=t;},close:(n,end)=>{const local=n.split(':').at(-1);
   if(local==='rPh')phonetic--;
-  if(cell&&local===capture){if(local==='t')cell.inline+=text;else if(local==='v')cell.raw=text;capture=null;}
+  if(cell&&local===capture){if(local==='t')cell.inline+=text;else if(local==='v')cell.raw=text;else if(local==='f'&&cell.definition&&text)cell.definition.expression=text;capture=null;}
   if(local==='c'&&cell){
    if(cell.type==='s'){const index=Number(cell.raw);if(!/^\d+$/.test(cell.raw)||index>=book.strings.length)bad();cell.value=book.strings[index];}
    else if(cell.type==='inlineStr')cell.value=decode(cell.inline);
@@ -106,17 +133,54 @@ function selection(book,sheet,args){
  const descriptor={version:1,sourceChecksum:book.checksum,sheet:sheet.name,range,where:args.where||null};
  return {...descriptor,id:hash(JSON.stringify(descriptor))};
 }
+// Include a complete, bounded set or omit it. Numeric inputs on other rows/sheets
+// can still be retrieved with inspect_xlsx. Never evaluate workbook expressions.
+function formulaEvidence(book,sheet,budget){
+ const rows=[];
+ let bytes=2;
+ for(const row of sheet.rows){
+  const values=[...cells(book,sheet.xml.slice(row.start,row.end),row.r,sheet.shared).values()];
+  if(!values.some(c=>c.formula))continue;
+  const entries=[];
+  bytes+=2+(rows.length?1:0);
+  for(const c of values){
+   if(!c.formula&&typeof c.value!=='number')continue;
+   const format=book.styles[Number(c.style||0)];
+   const entry={cell:c.ref,value:c.value,...(format?{format:format.numberFormat??format.numberFormatId}:{}),
+    ...(c.definition?{definition:c.definition}:{})};
+   bytes+=Buffer.byteLength(JSON.stringify(entry))+(entries.length?1:0);
+   if(bytes>budget)return;
+   entries.push(entry);
+  }
+  rows.push(entries);
+ }
+ return rows;
+}
 function inspect(book,args){
- if(args.sheet===null)return {checksum:book.checksum,sheets:book.sheets.map(s=>{const d=sheetData(book,s.name);return {name:s.name,dimension:d.dimension,physicalRows:d.rows.length,lastRow:d.rows.at(-1)?.r||0,maxColumn:d.maxColumn};}),fullTextProvided:false};
- const sheet=sheetData(book,args.sheet),sel=selection(book,sheet,args),items=[],stats=new Map();let matched=0,shownBytes=0,nextOffset=null,scanned=0;
+ if(args.sheet===null){
+  let remaining=L.previewBytes;
+  const sheets=book.sheets.map(s=>{
+   const include=args.includeFormulaRows===true;
+   const d=sheetData(book,s.name,{indexFormulas:true,readShared:include});
+   const result={name:s.name,dimension:d.dimension,physicalRows:d.rows.length,lastRow:d.rows.at(-1)?.r||0,
+    maxColumn:d.maxColumn,formulaCellCount:d.formulaCount,formulaArea:d.formulaArea};
+   if(include&&remaining>0&&d.formulaCount>0&&d.formulaCount<=100&&d.rows.length<=200&&d.xml.length<=512*1024){
+    const rows=formulaEvidence(book,d,remaining);
+    if(rows){result.formulaRows=rows;remaining-=Buffer.byteLength(JSON.stringify(rows));}
+   }
+   return result;
+  });
+  return {checksum:book.checksum,sheets,fullTextProvided:false};
+ }
+ const sheet=sheetData(book,args.sheet,{readShared:true}),sel=selection(book,sheet,args),items=[],stats=new Map();let matched=0,shownBytes=0,nextOffset=null,scanned=0;
  for(const row of sheet.rows){if(row.r<sel.range.r1||row.r>sel.range.r2)continue;scanned++;
-  const values=cells(book,sheet.xml.slice(row.start,row.end),row.r);if(!matches(values,sel.where))continue;
+  const values=cells(book,sheet.xml.slice(row.start,row.end),row.r,sheet.shared);if(!matches(values,sel.where))continue;
   const ordinal=matched++;const out=[];
   for(const [c,cell]of values){if(c<sel.range.c1||c>sel.range.c2)continue;
    if(sheet.formulaRanges.some(r=>r.r1<=row.r&&r.r2>=row.r&&r.c1<=c&&r.c2>=c))cell.formula=true;
    const stat=stats.get(c)||{column:colName(c),numericCount:0,sum:0,min:null,max:null,formulaCells:0};if(cell.formula)stat.formulaCells++;
    if(typeof cell.value==='number'){stat.numericCount++;stat.sum+=cell.value;stat.min=stat.min===null?cell.value:Math.min(stat.min,cell.value);stat.max=stat.max===null?cell.value:Math.max(stat.max,cell.value);}stats.set(c,stat);
-   if(ordinal>=args.offset&&nextOffset===null)out.push({cell:cell.ref,...(book.styles[Number(cell.style||0)]||{numberFormatId:0,numberFormat:null}),value:typeof cell.value==='string'?cell.value.slice(0,300):cell.value,truncated:typeof cell.value==='string'&&cell.value.length>300,formula:cell.formula});
+   if(ordinal>=args.offset&&nextOffset===null)out.push({cell:cell.ref,...(book.styles[Number(cell.style||0)]||{numberFormatId:0,numberFormat:null}),value:typeof cell.value==='string'?cell.value.slice(0,300):cell.value,truncated:typeof cell.value==='string'&&cell.value.length>300,formula:cell.formula,...(cell.definition?{definition:cell.definition}:{})});
   }
   if(ordinal>=args.offset&&nextOffset===null){const item={row:row.r,cells:out};const bytes=Buffer.byteLength(JSON.stringify(item));if(shownBytes+bytes<=L.previewBytes){items.push(item);shownBytes+=bytes;}else nextOffset=ordinal;}
  }

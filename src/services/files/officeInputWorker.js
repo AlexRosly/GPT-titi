@@ -93,7 +93,9 @@ function extract(buffer,ext){
             seen.add(address); if (++count > 10000) limit();
             cell = { address, type: attr(node, 't') || 'n', style: attr(node, 's'), value: '', inline: '', formula: '', hasFormula: false };
           }
-          if (local === 'f' && cell) { cell.hasFormula = true; cell.formulaType = attr(node, 't') || 'normal'; }
+          if (local === 'f' && cell) { cell.hasFormula = true; cell.formulaType = attr(node, 't') || 'normal';
+            if (attr(node, 'si') != null) cell.sharedIndex = attr(node, 'si');
+            if (attr(node, 'ref')) cell.formulaRange = attr(node, 'ref'); }
         },
         text(value) {
           if (!cell) return;
@@ -110,7 +112,7 @@ function extract(buffer,ext){
           else if (cell.type === 'inlineStr') value = cell.inline;
           else if (cell.type === 'b') { if (!['0', '1'].includes(value)) invalid(); value = value === '1'; }
           else if (!['n', 'str', 'e', 'd'].includes(cell.type)) invalid();
-          if (value !== '' || cell.hasFormula) append(JSON.stringify({ cell: cell.address, type: cell.type, value, ...(cell.style ? { numberFormat: numberFormats.get(styles[Number(cell.style)]) || `builtin-format-${styles[Number(cell.style)] ?? 'unknown'}` } : {}), ...(cell.hasFormula ? { formula: cell.formula, formulaType: cell.formulaType, cachedResult: value === '' ? 'missing' : 'not recalculated' } : {}) }) + '\n');
+          if (value !== '' || cell.hasFormula) append(JSON.stringify({ cell: cell.address, type: cell.type, value, ...(cell.style ? { numberFormat: numberFormats.get(styles[Number(cell.style)]) || `builtin-format-${styles[Number(cell.style)] ?? 'unknown'}` } : {}), ...(cell.hasFormula ? { formula: cell.formula, formulaType: cell.formulaType, sharedIndex: cell.sharedIndex, formulaRange: cell.formulaRange, cachedResult: value === '' ? 'missing' : 'not recalculated' } : {}) }) + '\n');
           cell = null;
         },
       });

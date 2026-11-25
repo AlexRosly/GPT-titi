@@ -14,7 +14,9 @@ function get(name) {
   return {limits,unitsPerChunk:limits.rowsPerChunk,hash:require('../xlsx/engine').hash,extension:'xlsx',
     sourceChanged:'XLSX_SOURCE_CHANGED',verificationFailed:'XLSX_VERIFICATION_FAILED',
     total:s=>s.scannedRows,expected:p=>p.expectedRows,processed:r=>r.processedRows,
-    summary:r=>`Edited Excel copy attached. Processed ${r.processedRows} source rows; changed ${r.changed} cells. Preserved ${r.formulaSkipped} targeted formula cells; skipped ${r.nonNumericSkipped} non-numeric or blank cells in numeric operations. Formula values were not recalculated; The workbook is marked for recalculation when opened.`,
+    summary:r=>r.formulaValuesRecalculated
+      ? `Edited Excel copy attached. Wrote ${r.formulaTargets} formula cells. Reopened the copy and verified the expressions and numeric results of ${r.verifiedFormulas} cells.`
+      : `Edited Excel copy attached. Processed ${r.processedRows} source rows; changed ${r.changed} cells. Preserved ${r.formulaSkipped} targeted formula cells; skipped ${r.nonNumericSkipped} non-numeric or blank cells in numeric operations. Formula values were not recalculated; The workbook is marked for recalculation when opened.`,
     run:(...args)=>require('../xlsx/process').run(...args)};
 }
 module.exports={get};

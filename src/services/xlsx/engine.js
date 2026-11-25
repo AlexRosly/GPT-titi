@@ -3,6 +3,7 @@
 const sax=require('sax'),crypto=require('node:crypto'),path=require('node:path');
 const {fail}=require('../files/validation');
 const policy=require('./policy'),L=policy.limits;
+const formulaEdit=require('./formulaEdit');
 const NS='http://schemas.openxmlformats.org/spreadsheetml/2006/main';
 const REL='http://schemas.openxmlformats.org/package/2006/relationships';
 const hash=b=>crypto.createHash('sha256').update(b).digest('hex');
@@ -230,33 +231,72 @@ function prepare(book,args,saved){
  if(book.checksum!==args.sourceChecksum||!saved||saved.sourceChecksum!==book.checksum||saved.id!==args.selectionId)throw fail('XLSX_SOURCE_CHANGED');
  const sheet=sheetData(book,saved.sheet),descriptor={version:saved.version,sourceChecksum:saved.sourceChecksum,sheet:saved.sheet,range:saved.range,where:saved.where};
  if(hash(JSON.stringify(descriptor))!==saved.id||saved.matchingRows!==args.expectedRows)throw fail('XLSX_SELECTION_MISMATCH');
- for(const op of args.operations){const c=policy.column(op.column);if(c<saved.range.c1||c>saved.range.c2)throw fail('XLSX_INVALID_RANGE');
+ const rows=sheet.rows.filter(r=>r.r>=saved.range.r1&&r.r<=saved.range.r2);
+ const request=formulaEdit.isPlan(args.operations)?formulaEdit.indexTargets(args.operations,saved,rows):null;
+ if(!request)for(const op of args.operations){const c=policy.column(op.column);if(c<saved.range.c1||c>saved.range.c2)throw fail('XLSX_INVALID_RANGE');
   if(sheet.merges.some(r=>c>=r.c1&&c<=r.c2&&r.r2>=saved.range.r1&&r.r1<=saved.range.r2&&(c!==r.c1||Math.min(r.r2,saved.range.r2)>r.r1)))throw fail('XLSX_MERGED_TARGET');
  }
- return {sheet,selection:saved,rows:sheet.rows.filter(r=>r.r>=saved.range.r1&&r.r<=saved.range.r2)};
+ return {sheet,request,selection:saved,rows};
 }
 function* chunks(book,args,saved,cursor=0){
- const {sheet,selection:sel,rows}=prepare(book,args,saved);if(!Number.isInteger(cursor)||cursor<0||cursor>rows.length)throw fail('DOCUMENT_CHECKPOINT_INVALID');
+ const {sheet,selection:sel,rows,request}=prepare(book,args,saved);if(!Number.isInteger(cursor)||cursor<0||cursor>rows.length)throw fail('DOCUMENT_CHECKPOINT_INVALID');
  let chunk={cursor,processed:cursor,total:rows.length,start:0,end:0,xml:'',matched:0,changed:0,formulaSkipped:0,nonNumericSkipped:0},count=0;
  for(let i=cursor;i<rows.length;i++){
-  const row=rows[i],r=transform(book,sheet.xml.slice(row.start,row.end),row,sel,args.operations,sheet.formulaRanges);
+  const row=rows[i],raw=sheet.xml.slice(row.start,row.end);
+  const r=request?formulaEdit.stage(request,row):transform(book,raw,row,sel,args.operations,sheet.formulaRanges);
   if(Buffer.byteLength(r.xml)>L.chunkBytes)throw fail('XLSX_ROW_TOO_LARGE');
-  const gap=count?sheet.xml.slice(chunk.end,row.start):'';
+  const gap=count&&!request?sheet.xml.slice(chunk.end,row.start):'';
   if(count&&(count>=L.rowsPerChunk||Buffer.byteLength(chunk.xml)+Buffer.byteLength(gap)+Buffer.byteLength(r.xml)>L.chunkBytes)){
    yield chunk;chunk={cursor:i,processed:i,total:rows.length,start:0,end:0,xml:'',matched:0,changed:0,formulaSkipped:0,nonNumericSkipped:0};count=0;
   }
-  if(!count)chunk.start=row.start;else chunk.xml+=sheet.xml.slice(chunk.end,row.start);
+  if(!count)chunk.start=row.start;else if(!request)chunk.xml+=sheet.xml.slice(chunk.end,row.start);
   chunk.xml+=r.xml;chunk.end=row.end;chunk.processed=i+1;count++;for(const k of ['matched','changed','formulaSkipped','nonNumericSkipped'])chunk[k]+=r[k];
  }
  if(count)yield chunk;
 }
 async function assemble(book,args,saved,records){
- const {sheet,rows}=prepare(book,args,saved);let cursor=0,end=0,out='',totals={matched:0,changed:0,formulaSkipped:0,nonNumericSkipped:0};
+ const {sheet,rows,request}=prepare(book,args,saved);let cursor=0,end=0,out='',totals={matched:0,changed:0,formulaSkipped:0,nonNumericSkipped:0};
  for(const c of records){if(c.cursor!==cursor||c.processed<=cursor||c.processed>rows.length||c.start!==rows[cursor].start||c.end!==rows[c.processed-1].end||c.hash!==hash(c.xml))throw fail('DOCUMENT_CHECKPOINT_INVALID');
-  out+=sheet.xml.slice(end,c.start)+c.xml;end=c.end;cursor=c.processed;for(const k of Object.keys(totals))totals[k]+=c[k];
- }if(cursor!==rows.length||totals.matched!==args.expectedRows)throw fail('XLSX_SELECTION_MISMATCH');out+=sheet.xml.slice(end);
- parse(out);const parts=new Map(book.parts);parts.set(sheet.path,Buffer.from(out));
- // Formula caches remain untouched, and Excel must recalculate dependents on open.
+  if(request)formulaEdit.restore(request,rows,c);
+  else out+=sheet.xml.slice(end,c.start)+c.xml;
+  end=c.end;cursor=c.processed;for(const k of Object.keys(totals))totals[k]+=c[k];
+ }if(cursor!==rows.length||totals.matched!==args.expectedRows)throw fail('XLSX_SELECTION_MISMATCH');
+ const parts=new Map(book.parts);
+ const formulaPlan=request?formulaEdit.build(book,request.edits,saved):null;
+ if(!request){out+=sheet.xml.slice(end);parse(out);parts.set(sheet.path,Buffer.from(out));}
+ if(formulaPlan){
+  if(totals.changed!==formulaPlan.targetCount)throw fail('XLSX_VERIFICATION_FAILED');
+  for(const state of formulaPlan.sheets.values()){
+   if(!state.updates.size)continue;
+   // Recreate the atomic selection from its checkpoints; also refresh dependents
+   // outside that selection and expand partially replaced shared groups.
+   const data=state.sheet,segments=[];let last=0;
+   for(const row of data.rows){
+    if(!state.updates.has(row.r))continue;
+    const raw=data.xml.slice(row.start,row.end);
+    segments.push(data.xml.slice(last,row.start),formulaEdit.rewrite(book,state,row,raw));
+    last=row.end;
+   }
+   segments.push(data.xml.slice(last));
+   let xml=segments.join('');
+   if(data.path===sheet.path){
+    if(data.dimension){
+     const bounds=policy.range(data.dimension);
+     for(const updates of state.updates.values())for(const item of updates)if(item.target){
+      bounds.c1=Math.min(bounds.c1,item.c);bounds.c2=Math.max(bounds.c2,item.c);
+      bounds.r1=Math.min(bounds.r1,item.r);bounds.r2=Math.max(bounds.r2,item.r);
+     }
+     const ref=colName(bounds.c1)+bounds.r1+':'+colName(bounds.c2)+bounds.r2;
+     const existing=policy.range(data.dimension);
+     if(Object.keys(existing).some(key=>existing[key]!==bounds[key]))
+      xml=xml.replace(/(<dimension\s+[^>]*?\bref\s*=\s*)(["'])[^"']+\2/,(_,prefix,q)=>prefix+q+ref+q);
+    }
+   }
+   parts.set(data.path,Buffer.from(xml));
+  }
+  removeCalcChain(parts);
+ }
+ // A native editor should also recalculate after future input changes.
  let workbook=xmlOf(parts,'xl/workbook.xml');
  if(!/<workbook\b/.test(workbook))throw fail('XLSX_UNSUPPORTED');
  const calc='<calcPr calcId="0" fullCalcOnLoad="1" forceFullCalc="1"/>';
@@ -267,9 +307,31 @@ async function assemble(book,args,saved,records){
  const buffer=await zip.generateAsync({type:'nodebuffer',compression:'DEFLATE',compressionOptions:{level:6}});
  if(buffer.length>require('../files/config').generatedMaxBytes())throw fail('COMPUTE_OUTPUT_LIMIT');
  // Reopen the final container; verify untouched part bytes and the exact edited XML.
- const verified=load(buffer);if(!verified.parts.get(sheet.path)?.equals(parts.get(sheet.path)))throw fail('XLSX_VERIFICATION_FAILED');
- for(const [name,b]of book.parts)if(name!==sheet.path&&name!=='xl/workbook.xml'&&!verified.parts.get(name)?.equals(b))throw fail('XLSX_VERIFICATION_FAILED');
+ const verified=load(buffer);
+ if(verified.parts.size!==parts.size)throw fail('XLSX_VERIFICATION_FAILED');
+ for(const [name,b]of parts)if(!verified.parts.get(name)?.equals(b))throw fail('XLSX_VERIFICATION_FAILED');
+ if(formulaPlan)formulaEdit.verify(verified,formulaPlan);
  return {buffer,report:{version:1,sourceChecksum:book.checksum,resultChecksum:hash(buffer),sheet:saved.sheet,...totals,processedRows:rows.length,chunks:records.length,
-  otherPartsByteIdentical:true,formulaCellsPreserved:true,formulaValuesRecalculated:false,recalculateOnOpen:true,structuralChecksPassed:true}};
+  otherPartsByteIdentical:true,formulaCellsPreserved:!formulaPlan,formulaValuesRecalculated:Boolean(formulaPlan),
+  ...(formulaPlan?{formulaTargets:formulaPlan.targetCount,verifiedFormulas:formulaPlan.verifiedCount}:{}),recalculateOnOpen:true,structuralChecksPassed:true}};
 }
-module.exports={load,inspect,prepare,chunks,assemble,hash,cells,sheetData,selection};
+function removeCalcChain(parts){
+ const relFile='xl/_rels/workbook.xml.rels', typesFile='[Content_Types].xml';
+ const removed=new Set();
+ function removeElements(name,matches){
+  const xml=xmlOf(parts,name),pieces=[];let cut=null,last=0;
+  parse(xml,{open:(node,start)=>{if(matches(node))cut=start;},close:(_,end)=>{
+   if(cut!==null){pieces.push(xml.slice(last,cut));last=end;cut=null;}
+  }});
+  if(pieces.length)parts.set(name,Buffer.from(pieces.join('')+xml.slice(last)));
+ }
+ removeElements(relFile,n=>{
+  if(n.uri!==REL||n.local!=='Relationship'||!attr(n,'Type')?.endsWith('/calcChain'))return false;
+  const target=attr(n,'Target');
+  const name=target.startsWith('/')?target.slice(1):path.posix.normalize('xl/'+target);
+  if(!parts.has(name)||!name.startsWith('xl/')||!name.toLowerCase().endsWith('/calcchain.xml'))throw fail('XLSX_UNSUPPORTED');
+  removed.add('/'+name);parts.delete(name);return true;
+ });
+ if(removed.size)removeElements(typesFile,n=>n.local==='Override'&&removed.has(attr(n,'PartName')));
+}
+module.exports={escape,load,inspect,prepare,chunks,assemble,hash,cells,sheetData,selection};

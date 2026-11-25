@@ -16,17 +16,17 @@ test.before(async()=>{
  input=await require('../xlsx/fixtures').fixture(10000);book=engine.load(input);selection=engine.inspect(book,{sheet:'Дані',range:'A2:E10001',where:null,offset:0}).selection;
 });
 test.after(async()=>{if(uri){await mongoose.connection.dropDatabase();await mongoose.disconnect();}});
-async function setup(t,apiMode='chat_completions',failure=null,{inspections=1,pricing={inputPerM:.1,outputPerM:.2}}={}){
+async function setup(t,apiMode='chat_completions',failure=null,{inspections=1,pricing={inputPerM:.1,outputPerM:.2},formulaEdit=false}={}){
  const id=crypto.randomUUID(),modelId='xlsx-'+id;
  const user=await models.User.create({email:id+'@example.test',name:'Xlsx integration',status:'active',appTokens:100000});
  await models.ChatModels.create({modelId,enabled:true,...pricing,apiMode,...(apiMode==='responses'?{reasoningEffort:'low'}:{})});
  const conversation=await models.ChatConversation.create({user:user.id,modelId});
  const original=await store.create({user:user.id,name:'source.xlsx',mimetype:require('../../src/services/files/office').mimes.xlsx,buffer:input});
- const payload={clientMessageId:crypto.randomUUID(),conversationId:conversation.id,modelId,message:'Multiply B2:B10001 by 2, keep all formulas and other content. Return edited copy.',files:[{fileId:original.id,storage:'private'}]};
+ const payload={clientMessageId:crypto.randomUUID(),conversationId:conversation.id,modelId,message:formulaEdit?'Write ROUND(A2*1.5,2) down B2:B10001 and return the verified copy.':'Multiply B2:B10001 by 2, keep all formulas and other content. Return edited copy.',files:[{fileId:original.id,storage:'private'}]};
  let calls=0;const usage={prompt_tokens:100,completion_tokens:20,total_tokens:120};
  const makeCall=()=>{
   calls++;assert.ok(calls<=inspections+1,'No provider call during background processing or recovery');
-  const call={id:'action-'+calls,type:'function',function:calls<=inspections?{name:'inspect_xlsx',arguments:JSON.stringify({fileId:original.id,sheet:'Дані',range:'A2:E10001',where:null,offset:0})}:{name:'edit_xlsx',arguments:JSON.stringify({fileId:original.id,sourceChecksum:book.checksum,filename:'edited.xlsx',selectionId:selection.id,expectedRows:10000,operations:[{column:'B',type:'multiply',value:2,expected:null}]})}};
+  const call={id:'action-'+calls,type:'function',function:calls<=inspections?{name:'inspect_xlsx',arguments:JSON.stringify({fileId:original.id,sheet:'Дані',range:'A2:E10001',where:null,offset:0})}:{name:'edit_xlsx',arguments:JSON.stringify({fileId:original.id,sourceChecksum:book.checksum,filename:'edited.xlsx',selectionId:selection.id,expectedRows:10000,operations:formulaEdit?[{type:'set_formula',range:'B2:B10001',formula:'ROUND(A2*1.5,2)'}]:[{column:'B',type:'multiply',value:2,expected:null}]})}};
   return call;
  };
  t.mock.method(Completions.prototype,'create',req=>{
@@ -236,8 +236,8 @@ test('quota failure rolls back a chunk, releases staging and settles only known 
  const turn=await models.ChatTurn.findById(ctx.turn._id);assert.equal(turn.status,'completed');assert.equal(turn.reservationState,'settled');assert.equal(ctx.calls(),2);
 });
 
-test('SIGKILL of the actual worker process recovers committed chunks after lease expiry',opts,async t=>{
- const ctx=await setup(t);
+for(const formulaEdit of [false,true])test('SIGKILL recovers committed chunks after lease expiry: '+(formulaEdit?'formula fill':'value edit'),opts,async t=>{
+ const ctx=await setup(t,formulaEdit?'responses':'chat_completions',null,{formulaEdit});
  const child=require('node:child_process').fork(require.resolve('./fixtures/crashWorker'),[],{stdio:['ignore','ignore','ignore','ipc']});
  t.after(()=>{if(child.exitCode===null&&!child.killed)child.kill('SIGKILL');});
  await new Promise((resolve,reject)=>{
@@ -254,5 +254,15 @@ test('SIGKILL of the actual worker process recovers committed chunks after lease
  await queue.runOnce();await worker.recoverExpired();const turn=await models.ChatTurn.findById(ctx.turn._id);
  assert.equal(turn.status,'completed');assert.equal(turn.computeState.documentJob.report.changed,10000);assert.equal(turn.computeState.documentJob.report.chunks,20);
  assert.equal(await models.ChatBillingLedger.countDocuments({turnId:turn.turnId}),1);assert.equal(ctx.calls(),2);
+ if(formulaEdit){
+  const msg=await models.ChatMessage.findById(turn.assistantMessage);
+  assert.equal(msg.attachments.length,1);
+  assert.equal(turn.computeState.documentJob.report.verifiedFormulas,20000);
+  const {buffer}=await store.read(ctx.user.id,msg.attachments[0].fileId);
+  const row=engine.inspect(engine.load(buffer),{sheet:'Дані',range:'B10001:D10001',where:null,offset:0}).items[0].cells;
+  assert.equal(row[0].definition.expression,'ROUND(A10001*1.5,2)');assert.equal(row[0].value,15000);
+  assert.equal(row[2].value,30000);
+  assert.deepEqual((await store.read(ctx.user.id,ctx.original.id)).buffer,input);
+ }
  const job=await Job.findById(abandoned._id);assert.equal(job.stagedBytes,0);assert.equal(await Chunk.countDocuments({job:job._id}),0);
 });

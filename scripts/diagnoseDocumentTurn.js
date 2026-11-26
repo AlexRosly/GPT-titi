@@ -31,6 +31,8 @@ async function main() {
     await client.connect();const db=client.db();
     const projection={turnId:1,conversation:1,modelId:1,attempt:1,status:1,createdAt:1,updatedAt:1,
       processingStartedAt:1,leaseUntil:1,reservationState:1,reservedAppTokens:1,needsReconciliation:1,providerStartedAt:1,
+      'webPlan.mode':1,'webReading.cursor':1,'webReading.total':1,'webReading.finished':1,
+      'browserState.stage':1,'browserState.calls':1,'browserState.pending':1,'browserState.usage':1,
       providerConfig:1,providerResponseIds:1,initialProviderUsage:1,reconciliation:1,'providerResult.usage':1,'providerResult.computation.status':1,
       'providerResult.computation.reason':1,'responseState.pending':1,'responseState.calls':1,'responseState.usage':1,
       'computeState.kind':1,'computeState.stage':1,'computeState.calls':1,'computeState.runs':1,'computeState.pending':1,
@@ -54,6 +56,10 @@ async function main() {
         ...field(turn,['status','createdAt','updatedAt','processingStartedAt','leaseUntil','reservationState','reservedAppTokens','needsReconciliation','providerStartedAt','cancelRequestedAt']),
         errorCode:code(turn.error?.code),model,providerConfig:field(turn.providerConfig,['apiMode','reasoningEffort']),
         workerRuntime:runtime(turn.workerRuntime),
+        web:turn.webPlan?{mode:id(turn.webPlan.mode),stage:id(turn.browserState?.stage),
+          calls:num(turn.browserState?.calls),pending:turn.browserState?.pending??null,
+          confirmedUsage:usage(turn.browserState?.usage),cursor:num(turn.webReading?.cursor),
+          total:num(turn.webReading?.total),finished:turn.webReading?.finished??null}:null,
         initialProviderUsage:usage(turn.initialProviderUsage),
         reconciliation:turn.reconciliation?{source:id(turn.reconciliation.source),decision:id(turn.reconciliation.decision),
           providerUsageKnown:turn.reconciliation.providerUsageKnown===true,platformCoversUnknown:turn.reconciliation.platformCoversUnknown===true,
@@ -72,7 +78,7 @@ async function main() {
     }
     const booleans=Object.fromEntries(['DOCUMENT_JOBS_ENABLED','DOCX_BATCH_ENABLED','XLSX_EDIT_ENABLED','COMPUTE_V2_ENABLED','PRIVATE_FILES_ENABLED','OFFICE_INPUT_ENABLED'].map(k=>[k,process.env[k]===undefined?'unset':process.env[k]==='true'?'true':process.env[k]==='false'?'false':'non-boolean']));
     const limits=Object.fromEntries(['COMPUTE_MAX_USD','COMPUTE_MAX_RUNS','COMPUTE_MAX_CALLS','COMPUTE_TOTAL_MS','CHAT_V2_LEASE_MS'].map(k=>[k,process.env[k]===undefined?null:num(Number(process.env[k]))]));
-    console.log(JSON.stringify({reportVersion:4,generatedAt:new Date(),readOnly:true,configurationSource:'diagnostic-process',flags:booleans,limits,
+    console.log(JSON.stringify({reportVersion:5,generatedAt:new Date(),readOnly:true,configurationSource:'diagnostic-process',flags:booleans,limits,
       searchedCandidates:candidates.length,reports,note:'flags and limits belong to this CLI process, not the live PM2 backend. workerRuntime and failureDiagnostic.terminal.runtime were saved by the worker that processed the turn. Missing metadata on older turns is expected. No model calls or writes.'},null,2));
   }finally{await client.close();}
 }

@@ -2,6 +2,7 @@ const paging = require('./paging');
 const { ChatTurn } = require('../../models');
 const { fail } = require('./policy');
 const { instructions } = require('./context');
+const { LIMITS } = require('../browser/policy');
 
 const zeroUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 const pausable = new Set(['WEB_CONTEXT_TOO_LARGE', 'BROWSER_LIMIT', 'INSUFFICIENT_BALANCE', 'BALANCE_LIMIT_EXCEEDED']);
@@ -38,7 +39,7 @@ async function run({ turn, messages, call, answer, save, deadline, callsLimit, f
   let batchCount = Infinity;
   while (state.cursor <= items.length) {
     const calls = turn.browserState?.calls || 0;
-    if (calls >= callsLimit || deadline - Date.now() < 45000) return pause(turn, 'turn limit');
+    if (calls >= callsLimit || deadline - Date.now() < LIMITS.readingCallMs) return pause(turn, 'turn limit');
     const parts = paging.batch(items, state.cursor).slice(0, batchCount);
     const end = state.cursor + parts.length;
     const last = end === items.length;

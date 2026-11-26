@@ -1,3 +1,4 @@
+const { APIConnectionTimeoutError } = require('openai');
 const { ChatTurn } = require('../../models');
 const policy = require('./policy');
 const { fail } = require('../web/policy');
@@ -26,11 +27,15 @@ async function run(turn, token, model, messages, fileTools, client, parentSignal
   const call = async (input, options, checkpoint) => {
     if (controller.signal.aborted) throw controller.signal.reason;
     await accounting.begin(turn,token,input,options.tools);
+    const callLimit = turn.webReading ? policy.LIMITS.readingCallMs : 45000;
+    const timeout = Math.max(1, Math.min(callLimit, deadline - Date.now()));
     let response;
     try {
       response = await client.chat.completions.create({model:turn.modelId,messages:input,
-        max_completion_tokens:4096,stream:false,...options}, {signal:controller.signal,timeout:Math.max(1,Math.min(45000,deadline-Date.now()))});
+        max_completion_tokens:4096,stream:false,...options}, {signal:controller.signal,timeout});
     } catch(error) {
+      if (controller.signal.aborted) throw controller.signal.reason;
+      if (error instanceof APIConnectionTimeoutError) throw fail('WEB_PROVIDER_TIMEOUT');
       if ([400,401,403,404,422,429].includes(error?.status)) await accounting.rejected(turn,token);
       if ([400,422].includes(error?.status)) throw fail('BROWSER_MODEL_UNSUPPORTED');
       throw error;

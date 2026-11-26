@@ -192,3 +192,45 @@ test('legacy queued plan keeps its original first page behavior', async t => {
     ? choose({kind:'done'}) : { usage, choices: [{ message: { content: 'Done' } }] }));
   assert.equal(f.actions(), 1);
 });
+
+test('a long reading call can take 60s and pauses before dispatch when the remaining time is short', async t => {
+  const f = setup(t);
+  const started = Date.now();
+  let elapsed = 0;
+  t.mock.method(Date, 'now', () => started + elapsed);
+  const url = 'https://example.com/';
+  t.mock.method(sessions, 'create', () => ({ close() {}, async action() {
+    elapsed += 32000;
+    return { url, text: 'preview', snapshot: 'a'.repeat(12 * 1024 * 12), controls: [] };
+  }}));
+  const receive = accounting.received.bind(accounting);
+  t.mock.method(accounting, 'received', async (turn, token, bill, checkpoint) => {
+    await receive(turn, token, bill);
+    Object.assign(turn, checkpoint(turn.browserState.usage));
+  });
+  let calls = 0;
+  const result = await run(f.turn, 'lease', {}, messages, {}, client(async (_request, options) => {
+    calls++;
+    assert.ok(options.timeout > 60000);
+    elapsed += 60000;
+    return { usage, choices: [{ finish_reason: 'stop', message: { content: 'Notes from parts 1–5' } }] };
+  }));
+  assert.equal(calls, 1);
+  assert.match(result.assistantText, /5 of 12/);
+  assert.equal(f.turn.webReading.cursor, 5);
+  assert.equal(f.turn.browserState.pending, false);
+  assert.equal(result.usage.totalTokens, 15);
+});
+
+test('SDK web timeout is classified and leaves the outstanding call pending without replay', async t => {
+  const f = setup(t);
+  const { APIConnectionTimeoutError } = require('openai');
+  let calls = 0;
+  await assert.rejects(run(f.turn, 'lease', {}, messages, {}, client(async (_request, options) => {
+    calls++;
+    assert.equal(options.timeout, 45000);
+    throw new APIConnectionTimeoutError();
+  })), error => error.protocolError?.code === 'WEB_PROVIDER_TIMEOUT');
+  assert.equal(calls, 1);
+  assert.equal(f.turn.browserState.pending, true);
+});

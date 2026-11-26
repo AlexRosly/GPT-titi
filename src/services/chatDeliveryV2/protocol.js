@@ -51,6 +51,7 @@ const CODES = {
   BROWSER_NAVIGATION_FAILED: ["The browser could not open or read this page. Previously read pages may still be available.", true],
   BROWSER_UNAVAILABLE: ["The isolated browser is unavailable. Please try again or contact support.", true],
   BROWSER_BUSY: ["Browser capacity is busy. Please try again shortly.", true],
+  WEB_PROVIDER_TIMEOUT: ["The model call for website reading timed out.", false],
   BROWSER_TIMEOUT: ["Browser navigation reached its time limit.", true],
   BROWSER_LIMIT: ["Browser navigation reached its action or download limit.", false],
   BROWSER_ACTION_BLOCKED: ["This action is outside public read-only navigation.", false],

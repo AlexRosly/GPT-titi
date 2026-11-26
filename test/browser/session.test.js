@@ -52,13 +52,16 @@ test('main-document broker categories distinguish limits, access and policy reje
 test('complete rendered snapshot is private, Unicode-safe and requested explicitly', async t => {
   const f = fixture(t);
   const doc = 'Початок 🟢 останній абзац';
-  const page = {text:'Початок', truncated:true, controls:[], snapshot64:Buffer.from(doc).toString('base64')};
+  const page = {text:'Початок', truncated:true, controls:[], snapshot64:Buffer.from(doc).toString('base64'),
+    headingRows:[{ level:2, title:'4. Main' }, { level:3, title:'4.1. Child' }]};
   const pending = f.session.action({kind:'open',url:'https://example.com/'},false,true);
   const wire = Buffer.from(JSON.stringify({type:'result',id:1,result:page})+'\n');
   const split = wire.indexOf(Buffer.from('П')) + 1;
   f.child.stdout.write(wire.subarray(0,split));
   f.child.stdout.write(wire.subarray(split));
   const result = await pending;
+  assert.deepEqual(result.outline,{headings:[{level:2,title:"4. Main"}],partial:false});
+  assert.equal(result.headingRows,undefined);
   assert.equal(result.snapshot,doc);
   assert.equal(result.text,'Початок');
   assert.equal(result.snapshot64,undefined);

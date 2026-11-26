@@ -193,9 +193,11 @@ for (const mode of ['browser', 'html']) {
     process.env.BROWSER_V2_ENABLED = String(mode === 'browser');
     const paging = require('../../src/services/web/paging');
     const code = crypto.randomUUID();
+    const outline = { headings: [{ level: 2, title: '4. Identifiers in HTTP' },
+      { level: 2, title: 'Appendix A. Collected ABNF' }], partial: false };
     const snapshotText = 'abcdefghijklmnop '.repeat(20000) + '\nLast paragraph code: ' + code;
     const source = { ...page(f.payload.message), text: snapshotText.slice(0, 8192),
-      snapshot: snapshotText, truncated: true, controls: [] };
+      snapshot: snapshotText, outline, truncated: true, controls: [] };
     let reads = 0;
     const read = async () => { reads++; return source; };
     if (mode === 'browser') t.mock.method(sessions, 'create', () => ({ close() {}, action: read }));
@@ -211,7 +213,13 @@ for (const mode of ['browser', 'html']) {
         seen.push(part.part);
       }
       const found = input.parts.find(part => part.text.includes(code));
-      return { usage, choices: [{ finish_reason: 'stop', message: { content: found ? code : 'Saved notes' } }] };
+      if (found) {
+        assert.equal(input.previousNotes, '4. URI References');
+        assert.deepEqual(input.sources[0].outline, outline);
+      } else {
+        assert.equal(input.sources[0].outline, undefined);
+      }
+      return { usage, choices: [{ finish_reason: 'stop', message: { content: found ? code : '4. URI References' } }] };
     });
     // The first turn has five paid calls, the remainder starts in the next turn.
     const first = await run(f);
@@ -220,6 +228,7 @@ for (const mode of ['browser', 'html']) {
     const firstView = (await snapshot(first)).assistantMessage;
     assert.equal(firstView.webSources[0].reading.continueId, first.turnId);
     assert.ok(!JSON.stringify(firstView).includes(code));
+    assert.equal(firstView.webSources[0].outline, undefined);
     const payload = { ...f.payload, message: 'Continue reading', clientMessageId: first.turnId };
     const submit = () => accept({ userId: f.user.id, payload });
     const children = await Promise.all([submit(), submit()]);
@@ -248,7 +257,8 @@ for (const mode of ['html', 'browser']) {
     const url = f.payload.message;
     const marker = crypto.randomUUID();
     const text = 'start-of-snapshot ' + 'Release notes. '.repeat(18000) + 'Appendix 9.8 ' + marker;
-    const source = { ...page(url), text:text.slice(0,8192), snapshot:text, truncated:true, controls:[] };
+    const source = { ...page(url), text:text.slice(0,8192), snapshot:text, truncated:true, controls:[],
+      outline:{headings:[{level:2,title:"Unselected section"}],partial:false} };
     f.payload.message = 'Прочитай ' + url + ' і назви контрольний код у Appendix 9.8';
     const read = async () => source;
     if (mode === 'browser') t.mock.method(sessions,'create',()=>({close(){},action:read}));
@@ -261,6 +271,7 @@ for (const mode of ['html', 'browser']) {
       })();
       const evidence = JSON.stringify(req.messages);
       assert.ok(!evidence.includes('start-of-snapshot'));
+      assert.ok(!evidence.includes('Unselected section'));
       assert.ok(evidence.includes(marker));
       return {usage, choices:[{finish_reason:'stop',message:{content:marker}}]};
     });

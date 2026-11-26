@@ -39,7 +39,7 @@ test('main-document access rejection reaches host as a precise safe diagnostic',
 
 test('rendered long page retains final marker and scrolling yields the next UTF-8 window', {timeout:60000},async()=>{
   const code = require('node:crypto').randomUUID();
-  const html = '<main>' + 'А'.repeat(4096) + '中'.repeat(32000) + code + '</main>';
+  const html = '<main>' + 'А'.repeat(4096) + '中'.repeat(32000) + '<h2>4. Main</h2><h3>4.1. Child</h3><h2 hidden>Hidden</h2><h2>Appendix A. Grammar</h2>' + code + '</main>';
   const session = create([origin+'/'], undefined, {broker:()=>async () =>
     ({status:200,headers:{'content-type':'text/html; charset=utf-8'},body:Buffer.from(html).toString('base64')})});
   try {
@@ -47,6 +47,9 @@ test('rendered long page retains final marker and scrolling yields the next UTF-
     assert.equal(first.truncated, true);
     assert.ok(!first.text.includes(code));
     assert.ok(first.snapshot.endsWith(code));
+    assert.deepEqual(first.outline, { headings: [
+      { level:2, title:'4. Main' }, { level:2, title:'Appendix A. Grammar' },
+    ], partial:false });
     const second = await session.action({kind:'scroll'});
     assert.ok(second.text.startsWith('中'));
     assert.equal(second.snapshot, undefined);

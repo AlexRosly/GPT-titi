@@ -16,6 +16,7 @@ function extract(buffer, contentType) {
   const html = iconv.decode(buffer, declared);
   const doc = parseDocument(html, { decodeEntities:true });
   let title = '', scriptCount = 0, nodes = 0;
+  const headingRows = [];
   function text(node, depth = 0) {
     if (++nodes > 100000 || depth > 128) throw fail('WEB_PAGE_TOO_LARGE');
     if (node.type === 'text') return node.data || '';
@@ -23,6 +24,7 @@ function extract(buffer, contentType) {
     if (name === 'script') scriptCount++;
     if (ignored.has(name) || 'hidden' in attrs || attrs['aria-hidden'] === 'true' || /display\s*:\s*none|visibility\s*:\s*hidden/i.test(attrs.style || '')) return '';
     const value = (node.children || []).map(n => text(n, depth + 1)).join('');
+    if (/^h[1-6]$/.test(name) && value.trim()) headingRows.push({ level: Number(name[1]), title: value });
     if (name === 'title') { title = clean(value).slice(0,300); return ''; }
     return blocks.has(name) ? '\n' + value + '\n' : ['td','th'].includes(name) ? value + ' | ' : value;
   }
@@ -30,6 +32,8 @@ function extract(buffer, contentType) {
   if (result.length < 1000 && /verify (?:you are|that you are) human|checking your browser|captcha|access denied/i.test(title + ' ' + result)) throw fail('WEB_ACCESS_DENIED');
   if (result.length < 80 && (scriptCount || /enable javascript/i.test(result))) throw fail('WEB_JAVASCRIPT_REQUIRED');
   if (!result) throw fail('WEB_NO_READABLE_TEXT');
-  return { title, ...require('./paging').capture(result, clip(result, PAGE_BYTES)) };
+  const page = require('./paging').capture(result, clip(result, PAGE_BYTES));
+  const outline = !page.captureIncomplete && require('./outline').buildOutline(headingRows);
+  return { title, ...page, ...(outline ? { outline } : {}) };
 }
 module.exports = { extract, clip };

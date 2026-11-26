@@ -85,3 +85,27 @@ test('sibling articles and the final article footer survive extraction', () => {
  assert.match(out.snapshot,/Second article/);
  assert.match(out.snapshot,/END-19$/);
 });
+
+test('section labels follow the source hierarchy including appendices and omit hidden headings', () => {
+  const contents = '<h1>HTTP Semantics</h1><nav><h2>Menu</h2></nav>' +
+    '<h2><a>4. </a><a>Identifiers in HTTP</a></h2><h3>4.1. URI References</h3>' +
+    '<h2 hidden>Invisible</h2><h2>10. Message Context</h2><h3>10.1. Request Context Fields</h3>' +
+    '<h2>Appendix A. Collected ABNF</h2><h2>Appendix B. Changes from Previous RFCs</h2>';
+  const {outline} = html.extract(Buffer.from(contents), 'text/html');
+  assert.deepEqual(outline, { partial: false, headings: [
+    {level:1,title:'HTTP Semantics'}, {level:2,title:'4. Identifiers in HTTP'},
+    {level:2,title:'10. Message Context'}, {level:2,title:'Appendix A. Collected ABNF'},
+    {level:2,title:'Appendix B. Changes from Previous RFCs'},
+  ] });
+});
+
+test('bounded outlines retain higher-level headings and never describe uncaptured final content', () => {
+  const { buildOutline } = require('../../src/services/web/outline');
+  const rows = Array.from({length:150}, (_, i) => ({ level:2, title:'Chapter ' + i }));
+  const outline = buildOutline([...rows, {level:1,title:'Second document'}]);
+  assert.equal(outline.partial, true);
+  assert.equal(outline.headings.length, 96);
+  assert.equal(outline.headings.at(-1).title, 'Second document');
+  const huge = '<p>' + 'x'.repeat(2 * 1024 * 1024) + '</p><h2>Beyond capture</h2>';
+  assert.equal(html.extract(Buffer.from(huge), 'text/html').outline, undefined);
+});

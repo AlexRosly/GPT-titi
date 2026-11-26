@@ -65,7 +65,22 @@ async function observe(vision, capture, scroll) {
     const offset = Math.min(start, raw.length);
     const text = raw.slice(offset, offset + 12000);
     const snapshot = capture && raw.length ? raw.slice(0, 2 * 1024 * 1024) : undefined;
-    return { url: location.href, title: document.title.slice(0,300), text, offset, snapshot, captureIncomplete: capture && raw.length > snapshot?.length, clipped: offset > 0 || raw.length > offset + text.length, controls: list };
+    // Bound IPC before sending DOM evidence to the host. One extra row per
+    // level lets the host recognize that its 96-heading limit was exceeded.
+    const headingRows = [];
+    if (capture && snapshot && !start && raw.length === snapshot.length) {
+      const counts = Array(7).fill(0);
+      for (const heading of document.body.querySelectorAll('h1,h2,h3,h4,h5,h6')) {
+        const level = Number(heading.tagName[1]);
+        if (counts[level] >= 97 || heading.closest('nav,aside,form,[hidden],[aria-hidden="true"]') || !visible(heading)) continue;
+        const title = heading.innerText.replace(/\s+/gu, ' ').trim();
+        if (title) {
+          counts[level]++;
+          headingRows.push({ level, title: title.slice(0, 513) });
+        }
+      }
+    }
+    return { headingRows, url: location.href, title: document.title.slice(0,300), text, offset, snapshot, captureIncomplete: capture && raw.length > snapshot?.length, clipped: offset > 0 || raw.length > offset + text.length, controls: list };
   }, { start: scroll ? textOffset : 0, capture });
   controls = result.controls;
   const bytes = Buffer.from(result.text); result.truncated = result.clipped || bytes.length > 8192; delete result.clipped;

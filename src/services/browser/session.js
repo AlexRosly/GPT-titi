@@ -3,6 +3,7 @@ const crypto = require('node:crypto');
 const { broker } = require('./network');
 const { LIMITS } = require('./policy');
 const { fail } = require('../web/policy');
+const { buildOutline } = require('../web/outline');
 const errors = require('../../../browser-worker/errors');
 let active = 0;
 const dockerEnv = () => Object.fromEntries(['PATH','HOME','DOCKER_HOST','DOCKER_CONTEXT','XDG_RUNTIME_DIR'].filter(k=>process.env[k]!==undefined).map(k=>[k,process.env[k]]));
@@ -69,13 +70,17 @@ function create(seeds, signal, dependencies = {}) {
         if (m.error) p.reject(errorFor(m.diagnostic,p));
         else if (!m.result || typeof m.result.text!=='string' || Buffer.byteLength(m.result.text)>LIMITS.textBytes || !Array.isArray(m.result.controls) || m.result.controls.length>LIMITS.controls) p.reject(errorFor({reason:'RESPONSE_INVALID',stage:'observe'},p));
         else {
-          const { snapshot64, ...page } = m.result;
+          const { snapshot64, headingRows, outline: ignoredOutline, ...page } = m.result;
           if (snapshot64 !== undefined) {
             if (!p.capture || typeof snapshot64 !== 'string' || snapshot64.length > 4 * Math.ceil(2097152 / 3))
               return p.reject(errorFor({reason:'RESPONSE_INVALID',stage:'observe'},p));
             const bytes = Buffer.from(snapshot64, 'base64');
             if (bytes.length > 2097152) return p.reject(errorFor({reason:'RESPONSE_INVALID',stage:'observe'},p));
             page.snapshot = bytes.toString('utf8');
+          }
+          if (p.capture && !page.captureIncomplete && Array.isArray(headingRows) && headingRows.length <= 6 * 97) {
+            const outline = buildOutline(headingRows);
+            if (outline) page.outline = outline;
           }
           p.resolve({...page,warnings:[...warnings],truncated:page.truncated || warnings.size>0});
         }

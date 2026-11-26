@@ -38,9 +38,16 @@ async function prepare(turn, leaseToken, model, signal, guard = lease) {
     await save();
   }
   if (!state.results.some(r => r.status === 'ready')) throw fail(state.results[0]?.error || 'WEB_NO_READABLE_TEXT');
-  return { role: 'user', content: 'WEB_PAGE_DATA\n' + JSON.stringify(state.results) + '\nEND_WEB_PAGE_DATA' };
+  return { role: 'user', content: 'WEB_PAGE_DATA\n' + JSON.stringify(state.results.map(require('./paging').evidence)) + '\nEND_WEB_PAGE_DATA' };
 }
-const sources = turn => (turn.webState?.results || []).map(({ text, ...r }) => ({ ...r, id: `web-${r.index + 1}` }));
+const sources = turn => (turn.webState?.results || []).map(({ text, snapshot, ...r }) => {
+  const progress = require('./paging').progress(turn.webReading, r.index);
+  if (progress) {
+    r.reading = { ...progress, ...(progress.canContinue ? { continueId: turn.turnId } : {}) };
+    r.truncated = progress.read < progress.total || Boolean(turn.webReading.coverage[r.index].incomplete || r.warnings?.length);
+  }
+  return { ...r, id: `web-${r.index + 1}` };
+});
 function footer(turn) {
   const results = sources(turn);
   if (!results.length) return '';

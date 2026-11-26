@@ -23,7 +23,7 @@ test('session preserves safe worker category, action and index without raw diagn
     assert.equal(e.webError,'BROWSER_NAVIGATION_FAILED');assert.equal(e.browserSessionDiagnostic.actionIndex,1);assert.equal(e.browserSessionDiagnostic.kind,'follow');
     assert.ok(!JSON.stringify(e).includes('SECRET'));return true;
   });
-  assert.ok(f.calls[0][1].includes('gptiti-browser:23'));
+  assert.ok(f.calls[0][1].includes('gptiti-browser:24'));
   for(const flag of ['--network=none','--cap-drop=ALL','--security-opt=no-new-privileges']) assert.ok(f.calls[0][1].includes(flag));
 });
 test('unexpected process death preserves exit/signal; cleanup is idempotent',async t=>{
@@ -47,4 +47,22 @@ test('main-document broker categories distinguish limits, access and policy reje
     ['WEB_UNSUPPORTED_TYPE','UNSUPPORTED_DOCUMENT','WEB_UNSUPPORTED_TYPE'],
     ['WEB_TIMEOUT','ACTION_TIMEOUT','BROWSER_TIMEOUT']
   ]) { assert.equal(errors.category(new Error(message)),reason);assert.equal(errors.code(reason),code); }
+});
+
+test('complete rendered snapshot is private, Unicode-safe and requested explicitly', async t => {
+  const f = fixture(t);
+  const doc = 'Початок 🟢 останній абзац';
+  const page = {text:'Початок', truncated:true, controls:[], snapshot64:Buffer.from(doc).toString('base64')};
+  const pending = f.session.action({kind:'open',url:'https://example.com/'},false,true);
+  const wire = Buffer.from(JSON.stringify({type:'result',id:1,result:page})+'\n');
+  const split = wire.indexOf(Buffer.from('П')) + 1;
+  f.child.stdout.write(wire.subarray(0,split));
+  f.child.stdout.write(wire.subarray(split));
+  const result = await pending;
+  assert.equal(result.snapshot,doc);
+  assert.equal(result.text,'Початок');
+  assert.equal(result.snapshot64,undefined);
+  const unexpected = f.session.action({kind:'scroll'});
+  f.send({type:'result',id:2,result:page});
+  await assert.rejects(unexpected,e=>e.browserSessionDiagnostic.reason==='RESPONSE_INVALID');
 });

@@ -22,7 +22,7 @@ Source selection is shared by both V2 provider APIs and by the HTML and browser 
 
 Limits: 15 seconds per URL including DNS/redirects/body, at most 3 redirects,
 2 MiB compressed and 2 MiB decoded bytes, 16 KiB response headers, 12 KiB UTF-8
-extracted text per page, 100000 parsed nodes/128 nesting levels. Truncation is
+text windows and up to 2 MiB of captured text per page, 100000 parsed nodes/128 nesting levels. Truncation is
 explicit in source data and the server-generated source footer. Provider deadline
 120 seconds, maximum completion tokens 4096 for web turns only. Length termination
 is disclosed. Server-rendered text can be read; client-only pages return
@@ -55,7 +55,7 @@ retain the existing reconciliation behavior; they are never blindly replayed.
 
 ## Recovery, history and privacy
 
-Page checkpoints contain at most 36 KiB extracted text plus metadata per turn.
+For long-page reads the original private turn retains an immutable text snapshot per selected page. A turn processes sequential 12 KiB parts in batches of up to 60 KiB. A literal selected for a targeted lookup narrows the batch to matching windows and their neighbors. The source card reports how much of the captured text was processed.
 They live in the private turn record, not public file storage. Snapshot responses
 never expose the raw cache. A crash before providerStartedAt requeues via the
 normal concurrency-limited scheduler; completed page reads are reused. A crash
@@ -72,7 +72,7 @@ new tools or change system rules.
 
 The current request gets raw page text. Subsequent turns use the normal existing
 20-message history (including prior answer/source footer), not automatically
-reinserted raw page caches. Supply the URL again to retrieve a fresh page.
+reinserted raw page caches. Use Continue reading on a paused response to resume the original snapshot and accumulated notes. Supplying the URL again requests a fresh page.
 
 SSRF defenses: HTTP(S) only, no credentials/custom ports, URL-normalized IP forms,
 non-public IP and local host-name rejection, validate all DNS answers, pin the

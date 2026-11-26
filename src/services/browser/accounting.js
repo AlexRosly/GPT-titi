@@ -35,14 +35,16 @@ async function begin(turn, token, messages, tools) {
     ledger.notifyCommitted(); return budget;
   } finally { await session.endSession(); }
 }
-async function received(turn, token, usage) {
+async function received(turn, token, usage, checkpoint) {
   if (!usage || ![usage.prompt_tokens,usage.completion_tokens,usage.total_tokens].every(n=>Number.isSafeInteger(n)&&n>=0)) throw new Error('Missing provider usage; reconciliation required');
   const old = turn.browserState.usage;
   const next = { ...turn.browserState, pending:false, usage:{ promptTokens:old.promptTokens+usage.prompt_tokens,
     completionTokens:old.completionTokens+usage.completion_tokens, totalTokens:old.totalTokens+usage.total_tokens } };
-  const result = await ChatTurn.updateOne({...guard(turn,token), 'browserState.pending':true, 'browserState.calls':next.calls}, {$set:{browserState:next}});
+  const updates = checkpoint?.(next.usage) || {};
+  const result = await ChatTurn.updateOne({...guard(turn,token), 'browserState.pending':true, 'browserState.calls':next.calls}, {$set:{browserState:next,...updates}});
   if (!result.matchedCount) throw Object.assign(new Error('Stale lease'), {staleLease:true});
   turn.browserState = next;
+  Object.assign(turn, updates);
 }
 async function rejected(turn, token) {
   // A documented pre-generation HTTP rejection adds zero usage; prior calls remain billable.

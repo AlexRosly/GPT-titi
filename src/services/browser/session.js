@@ -16,8 +16,9 @@ function create(seeds, signal, dependencies = {}) {
     '--shm-size=128m', '--memory=768m', '--memory-swap=768m', '--cpus=1', '--pids-limit=160',
     '--cap-drop=ALL', '--security-opt=no-new-privileges',
     '--security-opt=seccomp=' + require('node:path').resolve(__dirname, '../../../browser-worker/seccomp.json'),
-    'gptiti-browser:23'], { stdio: ['pipe','pipe','ignore'], env: dockerEnv() });
+    'gptiti-browser:24'], { stdio: ['pipe','pipe','ignore'], env: dockerEnv() });
   active++;
+  const decoder = new (require('node:string_decoder').StringDecoder)('utf8');
   let closed = false, buffer = '', sequence = 0, terminal;
   const pending = new Map(), warnings = new Set();
   const network = (dependencies.broker || broker)(seeds, signal);
@@ -50,8 +51,8 @@ function create(seeds, signal, dependencies = {}) {
     signal:['SIGKILL','SIGTERM','SIGTRAP','SIGSEGV','SIGABRT'].includes(signal)?signal:null
   }));
   child.stdout.on('data',chunk=>{
-    buffer += chunk.toString('utf8');
-    if (Buffer.byteLength(buffer)>2*1024*1024) return close('RESPONSE_TOO_LARGE');
+    buffer += decoder.write(chunk);
+    if (Buffer.byteLength(buffer)>4*1024*1024) return close('RESPONSE_TOO_LARGE');
     let index;
     while ((index=buffer.indexOf('\n'))>=0) {
       const line=buffer.slice(0,index); buffer=buffer.slice(index+1);
@@ -67,19 +68,29 @@ function create(seeds, signal, dependencies = {}) {
         clearTimeout(p.timer); pending.delete(m.id);
         if (m.error) p.reject(errorFor(m.diagnostic,p));
         else if (!m.result || typeof m.result.text!=='string' || Buffer.byteLength(m.result.text)>LIMITS.textBytes || !Array.isArray(m.result.controls) || m.result.controls.length>LIMITS.controls) p.reject(errorFor({reason:'RESPONSE_INVALID',stage:'observe'},p));
-        else p.resolve({...m.result,warnings:[...warnings],truncated:m.result.truncated || warnings.size>0});
+        else {
+          const { snapshot64, ...page } = m.result;
+          if (snapshot64 !== undefined) {
+            if (!p.capture || typeof snapshot64 !== 'string' || snapshot64.length > 4 * Math.ceil(2097152 / 3))
+              return p.reject(errorFor({reason:'RESPONSE_INVALID',stage:'observe'},p));
+            const bytes = Buffer.from(snapshot64, 'base64');
+            if (bytes.length > 2097152) return p.reject(errorFor({reason:'RESPONSE_INVALID',stage:'observe'},p));
+            page.snapshot = bytes.toString('utf8');
+          }
+          p.resolve({...page,warnings:[...warnings],truncated:page.truncated || warnings.size>0});
+        }
       } else { close('PROTOCOL_ERROR'); return; }
     }
   });
   if (signal?.aborted) onAbort(); else signal?.addEventListener('abort',onAbort,{once:true});
-  return { close:()=>close(), action:(action,vision=false)=>new Promise((resolve,reject)=>{
+  return { close:()=>close(), action:(action,vision=false,capture=false)=>new Promise((resolve,reject)=>{
     if (closed) return reject(terminal || fail('BROWSER_UNAVAILABLE'));
     const id=++sequence;
-    pending.set(id,{id,kind:action.kind,resolve,reject,timer:setTimeout(()=>{
+    pending.set(id,{id,capture,kind:action.kind,resolve,reject,timer:setTimeout(()=>{
       const p=pending.get(id); if (!p) return;
       pending.delete(id); reject(errorFor({reason:'ACTION_TIMEOUT',stage:'session'},p)); close('ACTION_TIMEOUT');
     },30000)});
-    write({type:'action',id,action,vision});
+    write({type:'action',id,action,vision,capture});
   }) };
 }
 module.exports = { create };

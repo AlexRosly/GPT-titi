@@ -39,7 +39,7 @@ const retryTurn = async ({ turnId, userId }) => {
           leaseToken: null, leaseUntil: null, reservedAppTokens: reservedAmount, reservationState: "held",
           webBudget: null, browserState: null, computeState: null, responseState: null, cancelRequestedAt: null,
           providerConfig: require('./responsesProvider').configuration(model),
-          webState: turn.webPlan?.mode !== "browser" && turn.webState ? { version: 2, results: (turn.webState.results || []).filter(r => r.status === "ready") } : null,
+          webState: turn.webReading ? turn.webState : turn.webPlan?.mode !== "browser" && turn.webState ? { version: 2, results: (turn.webState.results || []).filter(r => r.status === "ready") } : null,
           reservationClosedAt: null, providerStartedAt: null, initialProviderUsage: null, providerResult: null, needsReconciliation: false,
           pricing: { inputPerM: model.inputPerM, outputPerM: model.outputPerM, tokenValueUsd: APP_TOKEN_VALUE_USD } },
         $inc: { attempt: 1 },

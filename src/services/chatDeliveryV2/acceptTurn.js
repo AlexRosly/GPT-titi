@@ -59,8 +59,16 @@ const acceptTurn = async ({ userId, payload }) => {
     return { turn: existing, disposition: "duplicate" };
   }
 
-  const webPlan = require("../web/policy").plan(message, model);
-  if (webPlan && require("../browser/policy").enabled(model)) webPlan.mode = "browser";
+  // The UI uses the parent turn UUID as the new clientMessageId. The existing unique
+  // (user, clientMessageId) index makes repeated clicks and multi-tab submits idempotent.
+  let resume;
+  if (message === "Continue reading" && !files.length && !outputFile) {
+    resume = await ChatTurn.findOne({ turnId: clientMessageId, user: userId, conversation: conversationId,
+      status: "completed", "webReading.finished": false }).select("webPlan webReading webState.results.index webState.results.url webState.results.title webState.results.status webState.results.requestedUrl webState.results.error webState.results.fetchedAt webState.results.truncated webState.results.captureIncomplete webState.results.warnings outputFile modelId").lean();
+    if (resume && (!require("../web/policy").enabled(model) || resume.modelId !== modelId)) throw protocolError("MODEL_NOT_AVAILABLE");
+  }
+  const webPlan = resume ? { ...resume.webPlan, mode: "resume" } : require("../web/policy").plan(message, model);
+  if (!resume && webPlan && require("../browser/policy").enabled(model)) webPlan.mode = "browser";
 
   const zip = require("../files/zipInput");
   if (require("../files/config").enabled() || files.some(f => f?.storage === "private")) {
@@ -129,8 +137,9 @@ const acceptTurn = async ({ userId, payload }) => {
           pdfCellPlan: !webPlan && !outputFile ? require('../pdfCell').plan(message, canonicalFiles, model) : null,
           docxQualityPlan: !webPlan && !outputFile && require('../docx/policy').enabled(model)
             ? require('../docx/signatureQuality').plan(message, canonicalFiles) : null,
-          outputFile,
+          outputFile: resume?.outputFile || outputFile,
           webPlan,
+          ...(resume ? { webReading: resume.webReading, webState: resume.webState } : {}),
           reservedAppTokens: reservedAmount,
           contextMessageIds: prior.map(m => m._id),
           reservationState: "held",

@@ -63,3 +63,25 @@ test('legacy charset is decoded and compressed/uncompressed input limits are enf
  await assert.rejects(fetcher.read('https://example.com'),{webError:'WEB_PAGE_TOO_LARGE'});
  assert.throws(()=>policy.normalize('http://168.63.129.16'),{webError:'WEB_BLOCKED_ADDRESS'});
 });
+
+test('exact lookup finds a marker across UTF-8 windows at the end without sending the prefix', () => {
+ const paging = require('../../src/services/web/paging');
+ const marker = require('node:crypto').randomUUID();
+ const body = '🟢'.repeat(paging.CHUNK_BYTES * 3 - 1) + 'END-SECTION ' + marker;
+ const page = html.extract(Buffer.from('<main>' + body + '</main>'), 'text/html');
+ assert.equal(page.snapshot, body);
+ assert.ok(!page.text.includes(marker));
+ const { items, coverage } = paging.plan([{...page, status:'ready', index:0, url:'https://example.com/'}], 'END-SECTION');
+ assert.ok(items[0].part > 1);
+ assert.ok(items.map(p=>p.text).join('').includes(marker));
+ assert.ok(coverage[0].selected < coverage[0].total);
+ assert.equal(paging.split(body).join(''), body);
+ assert.equal(paging.evidence(page).snapshot, undefined);
+});
+
+test('sibling articles and the final article footer survive extraction', () => {
+ const first = 'Main article paragraph. '.repeat(2000);
+ const out = html.extract(Buffer.from('<article>'+first+'</article><article>Second article<footer>END-19</footer></article>'), 'text/html');
+ assert.match(out.snapshot,/Second article/);
+ assert.match(out.snapshot,/END-19$/);
+});

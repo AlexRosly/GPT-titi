@@ -36,3 +36,19 @@ test('main-document access rejection reaches host as a precise safe diagnostic',
     });
   } finally {session.close();}
 });
+
+test('rendered long page retains final marker and scrolling yields the next UTF-8 window', {timeout:60000},async()=>{
+  const code = require('node:crypto').randomUUID();
+  const html = '<main>' + 'А'.repeat(4096) + '中'.repeat(32000) + code + '</main>';
+  const session = create([origin+'/'], undefined, {broker:()=>async () =>
+    ({status:200,headers:{'content-type':'text/html; charset=utf-8'},body:Buffer.from(html).toString('base64')})});
+  try {
+    const first = await session.action({kind:'open',url:origin+'/'}, false, true);
+    assert.equal(first.truncated, true);
+    assert.ok(!first.text.includes(code));
+    assert.ok(first.snapshot.endsWith(code));
+    const second = await session.action({kind:'scroll'});
+    assert.ok(second.text.startsWith('中'));
+    assert.equal(second.snapshot, undefined);
+  } finally { session.close(); }
+});

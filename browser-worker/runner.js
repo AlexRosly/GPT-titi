@@ -40,9 +40,10 @@ async function start() {
   page.on('dialog', dialog => dialog.dismiss().catch(() => {}));
   page.on('download', download => download.cancel().catch(() => {}));
 }
-async function observe(vision) {
+let textOffset = 0;
+async function observe(vision, capture, scroll) {
   stage = 'observe';
-  const result = await page.evaluate(() => {
+  const result = await page.evaluate(({ start, capture }) => {
     const visible = e => !!e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden';
     const list = []; let id = 0;
     for (const element of document.querySelectorAll('a[href],details, [role="tab"],form')) {
@@ -60,12 +61,27 @@ async function observe(vision) {
       const ref = 'b' + (++id); element.setAttribute('data-gptiti-ref', ref);
       list.push({ ref, kind, label: (element.getAttribute('aria-label') || element.innerText || name || '').slice(0,120), ...(url ? { url } : {}), ...(name ? { name } : {}) });
     }
-    const raw = document.body?.innerText || ''; const text = raw.slice(0, 12000);
-    return { url: location.href, title: document.title.slice(0,300), text, clipped: raw.length > 12000, controls: list };
-  });
+    const raw = document.body?.innerText || '';
+    const offset = Math.min(start, raw.length);
+    const text = raw.slice(offset, offset + 12000);
+    const snapshot = capture && raw.length ? raw.slice(0, 2 * 1024 * 1024) : undefined;
+    return { url: location.href, title: document.title.slice(0,300), text, offset, snapshot, captureIncomplete: capture && raw.length > snapshot?.length, clipped: offset > 0 || raw.length > offset + text.length, controls: list };
+  }, { start: scroll ? textOffset : 0, capture });
   controls = result.controls;
   const bytes = Buffer.from(result.text); result.truncated = result.clipped || bytes.length > 8192; delete result.clipped;
-  result.text = bytes.subarray(0,8192).toString('utf8').replace(/\uFFFD$/, '');
+  let end = Math.min(bytes.length, 8192);
+  while (end < bytes.length && (bytes[end] & 0xc0) === 0x80) end--;
+  result.text = bytes.toString('utf8', 0, end);
+  textOffset = result.offset + result.text.length;
+  delete result.offset;
+  if (result.snapshot && result.truncated) {
+    const full = Buffer.from(result.snapshot);
+    let length = Math.min(full.length, 2 * 1024 * 1024);
+    while (length < full.length && (full[length] & 0xc0) === 0x80) length--;
+    result.snapshot64 = full.subarray(0, length).toString('base64');
+    result.captureIncomplete ||= length < full.length;
+  }
+  delete result.snapshot;
   if (vision) {
     stage = 'screenshot';
     const buffer = await page.screenshot({ type: 'jpeg', quality: 55, fullPage: false, timeout: 10000 });
@@ -73,7 +89,7 @@ async function observe(vision) {
   }
   return result;
 }
-async function perform(action, vision) {
+async function perform(action, vision, capture) {
   mainRequestFailure = undefined;
   stage = 'launch';
   if (!browser) await start();
@@ -91,14 +107,14 @@ async function perform(action, vision) {
   else throw Object.assign(new Error('Action blocked'), {browserReason:'ACTION_BLOCKED'});
   // Bounded wait, never wait for a network-idle condition on a hostile page.
   await page.waitForTimeout(600);
-  return observe(vision);
+  return observe(vision, capture, action.kind === 'scroll');
 }
 let chain = Promise.resolve();
 readline.createInterface({ input: process.stdin }).on('line', line => {
   let m; try { m = JSON.parse(line); } catch { process.exit(1); }
   if (m.type === 'resource') { pending.get(m.id)?.(m); pending.delete(m.id); return; }
   if (m.type === 'action') chain = chain.then(async () => {
-    try { send({ type: 'result', id: m.id, result: await perform(m.action, m.vision) }); }
+    try { send({ type: 'result', id: m.id, result: await perform(m.action, m.vision, m.capture === true) }); }
     catch (error) { const diagnostic = errors.safe({reason:mainRequestFailure || errors.category(error),stage}); send({ type: 'result', id: m.id, error: errors.code(diagnostic.reason), diagnostic }); }
   });
 }).on('close', () => { browser?.close().finally(() => process.exit(0)); });

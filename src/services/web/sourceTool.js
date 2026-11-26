@@ -10,8 +10,11 @@ const instructions = [
 ].join(' ');
 const tool = { type: 'function', function: {
   name, description: 'Read the supplied public page(s) needed for this request. Copy URLs from the current user message.',
-  strict: true, parameters: { type: 'object', additionalProperties: false, required: ['urls'],
-    properties: { urls: { type: 'array', items: { type: 'string' }, description: 'One to three distinct URLs.' } } },
+  strict: true, parameters: { type: 'object', additionalProperties: false, required: ['urls', 'purpose', 'needle'],
+    properties: {
+      purpose: { type: 'string', enum: ['read', 'navigate'], description: 'Use read for information on the supplied page, navigate when the task requires following links, expanding controls, visual inspection or other interaction.' },
+      needle: { type: ['string','null'], description: 'One exact distinctive literal from the request for a targeted lookup. Null for whole-page tasks, summaries, comparisons or uncertain wording.' },
+      urls: { type: 'array', items: { type: 'string' }, description: 'One to three distinct URLs.' } } },
 } };
 
 function candidates(message) {
@@ -28,7 +31,9 @@ function resolve(raw, allowed) {
   if (typeof raw !== 'string' || Buffer.byteLength(raw) > 16384) return null;
   let args;
   try { args = JSON.parse(raw); } catch { return null; }
-  if (!args || !Array.isArray(args.urls) || Object.keys(args).length !== 1 ||
+  if (!args || !Array.isArray(args.urls) || Object.keys(args).some(k => !['urls','purpose','needle'].includes(k)) ||
+      (args.purpose !== undefined && !['read','navigate'].includes(args.purpose)) ||
+      (args.needle != null && (typeof args.needle !== 'string' || args.needle.length > 200)) ||
       args.urls.length === 0 || args.urls.length > policy.MAX_URLS) return null;
   const urls = new Set();
   for (let url of args.urls) {
@@ -66,8 +71,10 @@ async function run({ raw, allowed, turn, token, model, messages, fileTools, clie
   const urls = resolve(raw, allowed);
   const selectionError = !policy.enabled(model) ? 'WEB_INPUT_DISABLED' : !urls ? 'UNVERIFIED_SELECTION' : null;
   const mode = !selectionError && require('../browser/policy').enabled(model) ? 'browser' : 'selected_html';
+  const intent = urls ? JSON.parse(raw) : {};
+  const needle = intent.needle?.trim();
   // One durable handoff. Recovery can settle the paid first call without replaying it.
-  await save({ webPlan: { version: 3, selection: 'model', mode, urls: selectionError ? [] : urls, ...(selectionError ? { selectionError } : {}) }, responseState: null,
+  await save({ webPlan: { version: 3, selection: 'model', mode, purpose: intent.purpose, needle: needle && turn.message?.includes(needle) ? needle : null, urls: selectionError ? [] : urls, ...(selectionError ? { selectionError } : {}) }, responseState: null,
     browserState: { calls: 1, pending: false, usage, stage: 'selected' } });
   return require('../browser/agent').run(turn, token, model, messages, fileTools, client, signal);
 }

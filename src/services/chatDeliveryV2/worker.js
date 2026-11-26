@@ -231,7 +231,7 @@ const commitCompletion = async (turn, leaseToken, assistantText, usage) => {
   if (!savedTurn) throw Object.assign(new Error(), { staleLease: true });
   let preparedFile, renderError;
   if (
-    !savedTurn.pdfCellPlan && !savedTurn.docxQualityPlan && (savedTurn.outputFile ||
+    (!savedTurn.webReading || savedTurn.webReading.finished) && !savedTurn.pdfCellPlan && !savedTurn.docxQualityPlan && (savedTurn.outputFile ||
     savedTurn.providerResult?.artifact ||
     savedTurn.providerResult?.artifactError)
   ) {
@@ -274,7 +274,7 @@ const commitCompletion = async (turn, leaseToken, assistantText, usage) => {
       let attachments = [],
         fileResult = null;
       if (
-        !quality && (current.outputFile ||
+        (!current.webReading || current.webReading.finished) && !quality && (current.outputFile ||
         current.providerResult?.artifact ||
         current.providerResult?.artifactError)
       ) {
@@ -579,7 +579,15 @@ const processTurn = async (claimed) => {
         messages[0].content += ' No web source was read for this message. Treat example addresses as text and answer directly when possible. If the user explicitly asks to open an unavailable local address, explain in their language that only public pages are reachable. Do not claim a visit.';
       }
     }
-    if (turn.webPlan?.mode === "browser") {
+    let webContent;
+    if (turn.webPlan && !["browser", "resume", "selected_html"].includes(turn.webPlan.mode)) {
+      webContent = await web.prepare(turn, leaseToken, fileModel, controller.signal);
+      if (turn.webState?.results?.some(page => page.snapshot)) {
+        const webPlan = { ...turn.webPlan, mode: "selected_html" };
+        await saveResponse({ webPlan });
+      }
+    }
+    if (["browser", "selected_html", "resume"].includes(turn.webPlan?.mode)) {
       // Browser loop owns every provider boundary and accumulates actual usage.
       // Exact-transcription tools remain on their existing non-browser path.
       const browserTools = turn.outputFile ? artifacts.toolOptions(turn.outputFile)
@@ -598,7 +606,7 @@ const processTurn = async (claimed) => {
         attempt:turn.attempt,payload:{assistantMessage:messageDto(completion.assistant),billing:completion.billing}});
       return;
     }
-    const webContent = await web.prepare(turn, leaseToken, fileModel, controller.signal);
+
     let webBudget;
     if (webContent) {
       messages[0].content += " " + web.instructions;
@@ -932,7 +940,7 @@ const recoverExpired = async () => {
       if (!saved.matchedCount) continue;
       turn.providerResult = data;
     }
-    if (["browser", "selected_html"].includes(turn.webPlan?.mode) && !turn.providerResult && turn.browserState && !turn.browserState.pending && turn.providerStartedAt) {
+    if (["browser", "selected_html", "resume"].includes(turn.webPlan?.mode) && !turn.providerResult && turn.browserState && !turn.browserState.pending && turn.providerStartedAt) {
       // Completed calls are accounted for. Do not replay browser actions after a crash.
       const data = require("../browser/agent").partial(turn, "PROCESS_INTERRUPTED");
       const saved = await ChatTurn.updateOne({...recoveryGuard(turn),providerResult:null},{$set:{providerResult:data}});

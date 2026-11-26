@@ -186,3 +186,113 @@ test('ambiguous fallback provider call is held for reconciliation without automa
   assert.equal(calls,2);assert.equal(actions,2);
   assert.equal(await models.TokenOperation.countDocuments({'context.turnId':row.turnId,'entries.delta':{$lt:0}}),0);
 });
+
+for (const mode of ['browser', 'html']) {
+  test(mode + ' reads through a long snapshot, resumes once after duplicate clicks and settles actual usage', opts, async t => {
+    const f = await fixture({ balance: 2000000 });
+    process.env.BROWSER_V2_ENABLED = String(mode === 'browser');
+    const paging = require('../../src/services/web/paging');
+    const code = crypto.randomUUID();
+    const snapshotText = 'abcdefghijklmnop '.repeat(20000) + '\nLast paragraph code: ' + code;
+    const source = { ...page(f.payload.message), text: snapshotText.slice(0, 8192),
+      snapshot: snapshotText, truncated: true, controls: [] };
+    let reads = 0;
+    const read = async () => { reads++; return source; };
+    if (mode === 'browser') t.mock.method(sessions, 'create', () => ({ close() {}, action: read }));
+    else t.mock.method(reader, 'read', read);
+    const seen = [];
+    t.mock.method(Completions.prototype, 'create', async req => {
+      const input = req.messages.map(m => {
+        try { return JSON.parse(m.content); } catch { return null; }
+      }).find(p => p?.parts);
+      assert.ok(input);
+      for (const part of input.parts) {
+        assert.equal(part.part, seen.length + 1, 'every part must be sent exactly once');
+        seen.push(part.part);
+      }
+      const found = input.parts.find(part => part.text.includes(code));
+      return { usage, choices: [{ finish_reason: 'stop', message: { content: found ? code : 'Saved notes' } }] };
+    });
+    // The first turn has five paid calls, the remainder starts in the next turn.
+    const first = await run(f);
+    assert.equal(first.status, 'completed', JSON.stringify(first.error));
+    assert.equal(first.webReading.cursor, 25);
+    const firstView = (await snapshot(first)).assistantMessage;
+    assert.equal(firstView.webSources[0].reading.continueId, first.turnId);
+    assert.ok(!JSON.stringify(firstView).includes(code));
+    const payload = { ...f.payload, message: 'Continue reading', clientMessageId: first.turnId };
+    const submit = () => accept({ userId: f.user.id, payload });
+    const children = await Promise.all([submit(), submit()]);
+    assert.equal(children[0].turn.turnId, children[1].turn.turnId);
+    const claimed = await worker.claimTurn(children[0].turn.turnId);
+    await worker.processTurn(claimed);
+    const child = await models.ChatTurn.findById(claimed.turn._id).lean();
+    assert.equal(child.status, 'completed', JSON.stringify(child.error));
+    assert.equal(child.webReading.finished, true);
+    assert.equal(child.webState.results[0].snapshot, undefined);
+    const answer = (await snapshot(child)).assistantMessage;
+    assert.ok(answer.content.includes(code));
+    assert.equal(answer.webSources[0].truncated, false);
+    assert.equal(answer.webSources[0].reading.continueId, undefined);
+    assert.equal(seen.length, paging.split(snapshotText).length);
+    assert.equal(reads, 1);
+    assert.equal(first.usage.totalTokens + child.usage.totalTokens, 6 * usage.total_tokens);
+    assert.equal((await models.User.findById(f.user.id)).reservedAppTokens, 0);
+  });
+}
+
+for (const mode of ['html', 'browser']) {
+  test(mode + ' model-selected lookup searches the last paragraph and reports scoped coverage', opts, async t => {
+    process.env.BROWSER_V2_ENABLED = String(mode === 'browser');
+    const f = await fixture({balance: 100000});
+    const url = f.payload.message;
+    const marker = crypto.randomUUID();
+    const text = 'start-of-snapshot ' + 'Release notes. '.repeat(18000) + 'Appendix 9.8 ' + marker;
+    const source = { ...page(url), text:text.slice(0,8192), snapshot:text, truncated:true, controls:[] };
+    f.payload.message = 'Прочитай ' + url + ' і назви контрольний код у Appendix 9.8';
+    const read = async () => source;
+    if (mode === 'browser') t.mock.method(sessions,'create',()=>({close(){},action:read}));
+    else t.mock.method(reader,'read',read);
+    t.mock.method(Completions.prototype,'create',async req => {
+      if (req.stream) return (async function* () {
+        yield {choices:[{delta:{tool_calls:[{index:0,id:'select',type:'function',function:{name:'read_supplied_pages',
+          arguments:JSON.stringify({urls:[url], purpose:'read',needle:'Appendix 9.8'})}}]},finish_reason:'tool_calls'}]};
+        yield {choices:[],usage};
+      })();
+      const evidence = JSON.stringify(req.messages);
+      assert.ok(!evidence.includes('start-of-snapshot'));
+      assert.ok(evidence.includes(marker));
+      return {usage, choices:[{finish_reason:'stop',message:{content:marker}}]};
+    });
+    const result = await run(f);
+    assert.equal(result.status,'completed', JSON.stringify(result.error));
+    const msg = (await snapshot(result)).assistantMessage;
+    assert.ok(msg.content.includes(marker));
+    assert.equal(msg.webSources[0].reading.read, msg.webSources[0].reading.selected);
+    assert.ok(msg.webSources[0].reading.read < msg.webSources[0].reading.total);
+    assert.equal(msg.webSources[0].reading.canContinue,false);
+    assert.equal(result.usage.totalTokens,2 * usage.total_tokens);
+  });
+}
+
+test('balance pause before the first paid batch can resume after a top-up without a new fetch', opts, async t => {
+  process.env.BROWSER_V2_ENABLED='false';
+  const f=await fixture({balance:100});
+  const url=f.payload.message;
+  const text='Details. '.repeat(3500);
+  let reads=0;
+  t.mock.method(reader,'read',async()=>{reads++;return {...page(url),text:text.slice(0,8192),snapshot:text,truncated:true};});
+  const paused=await run(f);
+  assert.equal(paused.status,'completed',JSON.stringify(paused.error));
+  assert.equal(paused.usage.totalTokens,0);
+  assert.equal(paused.webReading.cursor,0);
+  const before=await models.User.findById(f.user.id);
+  assert.equal(before.appTokens,100);
+  assert.equal(before.reservedAppTokens,0);
+  await models.User.updateOne({_id:before._id},{$set:{appTokens:100000}});
+  f.payload={...f.payload,clientMessageId:paused.turnId,message:'Continue reading'};
+  t.mock.method(Completions.prototype,'create',async()=>({usage,choices:[{finish_reason:'stop',message:{content:'Done'}}]}));
+  const done=await run(f);
+  assert.equal(done.webReading.finished,true);
+  assert.equal(reads,1);
+});

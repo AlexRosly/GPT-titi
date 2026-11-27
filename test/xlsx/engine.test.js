@@ -20,11 +20,12 @@ test('chunked 10000-row edit resumes from checkpoint without applying multiplica
  const recovered=first.slice(0,7).concat(records([...engine.chunks(engine.load(input),args,selection,3500)]));
  const output=await engine.assemble(book,args,selection,recovered);
  assert.equal(output.report.changed,10000);assert.equal(output.report.matched,10000);assert.equal(output.report.otherPartsByteIdentical,true);
- const result=engine.load(output.buffer),before=engine.sheetData(book,'Дані'),after=engine.sheetData(result,'Дані');
+ const result=engine.load(output.buffer),after=engine.sheetData(result,'Дані');
  for(const i of [1,3500,3501,10000]){
   const row=after.rows[i],values=engine.cells(result,after.xml.slice(row.start,row.end),row.r);assert.equal(values.get(2).value,(i+0.125)*2);
-  const source=before.rows[i],old=engine.cells(book,before.xml.slice(source.start,source.end),source.r);assert.equal(values.get(4).formula,true);assert.equal(values.get(4).value,old.get(4).value);
+  assert.equal(values.get(4).formula,true);assert.equal(values.get(4).value,(i+0.125)*4);
  }
+ assert.equal(output.report.verifiedFormulas,10000);
  for(const [name,bytes]of book.parts)if(!['xl/worksheets/sheet1.xml','xl/workbook.xml'].includes(name))assert.deepEqual(result.parts.get(name),bytes,name);
  const wb=new(require('exceljs').Workbook)();await wb.xlsx.load(output.buffer);assert.equal(wb.getWorksheet('Дані').getCell('B2').font.bold,true);
  assert.equal(wb.getWorksheet('Keep').getCell('A1').value,'Не змінювати');

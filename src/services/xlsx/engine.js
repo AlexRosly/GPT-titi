@@ -72,7 +72,7 @@ function sheetData(book,name,{indexFormulas=false,readShared=false}={}){
   if(n.local==='c'&&current){const ref=attr(n,'r'),m=/^([A-Z]{1,3})([1-9]\d*)$/.exec(ref||'');if(!m||Number(m[2])!==current.r)bad();cellRef=ref;cellColumn=policy.column(m[1]);maxColumn=Math.max(maxColumn,cellColumn);}
   if(n.local==='f'&&cellRef&&current){
    if(indexFormulas){
-    formulaCount++;
+    formulaCount++;current.hasFormula=true;
     if(!bounds)bounds={r1:current.r,r2:current.r,c1:cellColumn,c2:cellColumn};
     bounds.r2=current.r;
     bounds.c1=Math.min(bounds.c1,cellColumn);bounds.c2=Math.max(bounds.c2,cellColumn);
@@ -91,14 +91,19 @@ function sheetData(book,name,{indexFormulas=false,readShared=false}={}){
  return {...sheet,xml,rows,merges,formulaRanges,shared,formulaCount,formulaArea,dimension,maxColumn,used:{r1:rows[0]?.r||1,r2:rows.at(-1)?.r||1,c1:1,c2:maxColumn||1}};
 }
 function cells(book,rowXML,rowNumber,shared){
- const result=new Map();let cell,capture=null,text='',last=0,phonetic=0;
+ const result=new Map();let cell,capture=null,text='',last=0,phonetic=0,depth=0,cellDepth=0,cacheElement=null;
  // The row inherits its namespace from worksheet; wrap it without changing offsets.
  const prefix=`<root xmlns="${NS}" ${book.rowNamespaces||""}>`;
  parse(prefix+rowXML+'</root>',{open:(n,start,end)=>{
+  depth++;
   if(n.uri!==NS)return;
   if(n.local==='c'){
+   cellDepth=depth;
    const ref=attr(n,'r'),m=/^([A-Z]{1,3})([1-9]\d*)$/.exec(ref||'');if(!m||Number(m[2])!==rowNumber)bad();const col=policy.column(m[1]);if(col<=last)bad();last=col;
    cell={ref,col,start:start-prefix.length,openEnd:end-prefix.length,style:attr(n,'s'),type:attr(n,'t'),formula:false,value:null,inline:'',raw:''};
+  }
+  if(cell&&depth===cellDepth+1&&(n.local==='v'||n.local==='is')){
+   cacheElement=n.name;cell.cacheStart=start-prefix.length;
   }
   if(n.local==='rPh')phonetic++;
   if(cell&&['f','v','t'].includes(n.local)&&!phonetic){capture=n.local;text='';if(n.local==='f'){
@@ -111,6 +116,11 @@ function cells(book,rowXML,rowNumber,shared){
    }
   }}
  },text:t=>{if(capture)text+=t;},close:(n,end)=>{const local=n.split(':').at(-1);
+  if(cell&&depth===cellDepth+1){
+   if(n===cacheElement){cell.cacheEnd=end-prefix.length;cacheElement=null;}
+   if(local==='f'&&cell.formula)cell.formulaEnd=end-prefix.length;
+  }
+  depth--;
   if(local==='rPh')phonetic--;
   if(cell&&local===capture){if(local==='t')cell.inline+=text;else if(local==='v')cell.raw=text;else if(local==='f'&&cell.definition&&text)cell.definition.expression=text;capture=null;}
   if(local==='c'&&cell){
@@ -147,7 +157,7 @@ function formulaEvidence(book,sheet,budget){
   for(const c of values){
    if(!c.formula&&typeof c.value!=='number')continue;
    const format=book.styles[Number(c.style||0)];
-   const entry={cell:c.ref,value:c.value,...(format?{format:format.numberFormat??format.numberFormatId}:{}),
+   const entry={cell:c.ref,value:c.value,...(c.formula&&c.value===null?{cachedResult:'missing'}:{}),...(format?{format:format.numberFormat??format.numberFormatId}:{}),
     ...(c.definition?{definition:c.definition}:{})};
    bytes+=Buffer.byteLength(JSON.stringify(entry))+(entries.length?1:0);
    if(bytes>budget)return;
@@ -180,8 +190,10 @@ function inspect(book,args){
   for(const [c,cell]of values){if(c<sel.range.c1||c>sel.range.c2)continue;
    if(sheet.formulaRanges.some(r=>r.r1<=row.r&&r.r2>=row.r&&r.c1<=c&&r.c2>=c))cell.formula=true;
    const stat=stats.get(c)||{column:colName(c),numericCount:0,sum:0,min:null,max:null,formulaCells:0};if(cell.formula)stat.formulaCells++;
+   const missing=cell.formula&&cell.value===null;
+   if(missing)stat.missingFormulaResults=(stat.missingFormulaResults||0)+1;
    if(typeof cell.value==='number'){stat.numericCount++;stat.sum+=cell.value;stat.min=stat.min===null?cell.value:Math.min(stat.min,cell.value);stat.max=stat.max===null?cell.value:Math.max(stat.max,cell.value);}stats.set(c,stat);
-   if(ordinal>=args.offset&&nextOffset===null)out.push({cell:cell.ref,...(book.styles[Number(cell.style||0)]||{numberFormatId:0,numberFormat:null}),value:typeof cell.value==='string'?cell.value.slice(0,300):cell.value,truncated:typeof cell.value==='string'&&cell.value.length>300,formula:cell.formula,...(cell.definition?{definition:cell.definition}:{})});
+   if(ordinal>=args.offset&&nextOffset===null)out.push({cell:cell.ref,...(book.styles[Number(cell.style||0)]||{numberFormatId:0,numberFormat:null}),value:typeof cell.value==='string'?cell.value.slice(0,300):cell.value,truncated:typeof cell.value==='string'&&cell.value.length>300,formula:cell.formula,...(missing?{cachedResult:'missing'}:{}),...(cell.definition?{definition:cell.definition}:{})});
   }
   if(ordinal>=args.offset&&nextOffset===null){const item={row:row.r,cells:out};const bytes=Buffer.byteLength(JSON.stringify(item));if(shownBytes+bytes<=L.previewBytes){items.push(item);shownBytes+=bytes;}else nextOffset=ordinal;}
  }
@@ -189,7 +201,7 @@ function inspect(book,args){
  if(nextOffset!==null&&!items.length)throw fail('XLSX_PREVIEW_TOO_WIDE');
  if(stats.size>128)throw fail('XLSX_PREVIEW_TOO_WIDE');
  return {checksum:book.checksum,selection:{...sel,matchingRows:matched},coverage:{scannedRows:scanned,matchingRows:matched,displayedRows:items.length,allMatchingRowsAggregated:true,formulaValues:'cached-not-recalculated'},items,nextOffset,
-  statistics:[...stats.values()].map(s=>({...s,sum:Number.isFinite(s.sum)?s.sum:null}))};
+  statistics:[...stats.values()].map(s=>s.missingFormulaResults?{...s,sum:null,min:null,max:null}:{...s,sum:Number.isFinite(s.sum)?s.sum:null})};
 }
 const escape=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/\r/g,'&#13;');
 function cellXML(cell,ref,value){
@@ -263,10 +275,15 @@ async function assemble(book,args,saved,records){
  }if(cursor!==rows.length||totals.matched!==args.expectedRows)throw fail('XLSX_SELECTION_MISMATCH');
  const parts=new Map(book.parts);
  const formulaPlan=request?formulaEdit.build(book,request.edits,saved):null;
- if(!request){out+=sheet.xml.slice(end);parse(out);parts.set(sheet.path,Buffer.from(out));}
- if(formulaPlan){
-  if(totals.changed!==formulaPlan.targetCount)throw fail('XLSX_VERIFICATION_FAILED');
-  for(const state of formulaPlan.sheets.values()){
+ let valuePlan;
+ if(!request){
+  out+=sheet.xml.slice(end);parse(out);parts.set(sheet.path,Buffer.from(out));
+  if(totals.changed)valuePlan=require('./valueRecalculation').build({...book,parts},sheet,saved,args.operations,totals.changed);
+ }
+ const calculationPlan=formulaPlan||valuePlan;
+ if(calculationPlan){
+  if(request&&totals.changed!==formulaPlan.targetCount)throw fail('XLSX_VERIFICATION_FAILED');
+  for(const state of calculationPlan.sheets.values()){
    if(!state.updates.size)continue;
    // Recreate the atomic selection from its checkpoints; also refresh dependents
    // outside that selection and expand partially replaced shared groups.
@@ -279,7 +296,7 @@ async function assemble(book,args,saved,records){
    }
    segments.push(data.xml.slice(last));
    let xml=segments.join('');
-   if(data.path===sheet.path){
+   if(request&&data.path===sheet.path){
     if(data.dimension){
      const bounds=policy.range(data.dimension);
      for(const updates of state.updates.values())for(const item of updates)if(item.target){
@@ -294,7 +311,7 @@ async function assemble(book,args,saved,records){
    }
    parts.set(data.path,Buffer.from(xml));
   }
-  removeCalcChain(parts);
+  if(request)removeCalcChain(parts);
  }
  // A native editor should also recalculate after future input changes.
  let workbook=xmlOf(parts,'xl/workbook.xml');
@@ -310,10 +327,13 @@ async function assemble(book,args,saved,records){
  const verified=load(buffer);
  if(verified.parts.size!==parts.size)throw fail('XLSX_VERIFICATION_FAILED');
  for(const [name,b]of parts)if(!verified.parts.get(name)?.equals(b))throw fail('XLSX_VERIFICATION_FAILED');
- if(formulaPlan)formulaEdit.verify(verified,formulaPlan);
+ if(calculationPlan)formulaEdit.verify(verified,calculationPlan);
+ const verifiedValues=valuePlan?.report.verifiedCount||0;
  return {buffer,report:{version:1,sourceChecksum:book.checksum,resultChecksum:hash(buffer),sheet:saved.sheet,...totals,processedRows:rows.length,chunks:records.length,
-  otherPartsByteIdentical:true,formulaCellsPreserved:!formulaPlan,formulaValuesRecalculated:Boolean(formulaPlan),
-  ...(formulaPlan?{formulaTargets:formulaPlan.targetCount,verifiedFormulas:formulaPlan.verifiedCount}:{}),recalculateOnOpen:true,structuralChecksPassed:true}};
+  otherPartsByteIdentical:true,formulaCellsPreserved:!request,formulaValuesRecalculated:Boolean(request||verifiedValues&&!valuePlan.report.unverifiedCount),
+  ...(formulaPlan?{formulaTargets:formulaPlan.targetCount,verifiedFormulas:formulaPlan.verifiedCount}:
+     {verifiedFormulas:verifiedValues,valueRecalculation:valuePlan?.report||{verifiedCount:0,verifiedSample:[],unverifiedCount:0,unverifiedSample:[],clearedRangeCells:0}}),
+  recalculateOnOpen:true,structuralChecksPassed:true}};
 }
 function removeCalcChain(parts){
  const relFile='xl/_rels/workbook.xml.rels', typesFile='[Content_Types].xml';

@@ -1,3 +1,4 @@
+const {isDeepStrictEqual} = require('node:util');
 const {fail} = require('../files/validation');
 const policy = require('./policy');
 const formula = require('./formula');
@@ -28,13 +29,14 @@ function at(sheet, ref, run) {
     throw e;
   }
 }
-function effective(cell) {
+function effective(cell, dependenciesOnly = false) {
   const def = cell.definition;
-  if (def.type === 'normal' && def.expression) return formula.parse(def.expression);
+  if ((def.type === 'normal' || dependenciesOnly && def.type === 'array') && def.expression)
+    return formula.parse(def.expression,0,0,dependenciesOnly);
   if (def.type !== 'shared' || !def.master) throw fail('XLSX_FORMULA_UNSUPPORTED');
   const original = policy.range(def.master.cell), member = policy.range(cell.ref);
   if (!contains(policy.range(def.master.range),member.c1,member.r1)) throw fail('XLSX_FORMULA_REFERENCE');
-  return formula.parse(def.master.expression,member.c1-original.c1,member.r1-original.r1);
+  return formula.parse(def.master.expression,member.c1-original.c1,member.r1-original.r1,dependenciesOnly);
 }
 
 // Each durable checkpoint carries one line per inspected row. Resuming translates
@@ -161,6 +163,17 @@ function build(book, requested, selection) {
   return {sheets, verifiedCount, targetCount:requested.size};
 }
 
+// A value edit changes only the result of an existing formula. Leave the
+// original formula element (including shared/array metadata) and style intact.
+function replaceCache(raw, cell, value) {
+  const start = cell.cacheStart ?? cell.formulaEnd ?? cell.openEnd;
+  const end = cell.cacheEnd ?? start;
+  const opening = raw.slice(cell.start,cell.openEnd)
+    .replace(/\s+t\s*=\s*(?:"[^"]*"|'[^']*')/,'');
+  const cache = value === null ? '' : '<v>'+value+'</v>';
+  return opening + raw.slice(cell.openEnd,start) + cache + raw.slice(end,cell.end);
+}
+
 function rewrite(book,state,row,raw) {
   const edits = state.updates.get(row.r);
   if (!edits) return raw;
@@ -168,6 +181,9 @@ function rewrite(book,state,row,raw) {
   const values = engine.cells(book,raw,row.r);
   const replacements = edits.map(item=>{
     const cell = values.get(item.c);
+    if (item.cacheOnly) {
+      return {start:cell.start,end:cell.end,c:item.c,replacement:replaceCache(raw,cell,item.result)};
+    }
     const xml = cell ? raw.slice(cell.start,cell.end) : '';
     const explicit = item.target || item.split;
     if (cell) {
@@ -203,6 +219,12 @@ function verify(book,plan) {
       const cells = engine.cells(book,output.xml.slice(row.start,row.end),row.r,output.shared);
       for (const item of updates.get(row.r)) {
         const cell = cells.get(item.c);
+        if (item.cacheOnly) {
+          if (!cell || cell.value !== item.result || !isDeepStrictEqual(cell.definition,item.cell.definition) ||
+              (item.result === null && cell.cacheStart !== undefined))
+            throw fail('XLSX_VERIFICATION_FAILED ('+sheet.name+'!'+item.ref+')');
+          continue;
+        }
         if (!cell?.formula || effective(cell).expression!==item.formula.expression || cell.value!==item.result)
           throw fail('XLSX_VERIFICATION_FAILED ('+sheet.name+'!'+item.ref+')');
       }
@@ -210,4 +232,4 @@ function verify(book,plan) {
     if (checkedRows !== updates.size) throw fail('XLSX_VERIFICATION_FAILED');
   }
 }
-module.exports = {isPlan,targets,indexTargets,stage,restore,build,rewrite,verify};
+module.exports = {isPlan,targets,indexTargets,stage,restore,build,rewrite,verify,effective};

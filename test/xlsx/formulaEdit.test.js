@@ -101,3 +101,108 @@ test('assembly rejects a modified checkpoint even with a new content hash',async
   record.hash=engine.hash(record.xml);
   await assert.rejects(engine.assemble(book,args,selection,[record]),/CHECKPOINT_INVALID/);
 });
+
+const setNumber = (column,value) => ({type:'set_value',column,value,expected:null});
+const cached = (book,sheet,range) => rows(book,sheet,range).map(c=>c.value);
+async function numericBook(fill) {
+  const wb = new ExcelJS.Workbook();
+  fill(wb.addWorksheet('Input Data'),wb.addWorksheet('Totals'));
+  return engine.load(Buffer.from(await wb.xlsx.writeBuffer()));
+}
+
+test('one quantity edit refreshes stored cents and a cross-sheet range total before any editor opens',async()=>{
+  const original=await numericBook((data,totals)=>{
+    data.addRow([21.5,8.81,{formula:'ROUND(A1*B1,2)',result:189.42}]);
+    data.addRow([1.5,35.61,{formula:'ROUND(A2*B2,2)',result:53.42}]);
+    totals.getCell('A1').value={formula:"SUM('Input Data'!$C$1:C2)",result:242.84};
+    totals.getCell('A2').value={formula:'A1*2',result:485.68};
+    totals.getCell('B1').value={formula:'42',result:41};
+  });
+  const {book,report}=await edit(original,'A1',[setNumber('A',20)]);
+  assert.deepEqual(cached(book,'Input Data','C1:C2'),[176.2,53.42]);
+  assert.deepEqual(cached(book,'Totals','A1:A2'),[229.62,459.24]);
+  assert.deepEqual(cached(book,'Totals','B1'),[41]); // unrelated cache, as supplied
+  assert.deepEqual(cached(original,'Input Data','C1'),[189.42]);
+  assert.equal(report.changed,1);assert.equal(report.verifiedFormulas,3);
+  assert.equal(report.valueRecalculation.unverifiedCount,0);
+  const summary=require('../../src/services/documentJobs/adapters').get('xlsx-v1').summary(report);
+  assert.match(summary,/verified 3 dependent formula results/);
+});
+
+test('filtered input changes update only actual dependents and keep shared formula definitions',async()=>{
+  const original=await source(),range='A1:C4';
+  const selection=engine.inspect(original,{...query('Input Data',range),where:{column:'A',operator:'gt',value:20}}).selection;
+  const args={selectionId:selection.id,sourceChecksum:original.checksum,expectedRows:1,operations:[setNumber('A',20)]};
+  const chunks=Array.from(engine.chunks(original,args,selection),chunk=>({...chunk,hash:engine.hash(chunk.xml)}));
+  const result=await engine.assemble(original,args,selection,chunks);
+  const updated=engine.load(result.buffer);
+  const [before,after]=[original,updated].map(b=>rows(b,'Input Data','C2')[0]);
+  assert.deepEqual(after.definition,before.definition);
+  assert.equal(after.value,20*8.81);assert.equal(result.report.verifiedFormulas,3);
+  assert.deepEqual(cached(original,'Input Data','C1'),cached(updated,'Input Data','C1'));
+});
+
+test('unsupported dependent and opaque formulas lose stale caches, independent formulas and valid branches survive',async()=>{
+  const original=await numericBook((data,totals)=>{
+    data.addRow([2,11,{formula:'A1*2',result:4},{formula:'ABS(A1)',result:2},{formula:'ABS(B1)',result:11}]);
+    data.getCell('F1').value={formula:'INDIRECT("A1")',result:2};
+    totals.addRow([{formula:"'Input Data'!D1+1",result:3},{formula:"'Input Data'!C1+1",result:5}]);
+  });
+  const {book,report}=await edit(original,'A1',[setNumber('A',7)]);
+  assert.deepEqual(cached(book,'Input Data','C1:F1'),[14,null,11,null]);
+  assert.deepEqual(cached(book,'Totals','A1:B1'),[null,15]);
+  const inspected=engine.inspect(book,query('Totals','A1'));
+  assert.equal(inspected.items[0].cells[0].cachedResult,'missing');
+  assert.equal(inspected.statistics[0].missingFormulaResults,1);
+  assert.equal(inspected.statistics[0].sum,null);
+  assert.deepEqual(cached(original,'Totals','A1:B1'),[3,5]);
+  const status=report.valueRecalculation;
+  assert.equal(status.verifiedCount,2);assert.equal(status.unverifiedCount,3);
+  assert.equal(report.formulaValuesRecalculated,false);
+  assert.deepEqual(new Set(status.unverifiedSample.map(x=>x.sheet+'!'+x.cell)),
+    new Set(['Input Data!D1','Input Data!F1','Totals!A1']));
+  const summary=require('../../src/services/documentJobs/adapters').get('xlsx-v1').summary(report);
+  assert.match(summary,/full recalculation/);assert.match(summary,/Totals!A1/);
+});
+
+test('an edit that introduces division by zero clears its branch, leaves a separate cycle and supports zero and blank',async()=>{
+  const original=await numericBook(data=>{
+    data.addRow([2,{formula:'1/A1',result:0.5},{formula:'B1*2',result:1},
+      {formula:'A1+2',result:4},{formula:'F1',result:9},{formula:'E1',result:9}]);
+    data.getCell('G1').value={formula:'H1+1',result:1};
+  });
+  const {book,report}=await edit(original,'A1',[setNumber('A',0)]);
+  assert.deepEqual(cached(book,'Input Data','B1:F1'),[null,null,2,9,9]);
+  assert.equal(report.valueRecalculation.unverifiedCount,2);
+  const restored=await edit(book,'A1',[setNumber('A',4)]);
+  assert.deepEqual(cached(restored.book,'Input Data','B1:D1'),[0.25,0.5,6]);
+  const inserted=await edit(original,'H1',[setNumber('H',-2)]);
+  assert.deepEqual(cached(inserted.book,'Input Data','G1:H1'),[-1,-2]);
+  const cleared=await edit(inserted.book,'H1',[setNumber('H',null)]);
+  assert.deepEqual(cached(cleared.book,'Input Data','G1:H1'),[1,null]);
+  const noop=await edit(original,'A1',[setNumber('A',2)]);
+  assert.equal(noop.report.changed,0);assert.equal(noop.report.verifiedFormulas,0);
+});
+
+test('changed array cache, its follower and a cross-sheet dependent all require native recalculation',async()=>{
+  const original=await numericBook((data,totals)=>{
+    data.addRow([2,3]);
+    data.fillFormula('C1:D1','A1:B1*2',[4,6],'array');
+    totals.getCell('A1').value={formula:"'Input Data'!D1+1",result:7};
+  });
+  const {book,report}=await edit(original,'A1',[setNumber('A',4)]);
+  assert.equal(rows(book,'Input Data','C1')[0].definition.type,'array');
+  assert.deepEqual(cached(book,'Input Data','C1:D1'),[null,null]);
+  assert.deepEqual(cached(book,'Totals','A1'),[null]);
+  assert.equal(report.valueRecalculation.clearedRangeCells,1);
+});
+
+test('a range beyond the evaluation budget can coexist with a verified result and an unrelated range',async()=>{
+  const original=await numericBook(data=>{
+    data.addRow([2,7,{formula:'SUM(A1:A1048576)',result:2},{formula:'A1*3',result:6},
+      {formula:'SUM(B1:B1048576)',result:7}]);
+  });
+  const {book,report}=await edit(original,'A1',[setNumber('A',5)]);
+  assert.deepEqual(cached(book,'Input Data','C1:E1'),[null,15,7]);
+  assert.equal(report.valueRecalculation.unverifiedSample[0].reason,'XLSX_FORMULA_LIMIT');
+});

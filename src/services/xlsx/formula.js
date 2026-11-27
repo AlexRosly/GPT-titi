@@ -13,10 +13,13 @@ function colName(n) {
   return name;
 }
 const reference = /^(?:(('(?:[^']|'')+'|[\p{L}_][\p{L}\p{N}_.]*)!))?(\$?)([A-Z]{1,3})(\$?)([1-9]\d{0,6})(?![\p{L}\p{N}_.$])/iu;
-function parse(input, dc = 0, dr = 0) {
+// These functions have explicit inputs. Their references can be indexed even
+// though this numeric evaluator cannot produce their results.
+const staticFunctions = new Set(['ABS','AVERAGE','MIN','MAX','COUNT','COUNTA','PRODUCT','IF','IFERROR','COUNTIF','COUNTIFS','MATCH']);
+function parse(input, dc = 0, dr = 0, dependenciesOnly = false) {
   if (typeof input !== 'string' || input.length > 1024) invalid();
   const source = input.trim().replace(/^=/, '');
-  let pos = 0, count = 0, depth = 0, expression = '';
+  let pos = 0, count = 0, depth = 0, expression = '', calculable = true;
   function skip() { while (source[pos] === ' ') pos++; }
   function take(s) {
     skip();
@@ -47,10 +50,14 @@ function parse(input, dc = 0, dr = 0) {
       node = binary(0); if (!take(')')) invalid();
     } else {
       const rest = source.slice(pos);
-      const fn = /^(SUMPRODUCT|ROUND|SUM)\s*\(/i.exec(rest);
+      const fn = /^([A-Z][A-Z0-9_.]*)\s*\(/i.exec(rest);
       const num = /^(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?/i.exec(rest);
       if (fn) {
         const name = fn[1].toUpperCase();
+        if (!['SUM','ROUND','SUMPRODUCT'].includes(name)) {
+          if (!dependenciesOnly || !staticFunctions.has(name)) invalid();
+          calculable = false;
+        }
         pos += fn[0].length; expression += name + '(';
         const args = [binary(0)];
         while (take(',')) args.push(binary(0));
@@ -83,7 +90,23 @@ function parse(input, dc = 0, dr = 0) {
   }
   const tree = binary(0); skip();
   if (pos !== source.length) invalid();
-  return {expression, tree};
+  return {expression, tree, calculable};
+}
+
+function eachReference(tree, visit, range) {
+  switch (tree.kind) {
+    case 'ref': return visit(tree);
+    case 'range': return range(tree);
+    case 'unary': return eachReference(tree.child,visit,range);
+    case 'binary': eachReference(tree.left,visit,range); return eachReference(tree.right,visit,range);
+    case 'call': for (const arg of tree.args) eachReference(arg,visit,range);
+  }
+}
+
+function eachRangeCell({from,to}, visit) {
+  for (let r = Math.min(from.r,to.r); r <= Math.max(from.r,to.r); r++)
+    for (let c = Math.min(from.c,to.c); c <= Math.max(from.c,to.c); c++)
+      visit({sheet:from.sheet,c,r});
 }
 
 function scalar(value) {
@@ -107,10 +130,8 @@ function evaluate(tree, read, vectorRound = false) {
     case 'number': return tree.value;
     case 'ref': return read(tree);
     case 'range': {
-      const {from,to} = tree, values = [];
-      for (let r = Math.min(from.r,to.r); r <= Math.max(from.r,to.r); r++)
-        for (let c = Math.min(from.c,to.c); c <= Math.max(from.c,to.c); c++)
-          values.push(read({sheet:from.sheet,c,r}));
+      const values = [];
+      eachRangeCell(tree,ref=>values.push(read(ref)));
       return values;
     }
     case 'unary': {
@@ -144,4 +165,4 @@ function evaluate(tree, read, vectorRound = false) {
   }
 }
 
-module.exports = {parse, evaluate, scalar, colName};
+module.exports = {parse, evaluate, scalar, colName, eachReference};

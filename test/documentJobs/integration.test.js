@@ -254,15 +254,18 @@ for(const formulaEdit of [false,true])test('SIGKILL recovers committed chunks af
  await queue.runOnce();await worker.recoverExpired();const turn=await models.ChatTurn.findById(ctx.turn._id);
  assert.equal(turn.status,'completed');assert.equal(turn.computeState.documentJob.report.changed,10000);assert.equal(turn.computeState.documentJob.report.chunks,20);
  assert.equal(await models.ChatBillingLedger.countDocuments({turnId:turn.turnId}),1);assert.equal(ctx.calls(),2);
+ const msg=await models.ChatMessage.findById(turn.assistantMessage);
+ assert.equal(msg.attachments.length,1);
+ const {buffer}=await store.read(ctx.user.id,msg.attachments[0].fileId);
+ const row=engine.inspect(engine.load(buffer),{sheet:'Дані',range:'B10001:D10001',where:null,offset:0}).items[0].cells;
  if(formulaEdit){
-  const msg=await models.ChatMessage.findById(turn.assistantMessage);
-  assert.equal(msg.attachments.length,1);
   assert.equal(turn.computeState.documentJob.report.verifiedFormulas,20000);
-  const {buffer}=await store.read(ctx.user.id,msg.attachments[0].fileId);
-  const row=engine.inspect(engine.load(buffer),{sheet:'Дані',range:'B10001:D10001',where:null,offset:0}).items[0].cells;
   assert.equal(row[0].definition.expression,'ROUND(A10001*1.5,2)');assert.equal(row[0].value,15000);
   assert.equal(row[2].value,30000);
-  assert.deepEqual((await store.read(ctx.user.id,ctx.original.id)).buffer,input);
+ }else{
+  assert.equal(turn.computeState.documentJob.report.verifiedFormulas,10000);
+  assert.equal(row[0].value,20000.25);assert.equal(row[2].value,40000.5);
  }
+ assert.deepEqual((await store.read(ctx.user.id,ctx.original.id)).buffer,input);
  const job=await Job.findById(abandoned._id);assert.equal(job.stagedBytes,0);assert.equal(await Chunk.countDocuments({job:job._id}),0);
 });

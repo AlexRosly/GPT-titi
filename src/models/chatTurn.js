@@ -71,6 +71,7 @@ const ChatTurnSchema = new Schema(
     responseState: { type: Schema.Types.Mixed, default: null },
     cancelRequestedAt: { type: Date, default: null },
     reconciliation: { type: Schema.Types.Mixed, default: null },
+    reconciliationHistory: { type: [Schema.Types.Mixed], default: undefined, select: false },
     needsReconciliation: { type: Boolean, default: false },
     failureDiagnostic: { type: Schema.Types.Mixed, default: null },
     workerRuntime: { type: Schema.Types.Mixed, default: null },

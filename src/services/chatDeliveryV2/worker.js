@@ -16,6 +16,7 @@ const { createScheduler } = require("./scheduler");
 const { messageDto } = require("./snapshot");
 const runtime = require('./runtime');
 const earlyCancellation = require('./earlyCancellation');
+const failedHold = require('./failedHold');
 
 // Handoff transfers ownership to the document queue. A stale recovery scan or
 // caller must not fail, complete, charge or reclaim that turn until publication.
@@ -165,7 +166,8 @@ const failTurn = async (
       if (!current || current.providerResult) return;
       let uncertain = Boolean(current.providerStartedAt) && !knownNoCharge;
       const cancelled = Boolean(current.cancelRequestedAt);
-      const settlement = cancelled && uncertain
+      const coverFailedHold = failedHold.enabled();
+      const settlement = cancelled && uncertain && !coverFailedHold
         ? await earlyCancellation.settleInitialCancellation(current, session) : null;
       if (settlement) uncertain = false;
       const terminalError = cancelled ? earlyCancellation.cancellationError(uncertain) : uncertain
@@ -196,6 +198,18 @@ const failTurn = async (
         },
         { new: true, session },
       );
+      if (updated?.needsReconciliation && coverFailedHold) {
+        let assessment;
+        try {
+          assessment = await failedHold.inspect(updated, session);
+        } catch (error) {
+          if (!(error instanceof failedHold.HoldReview)) throw error;
+          updated = await ChatTurn.findByIdAndUpdate(updated._id, {
+            $set: { 'failureDiagnostic.terminal.holdReview': error.message },
+          }, { new: true, session });
+        }
+        if (assessment) updated = await failedHold.close(updated, assessment.entry, session);
+      }
     });
   } finally {
     await session.endSession();

@@ -58,6 +58,13 @@ const finalizeCharge = async ({ userId, modelId, usage, conversationId, messageI
   }
 };
 
+// Both previews and ledger writes use the unrounded USD value for TITI conversion.
+const costFromSnapshot = (pricing, usage) => {
+  const usd = ((usage.prompt_tokens ?? usage.promptTokens ?? 0) * pricing.inputPerM +
+    (usage.completion_tokens ?? usage.completionTokens ?? 0) * pricing.outputPerM) / 1_000_000;
+  return { usd: Number(usd.toFixed(6)), appTokens: Math.ceil(usd / pricing.tokenValueUsd) };
+};
+
 // v2 path: ledger creation and balance mutation must happen in the same Mongo transaction.
 const finalizeChargeInTransaction = async ({
   session,
@@ -70,14 +77,7 @@ const finalizeChargeInTransaction = async ({
 }) => {
   if (!session || !turnId) throw new Error("session and turnId are required");
 
-  let cost;
-  if (pricing?.tokenValueUsd > 0) {
-    const usd = ((usage.prompt_tokens ?? usage.promptTokens ?? 0) * pricing.inputPerM +
-      (usage.completion_tokens ?? usage.completionTokens ?? 0) * pricing.outputPerM) / 1_000_000;
-    cost = { usd: Number(usd.toFixed(6)), appTokens: Math.ceil(usd / pricing.tokenValueUsd) };
-  } else {
-    cost = await calculateCost({ modelId, usage });
-  }
+  const cost = pricing?.tokenValueUsd > 0 ? costFromSnapshot(pricing, usage) : await calculateCost({ modelId, usage });
   let ledger = await ChatBillingLedger.findOne({ turnId }).session(session);
 
   if (ledger) {
@@ -125,3 +125,4 @@ const finalizeChargeInTransaction = async ({
 
 module.exports = finalizeCharge;
 module.exports.finalizeChargeInTransaction = finalizeChargeInTransaction;
+module.exports.costFromSnapshot = costFromSnapshot;

@@ -32,9 +32,32 @@ completed provider result is durably saved before billing so an expired worker
 can finish billing without calling the provider twice. OpenAI SDK automatic
 retries are disabled to avoid another billable call after an ambiguous failure.
 
-An interrupted call whose usage is unknown becomes failed/nonretryable with
-needsReconciliation=true and KEEPS its hold. It must not silently become free.
-Inspect these turns operationally. After checking provider evidence, an operator
+With `CHAT_FAILED_HOLD_POLICY=platform_covers_unknown`, a worker that fails an
+interrupted attempt closes its user reservation in the same transaction. This
+includes expired worker recovery and cancellation. The worker prices the
+persisted, confirmed usage with the accepted price snapshot. GPTiti covers any
+unconfirmed remainder. The receipt records the usage source, user charge, and
+full hold released. Available TITI increases by the hold minus the charge.
+A saved provider result follows normal completion recovery. An active document
+job keeps ownership. Conflicting billing records leave a reason in
+`failureDiagnostic.terminal.holdReview` for investigation.
+
+The worker reads this setting from its process environment. An unset setting
+preserves the existing manual policy and early-cancellation rules. For a
+historical failed hold, run these commands from the backend directory.
+
+```sh
+node scripts/reconcileFailedHold.js --plan TURN_UUID ATTEMPT EXPECTED_HELD_TITI > plan.json
+node scripts/reconcileFailedHold.js --apply plan.json --platform-covers-unknown
+node scripts/reconcileFailedHold.js --plan TURN_UUID ATTEMPT EXPECTED_HELD_TITI
+```
+
+The preview checks the target, open holds on its account, ledger receipts and
+usage checkpoints. Apply repeats the checks inside a Mongo transaction. A
+repeat reports zero movement. Both commands use `CHAT_RECONCILIATION_MONGO_URI`
+when set and otherwise use the backend's `MONGO_URI`.
+
+For manual resolution from independently confirmed provider evidence, an operator
 can run scripts/reconcileChatReservation.js with CHAT_RECONCILIATION_MONGO_URI
 and a JSON file containing turnId, attempt, reason and exactly one of:
 - noCharge: true, only when absence of a charge has been established;

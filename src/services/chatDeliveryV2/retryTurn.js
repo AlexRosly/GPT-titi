@@ -41,8 +41,10 @@ const retryTurn = async ({ turnId, userId }) => {
           providerConfig: require('./responsesProvider').configuration(model),
           webState: turn.webReading ? turn.webState : turn.webPlan?.mode !== "browser" && turn.webState ? { version: 2, results: (turn.webState.results || []).filter(r => r.status === "ready") } : null,
           reservationClosedAt: null, providerStartedAt: null, initialProviderUsage: null, providerResult: null, needsReconciliation: false,
+          reconciliation: null,
           pricing: { inputPerM: model.inputPerM, outputPerM: model.outputPerM, tokenValueUsd: APP_TOKEN_VALUE_USD } },
         $inc: { attempt: 1 },
+        ...(turn.reconciliation ? { $push: { reconciliationHistory: { attempt: turn.attempt, receipt: turn.reconciliation } } } : {}),
       }, { new: true, session });
     });
     require("../tokenLedger").notifyCommitted();

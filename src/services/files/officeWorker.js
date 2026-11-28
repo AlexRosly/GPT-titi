@@ -67,24 +67,12 @@ async function docx() {
   const document = new Document({ creator: 'GPTiti', title: value.title, styles: { default: { document: { run: { font: 'Arial', size: 22 }, paragraph: { spacing: { after: 160, line: 276 } } } } }, sections: [{ properties: { page: { size: { width: 11906, height: 16838 }, margin: { top: 1134, bottom: 1134, left: 1134, right: 1134 } } }, children, footers: { default: new Footer({ children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ children: [PageNumber.CURRENT, ' / ', PageNumber.TOTAL_PAGES] })] })] }) } }] });
   return Packer.toBuffer(document);
 }
-async function xlsx() {
-  const ExcelJS = require('exceljs'); const book = new ExcelJS.Workbook(); book.creator = 'GPTiti';
-  for (const source of value.sheets) {
-    const sheet = book.addWorksheet(source.name, { views: [{ state: 'frozen', ySplit: 1 }] });
-    // Primitives only: never formula objects, hyperlinks, macros or external data.
-    sheet.addRows(source.rows);
-    sheet.getRow(1).font = { bold: true, color: { argb: 'FF142443' } };
-    sheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE9EEF5' } };
-    sheet.columns.forEach(column => { let width = 12; column.eachCell({ includeEmpty: false }, cell => { width = Math.max(width, Math.min(45, String(cell.value ?? '').length + 2)); cell.alignment = { vertical: 'top', wrapText: true }; }); column.width = width; });
-    sheet.autoFilter = { from: { row: 1, column: 1 }, to: { row: Math.max(1, sheet.rowCount), column: Math.max(1, sheet.columnCount) } };
-    sheet.pageSetup = { paperSize: 9, orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 };
-  }
-  return Buffer.from(await book.xlsx.writeBuffer());
-}
 (async () => {
   try {
-    const buffer = await ({ pdf, docx, xlsx })[ext]();
-    if (buffer.length > maxBytes) throw fail('FILE_TOO_LARGE');
-    parentPort.postMessage({ buffer });
+    const file = ext === 'xlsx'
+      ? await require('../xlsx/generate')(value, maxBytes)
+      : { buffer: await ({ pdf, docx })[ext](), generatedPreview: require('./office').preview(ext, value) };
+    if (file.buffer.length > maxBytes) throw fail('FILE_TOO_LARGE');
+    parentPort.postMessage(file);
   } catch (e) { parentPort.postMessage({ error: e.fileError || 'DOCUMENT_RENDER_FAILED' }); }
 })();

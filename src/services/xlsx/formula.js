@@ -165,4 +165,38 @@ function evaluate(tree, read, vectorRound = false) {
   }
 }
 
-module.exports = {parse, evaluate, scalar, colName, eachReference};
+function atCell(sheet, address, operation) {
+  try { return operation(); }
+  catch (error) {
+    if (error.fileError && !error.fileError.includes(' (')) {
+      throw fail(error.fileError+' ('+sheet+'!'+address+')');
+    }
+    throw error;
+  }
+}
+
+// A new workbook and an edit use different sources for input cells. Both walk
+// the same numeric dependency graph and calculate each formula only once.
+function workbookCalculator(readReference) {
+  const active = new Set();
+  let visits = 0;
+  return function calculate(item) {
+    if (item.result !== undefined) return item.result;
+    return atCell(item.sheetName, item.ref, () => {
+      if (active.has(item)) throw fail('XLSX_FORMULA_CYCLE');
+      if (active.size > 256) throw fail('XLSX_FORMULA_LIMIT');
+      active.add(item);
+      try {
+        item.result = scalar(evaluate(item.formula.tree, ref => {
+          if (++visits > 1000000) throw fail('XLSX_FORMULA_LIMIT');
+          return readReference(item, ref, calculate);
+        }));
+        return item.result;
+      } finally {
+        active.delete(item);
+      }
+    });
+  };
+}
+
+module.exports = {parse, evaluate, scalar, colName, eachReference, atCell, workbookCalculator};

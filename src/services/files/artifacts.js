@@ -100,7 +100,7 @@ const toolOptions = (spec) => ({
 // Model opt-out replaces the legacy environment allowlist. New and old records default on.
 const outputEnabled = (model) => config.enabled() && !!model && model.fileOutputEnabled !== false;
 const autoEnabled = (model) => outputEnabled(model) && process.env.FILE_OUTPUT_AUTO_ENABLED !== 'false';
-const fileSystemInstructions = 'You can create downloadable files using create_file. When the user requests a supported file, use that tool to produce it instead of giving instructions or code for the user to run. Follow its format rules. Never claim a file is attached without calling the tool. For ordinary questions or requested code examples, respond normally.';
+const fileSystemInstructions = 'You can create downloadable files using create_file. When the user requests a supported file, use that tool to produce it instead of giving instructions or code for the user to run. Follow its format rules. For a new XLSX with calculations, use typed formula cells for the calculated rows and totals so they update when inputs change. Never claim a file is attached without calling the tool. For ordinary questions or requested code examples, respond normally.';
 const autoToolOptions = (model) => {
   const options = toolOptions({ filename: 'requested file' });
   const fn = options.tools[0].function;

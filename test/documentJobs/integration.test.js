@@ -269,3 +269,75 @@ for(const formulaEdit of [false,true])test('SIGKILL recovers committed chunks af
  assert.deepEqual((await store.read(ctx.user.id,ctx.original.id)).buffer,input);
  const job=await Job.findById(abandoned._id);assert.equal(job.stagedBytes,0);assert.equal(await Chunk.countDocuments({job:job._id}),0);
 });
+
+for (const apiMode of ['chat_completions','responses']) {
+  test(apiMode+' creates a formula workbook, then edits its quantity from chat history',opts,async t => {
+    const modelId = 'create-xlsx-'+crypto.randomUUID();
+    const user = await models.User.create({email:modelId+'@example.test',name:'Workbook QA',status:'active',appTokens:100000});
+    await models.ChatModels.create({modelId,enabled:true,inputPerM:0.1,outputPerM:0.2,apiMode,
+      ...(apiMode === 'responses' ? {reasoningEffort:'low'} : {})});
+    const conversation = await models.ChatConversation.create({user:user.id,modelId});
+    const manifest = require('../xlsx/fixtures').creationManifest();
+    const steps = [{name:'create_file',args:{filename:'new.xlsx',content:JSON.stringify(manifest),summary:'Книга готова'}}];
+    if (apiMode === 'responses') steps.push({text:'Книга готова'});
+    let callId = 0;
+    function next(request) {
+      const step = steps.shift();
+      assert.ok(step,'Unexpected provider request');
+      if (!step.name) return step;
+      const tool = request.tools?.map(tool => tool.function || tool).find(tool => tool.name === step.name);
+      assert.ok(tool,step.name+' must be offered in this turn');
+      if (step.name === 'create_file') assert.match(tool.description, /"type":"formula"/);
+      return {id:'call-'+(++callId),type:'function',function:{name:step.name,arguments:JSON.stringify(step.args)}};
+    }
+    if (apiMode === 'responses') {
+      t.mock.method(Responses.prototype,'create',async function* (request) {
+        const action = next(request), id = 'resp-'+crypto.randomUUID();
+        const output = action.text ? {type:'message',content:[{type:'output_text',text:action.text}]}
+          : {type:'function_call',id:'fc-'+action.id,call_id:action.id,...action.function,status:'completed'};
+        yield {type:'response.created',response:{id}};
+        yield {type:'response.completed',response:{id,status:'completed',output:[output],usage:{input_tokens:100,output_tokens:20,total_tokens:120}}};
+      });
+    } else {
+      t.mock.method(Completions.prototype,'create',request => {
+        const action = next(request), usage = {prompt_tokens:100,completion_tokens:20,total_tokens:120};
+        if (!request.stream) return Promise.resolve({choices:[{message:{tool_calls:[action]},finish_reason:'tool_calls'}],usage});
+        return (async function* () {
+          yield {choices:[{delta:{tool_calls:[{...action,index:0}]},finish_reason:'tool_calls'}],usage};
+        })();
+      });
+    }
+    async function send(message) {
+      const admitted = await accept({userId:user.id,payload:{clientMessageId:crypto.randomUUID(),conversationId:conversation.id,modelId,message,files:[]}});
+      await worker.processTurn(await worker.claimTurn(admitted.turn.turnId));
+      return admitted.turn.turnId;
+    }
+    async function attachment(turnId) {
+      const turn = await models.ChatTurn.findOne({turnId});
+      assert.equal(turn.status,'completed');
+      assert.equal(turn.reservationState,'settled');
+      assert.equal(await models.ChatBillingLedger.countDocuments({turnId}),1);
+      const reply = await models.ChatMessage.findById(turn.assistantMessage);
+      assert.equal(reply.attachments.length,1);
+      return store.read(user.id,reply.attachments[0].fileId);
+    }
+    const first = await attachment(await send('Створи Excel з аркушами Дані й Підсумок та підрахуй суми формулами.'));
+    assert.equal(first.file.generatedPreview.sheets[1].rows[1][1],34);
+    const source = engine.load(first.buffer);
+    const args = {fileId:first.file.id,sheet:'Дані',range:'B2',where:null,offset:0};
+    const {selection} = engine.inspect(source,args);
+    steps.push({name:'inspect_xlsx',args}, {name:'edit_xlsx',args:{fileId:first.file.id,
+      sourceChecksum:source.checksum,filename:'updated.xlsx',selectionId:selection.id,expectedRows:1,
+      operations:[{type:'set_value',column:'B',value:3,expected:null}]}});
+    const second = await send('У щойно створеній книзі зміни першу кількість з 2 на 3 і поверни копію.');
+    await queue.runOnce();
+    await worker.recoverExpired();
+    await worker.recoverExpired();
+    const copy = await attachment(second);
+    const total = engine.inspect(engine.load(copy.buffer),{sheet:'Підсумок',range:'B2',where:null,offset:0}).items[0].cells[0];
+    assert.equal(total.value,44.25);
+    assert.equal(total.definition.expression,"SUM('Дані'!D2:D3)");
+    assert.deepEqual((await store.read(user.id,first.file.id)).buffer,first.buffer);
+    assert.equal(steps.length,0);
+  });
+}

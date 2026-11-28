@@ -22,13 +22,6 @@ function targets(operations, selection) {
   }
   return edits;
 }
-function at(sheet, ref, run) {
-  try { return run(); }
-  catch (e) {
-    if (e.fileError && !e.fileError.includes(' (')) throw fail(e.fileError+' ('+sheet+'!'+ref+')');
-    throw e;
-  }
-}
 function effective(cell, dependenciesOnly = false) {
   const def = cell.definition;
   if ((def.type === 'normal' || dependenciesOnly && def.type === 'array') && def.expression)
@@ -56,7 +49,7 @@ function translate(edit) {
 }
 function stage(request,row) {
   const edits=request.byRow.get(row.r)||[];
-  const entries=edits.map(edit=>[edit.ref,at(request.sheet,edit.ref,()=>translate(edit).expression)]);
+  const entries=edits.map(edit=>[edit.ref,formula.atCell(request.sheet,edit.ref,()=>translate(edit).expression)]);
   return {xml:JSON.stringify(entries)+'\n',matched:1,changed:edits.length,formulaSkipped:0,nonNumericSkipped:0};
 }
 function restore(request,rows,chunk) {
@@ -81,7 +74,7 @@ function build(book, requested, selection) {
   const calculation = book.parts.get('xl/workbook.xml').toString('utf8').match(/<calcPr\b[^>]*>/)?.[0] || '';
   if (/\bfullPrecision=["'](?:0|false)["']/.test(calculation)) throw fail('XLSX_FORMULA_PRECISION_AS_DISPLAYED');
   const sheets = new Map(), allFormulas = [];
-  let scanned = 0, visits = 0;
+  let scanned = 0;
   for (const info of book.sheets) {
     const sheet = engine.sheetData(book,info.name,{readShared:true});
     const cells = new Map(), updates = new Map(), groups = new Set();
@@ -120,40 +113,33 @@ function build(book, requested, selection) {
     }
     for (const item of cells.values()) {
       if (!item.formula && item.cell?.formula) {
-        item.formula = at(info.name,item.ref,()=>effective(item.cell));
+        item.formula = formula.atCell(info.name,item.ref,()=>effective(item.cell));
         item.split = item.cell.definition.type === 'shared' && groups.has(item.cell.definition.master.cell);
       }
-      if (item.formula) allFormulas.push(item);
+      if (item.formula) {
+        item.sheetName = info.name;
+        item.affected = Boolean(item.target);
+        allFormulas.push(item);
+      }
     }
   }
-  function calculate(item, depth) {
-    if (item.done) return item.result;
-    if (item.busy) throw fail('XLSX_FORMULA_CYCLE');
-    if (depth > 256) throw fail('XLSX_FORMULA_LIMIT');
-    item.busy = true;
-    item.affected = Boolean(item.target);
-    item.result = at(item.state.sheet.name,item.ref,()=>formula.scalar(formula.evaluate(item.formula.tree,ref=>{
-      if (++visits > 1000000) throw fail('XLSX_FORMULA_LIMIT');
-      const source = ref.sheet ? sheets.get(ref.sheet.toUpperCase()) : item.state;
-      if (!source) throw fail('XLSX_FORMULA_SHEET_NOT_FOUND');
-      const dep = source.cells.get(formula.colName(ref.c)+ref.r);
-      if (!dep) return null;
-      if (!dep.formula) {
-        if (dep.cell.type === 'd') throw fail('XLSX_FORMULA_NON_NUMERIC');
-        if (dep.cell.type === 'e') throw fail('XLSX_FORMULA_INPUT_ERROR');
-        return dep.cell.value;
-      }
-      const result = calculate(dep,depth+1);
-      if (dep.affected) item.affected = true;
-      return result;
-    })));
-    item.busy = false;
-    item.done = true;
-    return item.result;
-  }
+  const calculate = formula.workbookCalculator((item, ref, calculateDependency) => {
+    const source = ref.sheet ? sheets.get(ref.sheet.toUpperCase()) : item.state;
+    if (!source) throw fail('XLSX_FORMULA_SHEET_NOT_FOUND');
+    const dep = source.cells.get(formula.colName(ref.c)+ref.r);
+    if (!dep) return null;
+    if (!dep.formula) {
+      if (dep.cell.type === 'd') throw fail('XLSX_FORMULA_NON_NUMERIC');
+      if (dep.cell.type === 'e') throw fail('XLSX_FORMULA_INPUT_ERROR');
+      return dep.cell.value;
+    }
+    const result = calculateDependency(dep);
+    if (dep.affected) item.affected = true;
+    return result;
+  });
   let verifiedCount = 0;
   for (const item of allFormulas) {
-    calculate(item,0);
+    calculate(item);
     if (!(item.affected || item.split)) continue;
     verifiedCount++;
     const updates = item.state.updates;

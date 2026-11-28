@@ -9,4 +9,16 @@ async function fixture(rows=10000){
  other.getCell('A1').value='Не змінювати';other.mergeCells('A1:C1');
  return Buffer.from(await wb.xlsx.writeBuffer());
 }
-module.exports={fixture};
+function creationManifest() {
+  const amount = value => ({type:'number', value, numberFormat:'0.00'});
+  const calculated = formula => ({type:'formula', formula, numberFormat:'0.00'});
+  return {sheets:[
+    {name:'Дані', rows:[
+      ['Позиція','Кількість','Ціна','Сума'],
+      ['Папка',2,amount(10.25),calculated('=ROUND(B2*C2,2)')],
+      ['Зошит',3,amount(4.5),calculated('=ROUND(B3*C3,2)')],
+    ]},
+    {name:'Підсумок', rows:[['Показник','Сума'],['Разом',calculated("=SUM('Дані'!D2:D3)")]]},
+  ]};
+}
+module.exports={fixture,creationManifest};

@@ -47,7 +47,7 @@ function load(buffer){
   const rel=rels.get(id);if(!name||sheets.some(s=>s.name===name)||!rel?.type.endsWith('/worksheet')||!parts.has(rel.path))throw fail('XLSX_UNSUPPORTED');
   sheets.push({name,path:rel.path});
  }}});if(!sheets.length||sheets.length>256)throw fail('XLSX_RESOURCE_LIMIT');
- const formats=new Map([[1,'0'],[2,'0.00'],[3,'#,##0'],[4,'#,##0.00']]),styles=[];
+ const formats=new Map([[1,'0'],[2,'0.00'],[3,'#,##0'],[4,'#,##0.00'],[9,'0%'],[10,'0.00%']]),styles=[];
  if(parts.has('xl/styles.xml')){let cellStyles=false;parse(xmlOf(parts,'xl/styles.xml'),{open:n=>{if(n.uri!==NS)return;if(n.local==='numFmt')formats.set(Number(attr(n,'numFmtId')),attr(n,'formatCode'));if(n.local==='cellXfs')cellStyles=true;if(n.local==='xf'&&cellStyles){const id=Number(attr(n,'numFmtId')||0);styles.push({numberFormatId:id,numberFormat:formats.get(id)||null});}},close:n=>{if(n.split(':').at(-1)==='cellXfs')cellStyles=false;}});}
  const strings=[];
  if(parts.has('xl/sharedStrings.xml')){let text='',inside=false,capture=false,phonetic=0;parse(xmlOf(parts,'xl/sharedStrings.xml'),{
@@ -204,12 +204,15 @@ function inspect(book,args){
   statistics:[...stats.values()].map(s=>s.missingFormulaResults?{...s,sum:null,min:null,max:null}:{...s,sum:Number.isFinite(s.sum)?s.sum:null})};
 }
 const escape=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/\r/g,'&#13;');
+// SpreadsheetML treats _xHHHH_ as a character escape. Preserve literal codes
+// and carriage returns before either the inline or shared-string writer runs.
+const encodeCellText = value => value.replace(/_(?=x[0-9a-f]{4}_)/gi, '_x005F_').replace(/\r/g, '_x000D_');
 function cellXML(cell,ref,value){
  // Keep every original cell attribute except type, and preserve non-value child
  // features by refusing cells with unknown children rather than discarding them.
  const attrs=cell?.attributes||` r="${ref}"`;
  if(value===null)return `<c${attrs}/>`;
- if(typeof value==='string')return `<c${attrs} t="inlineStr"><is><t xml:space="preserve">${escape(value.replace(/_x[0-9a-f]{4}_/gi,s=>'_x005F_'+s.slice(1)).replace(/\r/g,'_x000D_'))}</t></is></c>`;
+ if(typeof value==='string')return `<c${attrs} t="inlineStr"><is><t xml:space="preserve">${escape(encodeCellText(value))}</t></is></c>`;
  return `<c${attrs}${typeof value==='boolean'?' t="b"':''}><v>${typeof value==='boolean'?Number(value):value}</v></c>`;
 }
 function transform(book,raw,row,sel,ops,formulaRanges){
@@ -354,4 +357,4 @@ function removeCalcChain(parts){
  });
  if(removed.size)removeElements(typesFile,n=>n.local==='Override'&&removed.has(attr(n,'PartName')));
 }
-module.exports={escape,load,inspect,prepare,chunks,assemble,hash,cells,sheetData,selection};
+module.exports={escape,encodeCellText,load,inspect,prepare,chunks,assemble,hash,cells,sheetData,selection};

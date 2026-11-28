@@ -15,7 +15,7 @@ function parse(xml,callbacks={}){
  if(/<!DOCTYPE|<!ENTITY/i.test(xml))bad();
  const p=sax.parser(true,{xmlns:true,position:true});let depth=0;
  p.onerror=bad;
- p.onopentag=n=>{if(++depth>64)throw fail('XLSX_RESOURCE_LIMIT');callbacks.open?.(n,p.startTagPosition-1,p.position);};
+ p.onopentag=n=>{if(++depth>64)throw fail('XLSX_RESOURCE_LIMIT');callbacks.open?.(n,p.startTagPosition-1,p.position,depth);};
  p.onclosetag=n=>{callbacks.close?.(n,p.position);depth--;};
  p.ontext=t=>callbacks.text?.(t);p.oncdata=t=>callbacks.text?.(t);
  try{p.write(xml).close();}catch(e){if(e.fileError)throw e;bad();}
@@ -59,10 +59,12 @@ function load(buffer){
 function sheetData(book,name,{indexFormulas=false,readShared=false}={}){
  const sheet=book.sheets.find(s=>s.name===name);if(!sheet)throw fail('XLSX_SHEET_NOT_FOUND');
  const xml=xmlOf(book.parts,sheet.path),rows=[],merges=[],formulaRanges=[];let current,prev=0,inData=false,dimension=null,maxColumn=0;
+ let autoFilterRef=null;
  const shared=new Map();
  let cellRef, cellColumn, master, formulaCount=0, bounds;
- parse(xml,{open:(n,start)=>{
+ parse(xml,{open:(n,start,end,depth)=>{
   if(n.uri!==NS)return;
+  if(depth===2&&n.local==='autoFilter')autoFilterRef=attr(n,'ref')||null;
   if(n.local==='worksheet'&&n.prefix)throw fail('XLSX_UNSUPPORTED');
   if(n.local==='dimension')dimension=attr(n,'ref');
   if(n.local==='mergeCell')merges.push(policy.range(attr(n,'ref')));
@@ -88,7 +90,7 @@ function sheetData(book,name,{indexFormulas=false,readShared=false}={}){
   if(local==='c')cellRef=null;
   if(local==='row'&&current){rows.push({...current,end});current=null;}if(local==='sheetData')inData=false;}});
  const formulaArea=bounds?`${colName(bounds.c1)}${bounds.r1}:${colName(bounds.c2)}${bounds.r2}`:null;
- return {...sheet,xml,rows,merges,formulaRanges,shared,formulaCount,formulaArea,dimension,maxColumn,used:{r1:rows[0]?.r||1,r2:rows.at(-1)?.r||1,c1:1,c2:maxColumn||1}};
+ return {...sheet,xml,rows,merges,formulaRanges,shared,formulaCount,formulaArea,dimension,autoFilterRef,maxColumn,used:{r1:rows[0]?.r||1,r2:rows.at(-1)?.r||1,c1:1,c2:maxColumn||1}};
 }
 function cells(book,rowXML,rowNumber,shared){
  const result=new Map();let cell,capture=null,text='',last=0,phonetic=0,depth=0,cellDepth=0,cacheElement=null;
@@ -184,8 +186,15 @@ function inspect(book,args){
   return {checksum:book.checksum,sheets,fullTextProvided:false};
  }
  const sheet=sheetData(book,args.sheet,{readShared:true}),sel=selection(book,sheet,args),items=[],stats=new Map();let matched=0,shownBytes=0,nextOffset=null,scanned=0;
+ const valueScope={explicitRange:args.range!=null,matchedFilterHeader:null};
+ let filter;
+ if(sheet.autoFilterRef) {
+  try {filter=policy.range(sheet.autoFilterRef);}
+  catch(error) {if(error.fileError!=='XLSX_INVALID_RANGE')throw error;valueScope.unknownFilter=true;}
+ }
  for(const row of sheet.rows){if(row.r<sel.range.r1||row.r>sel.range.r2)continue;scanned++;
   const values=cells(book,sheet.xml.slice(row.start,row.end),row.r,sheet.shared);if(!matches(values,sel.where))continue;
+  if(filter&&row.r===filter.r1) valueScope.matchedFilterHeader={row:row.r,c1:filter.c1,c2:filter.c2};
   const ordinal=matched++;const out=[];
   for(const [c,cell]of values){if(c<sel.range.c1||c>sel.range.c2)continue;
    if(sheet.formulaRanges.some(r=>r.r1<=row.r&&r.r2>=row.r&&r.c1<=c&&r.c2>=c))cell.formula=true;
@@ -200,7 +209,7 @@ function inspect(book,args){
  // Very wide rows cannot be paged by row offset. Require a narrower range explicitly.
  if(nextOffset!==null&&!items.length)throw fail('XLSX_PREVIEW_TOO_WIDE');
  if(stats.size>128)throw fail('XLSX_PREVIEW_TOO_WIDE');
- return {checksum:book.checksum,selection:{...sel,matchingRows:matched},coverage:{scannedRows:scanned,matchingRows:matched,displayedRows:items.length,allMatchingRowsAggregated:true,formulaValues:'cached-not-recalculated'},items,nextOffset,
+ return {checksum:book.checksum,selection:{...sel,matchingRows:matched,valueScope},coverage:{scannedRows:scanned,matchingRows:matched,displayedRows:items.length,allMatchingRowsAggregated:true,formulaValues:'cached-not-recalculated'},items,nextOffset,
   statistics:[...stats.values()].map(s=>s.missingFormulaResults?{...s,sum:null,min:null,max:null}:{...s,sum:Number.isFinite(s.sum)?s.sum:null})};
 }
 const escape=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/\r/g,'&#13;');

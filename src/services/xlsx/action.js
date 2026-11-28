@@ -9,9 +9,9 @@ async function run({turn,token,model,call,available,signal,completionAllowed}){
   const selection=turn.computeState.xlsxSelections?.[args.selectionId];
   if(!selection||selection.fileId!==args.fileId||selection.sourceChecksum!==args.sourceChecksum||file.checksum!==args.sourceChecksum)throw fail('XLSX_INSPECTION_REQUIRED');
   if(args.filename.normalize('NFC').toLowerCase()===file.originalName.normalize('NFC').toLowerCase())throw fail('XLSX_NEW_FILENAME_REQUIRED');
-  if(selection.matchingRows!==args.expectedRows)throw fail('XLSX_SELECTION_MISMATCH');
   if(require('./formulaEdit').isPlan(args.operations))require('./formulaEdit').targets(args.operations,selection);
-  else for(const op of args.operations){const col=policy.column(op.column);if(col<selection.range.c1||col>selection.range.c2)throw fail('XLSX_INVALID_RANGE');}
+  else args.operations=policy.valueOperations(args.operations,selection);
+  if(selection.matchingRows!==args.expectedRows)throw fail('XLSX_SELECTION_MISMATCH');
   signal?.throwIfAborted();return require('../documentJobs/queue').enqueue({turn,token,args,selection});
  }
  const {buffer}=await store.read(turn.user,args.fileId);

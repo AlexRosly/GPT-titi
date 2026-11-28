@@ -40,7 +40,11 @@ function toolResult(call, result, next) {
   const base = { ok: result.ok, truncated: result.truncated, files: next.files, executionMs: next.executionMs };
   if (require('../xlsx/policy').isTool(call.function.name)) {
     if(result.ok)return {...base,data:JSON.parse(result.text)};
-    const correction={XLSX_PREVIEW_TOO_WIDE:'Narrow the A1 column range and inspect again; all selected rows are still scanned.',XLSX_INVALID_ACTION:'Correct arguments to match the schema; use an available fileId and the exact inspected sheet name.',XLSX_INVALID_RANGE:'Use a valid bounded A1 range and columns inside the saved selection.',XLSX_SELECTION_MISMATCH:'Inspect the exact source again and use its selectionId and matchingRows count.',XLSX_TERMINAL_ACTION_REQUIRED:'Finish other requested tools and explanations, then call edit_xlsx alone.'}[result.text];
+    const correction={
+      XLSX_SINGLE_ROW_REQUIRED:'No edit was queued. Inspect the named record with an exact label or ID filter, or inspect its confirmed A1 cell. Use that selectionId with matchingRows=1 and expectedRows=1. If labels repeat, use the supplied identifying details or ask which record to edit. Never widen a single-record request into a bulk fill.',
+      XLSX_FILL_SCOPE_REQUIRED:'Inspect the exact data rows to fill and use their selectionId. Each fill_value range must cover those row bounds in one selected column. Use bulk fill only if the user requested all those rows.',
+      XLSX_FILL_HEADER:'The selection includes a worksheet filter header or its bounds are invalid. Exclude the header from the selection. If its bounds are invalid, a single-record request can use set_value on its exact row.',
+      XLSX_PREVIEW_TOO_WIDE:'Narrow the A1 column range and inspect again; all selected rows are still scanned.',XLSX_INVALID_ACTION:'Correct arguments to match the schema; use an available fileId and the exact inspected sheet name.',XLSX_INVALID_RANGE:'Use a valid bounded A1 range and columns inside the saved selection.',XLSX_SELECTION_MISMATCH:'Inspect the exact source again and use its selectionId and matchingRows count.',XLSX_TERMINAL_ACTION_REQUIRED:'Finish other requested tools and explanations, then call edit_xlsx alone.'}[result.text];
     if(correction)return {...base,text:result.text,correction};
   }
   if (enabled() && policy.isTool(call.function.name) && result.ok) {

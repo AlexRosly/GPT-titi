@@ -284,6 +284,7 @@ for (const apiMode of ['chat_completions','responses']) {
     function next(request) {
       const step = steps.shift();
       assert.ok(step,'Unexpected provider request');
+      if (step.afterScopeError) assert.match(JSON.stringify(request.messages || request.input), /XLSX_SINGLE_ROW_REQUIRED/);
       if (!step.name) return step;
       const tool = request.tools?.map(tool => tool.function || tool).find(tool => tool.name === step.name);
       assert.ok(tool,step.name+' must be offered in this turn');
@@ -338,6 +339,32 @@ for (const apiMode of ['chat_completions','responses']) {
     assert.equal(total.value,44.25);
     assert.equal(total.definition.expression,"SUM('Дані'!D2:D3)");
     assert.deepEqual((await store.read(user.id,first.file.id)).buffer,first.buffer);
+
+    // In production the model inspected the whole sheet and set every quantity
+    // to 2. Both data rows start at 3, so filtering on the old value is ambiguous.
+    const latest = engine.load(copy.buffer);
+    const overview = {fileId:copy.file.id,sheet:'Дані',range:null,where:null,offset:0};
+    const item = {...overview,where:{column:'A',operator:'equals',value:'Папка'}};
+    function writeFor(query) {
+      const {selection} = engine.inspect(latest,query);
+      return {name:'edit_xlsx',args:{fileId:copy.file.id,sourceChecksum:latest.checksum,filename:'item-updated.xlsx',
+        selectionId:selection.id,expectedRows:selection.matchingRows,operations:[{type:'set_value',column:'B',value:2,expected:null}]}};
+    }
+    steps.push({name:'inspect_xlsx',args:overview}, writeFor(overview),
+      {name:'inspect_xlsx',args:item,afterScopeError:true}, writeFor(item));
+    const followup = await send('У попередній книзі зміни кількість папок із 3 на 2 та поверни копію.');
+    assert.equal(await Job.countDocuments({turn:(await models.ChatTurn.findOne({turnId:followup}))._id}),1);
+    await queue.runOnce();
+    await worker.recoverExpired();
+    const final = await attachment(followup);
+    const wb = new (require('exceljs').Workbook)();
+    await wb.xlsx.load(final.buffer);
+    const data = wb.getWorksheet('Дані');
+    assert.deepEqual(data.getColumn('B').values.slice(1), ['Кількість',2,3]);
+    assert.deepEqual(data.getCell('D2').value,{formula:'ROUND(B2*C2,2)',result:20.5});
+    assert.deepEqual(data.getCell('D3').value,{formula:'ROUND(B3*C3,2)',result:13.5});
+    assert.deepEqual(wb.getWorksheet('Підсумок').getCell('B2').value,{formula:"SUM('Дані'!D2:D3)",result:34});
+    assert.deepEqual((await store.read(user.id,copy.file.id)).buffer,copy.buffer);
     assert.equal(steps.length,0);
   });
 }
